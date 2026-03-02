@@ -23,7 +23,7 @@ class AppState {
     var connectionState: ConnectionState = .disconnected
     var transportType: TransportType = .tcp
     var nick: String = ""
-    var serverAddress: String = "irc.freeq.at"
+    var serverAddress: String = "irc.freeq.at:6697"
     var authenticatedDID: String?
     var irohEndpointId: String?  // Server's iroh endpoint ID
 
