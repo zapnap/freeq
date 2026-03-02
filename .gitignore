@@ -36,3 +36,4 @@ freeq-ios/freeq.xcodeproj/
 .DS_Store
 .env
 .env.secrets
+freeq-macos/FreeqSDK.xcframework/macos-arm64/libfreeq_sdk_ffi.a

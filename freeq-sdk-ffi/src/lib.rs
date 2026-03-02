@@ -783,3 +783,117 @@ impl FreeqE2ee {
         Ok(())
     }
 }
+
+// ── P2P via iroh ──────────────────────────────────────────────────
+
+pub enum P2pEvent {
+    EndpointReady { endpoint_id: String },
+    PeerConnected { peer_id: String },
+    PeerDisconnected { peer_id: String },
+    DirectMessage { peer_id: String, text: String },
+    Error { message: String },
+}
+
+pub trait P2pEventHandler: Send + Sync + 'static {
+    fn on_p2p_event(&self, event: P2pEvent);
+}
+
+pub struct FreeqP2p {
+    handle: Mutex<Option<freeq_sdk::p2p::P2pHandle>>,
+    endpoint_id: Mutex<Option<String>>,
+    _shutdown: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+}
+
+impl FreeqP2p {
+    fn new(handler: Box<dyn P2pEventHandler>) -> Result<Self, FreeqError> {
+        let (p2p_handle, mut event_rx) = RUNTIME
+            .block_on(freeq_sdk::p2p::start())
+            .map_err(|_| FreeqError::ConnectionFailed)?;
+
+        let endpoint_id = p2p_handle.endpoint_id.clone();
+
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+
+        // Spawn event forwarding task
+        RUNTIME.spawn(async move {
+            loop {
+                tokio::select! {
+                    evt = event_rx.recv() => {
+                        match evt {
+                            Some(e) => {
+                                let ffi_event = match e {
+                                    freeq_sdk::p2p::P2pEvent::EndpointReady { endpoint_id } => {
+                                        P2pEvent::EndpointReady { endpoint_id }
+                                    }
+                                    freeq_sdk::p2p::P2pEvent::PeerConnected { peer_id } => {
+                                        P2pEvent::PeerConnected { peer_id }
+                                    }
+                                    freeq_sdk::p2p::P2pEvent::PeerDisconnected { peer_id } => {
+                                        P2pEvent::PeerDisconnected { peer_id }
+                                    }
+                                    freeq_sdk::p2p::P2pEvent::DirectMessage { peer_id, text } => {
+                                        P2pEvent::DirectMessage { peer_id, text }
+                                    }
+                                    freeq_sdk::p2p::P2pEvent::Error { message } => {
+                                        P2pEvent::Error { message }
+                                    }
+                                };
+                                handler.on_p2p_event(ffi_event);
+                            }
+                            None => break,
+                        }
+                    }
+                    _ = &mut shutdown_rx => break,
+                }
+            }
+        });
+
+        Ok(Self {
+            handle: Mutex::new(Some(p2p_handle)),
+            endpoint_id: Mutex::new(Some(endpoint_id)),
+            _shutdown: Mutex::new(Some(shutdown_tx)),
+        })
+    }
+
+    fn endpoint_id(&self) -> Result<String, FreeqError> {
+        self.endpoint_id
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or(FreeqError::NotConnected)
+    }
+
+    fn connect_peer(&self, endpoint_id: String) -> Result<(), FreeqError> {
+        let handle = self.handle.lock().unwrap();
+        let h = handle.as_ref().ok_or(FreeqError::NotConnected)?;
+        let h = h.clone();
+        RUNTIME.spawn(async move {
+            if let Err(e) = h.connect_peer(&endpoint_id).await {
+                tracing::error!("P2P connect error: {e}");
+            }
+        });
+        Ok(())
+    }
+
+    fn send_message(&self, peer_id: String, text: String) -> Result<(), FreeqError> {
+        let handle = self.handle.lock().unwrap();
+        let h = handle.as_ref().ok_or(FreeqError::NotConnected)?;
+        let h = h.clone();
+        RUNTIME.spawn(async move {
+            if let Err(e) = h.send_message(&peer_id, &text).await {
+                tracing::error!("P2P send error: {e}");
+            }
+        });
+        Ok(())
+    }
+
+    fn connected_peers(&self) -> Vec<String> {
+        // TODO: expose connected peers list from P2pHandle
+        Vec::new()
+    }
+
+    fn shutdown(&self) {
+        let _ = self._shutdown.lock().unwrap().take();
+        let _ = self.handle.lock().unwrap().take();
+    }
+}

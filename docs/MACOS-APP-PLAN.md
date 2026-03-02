@@ -6,6 +6,8 @@ Build a native macOS app that feels like it belongs next to iMessage, Notes, and
 
 The app should feel **fast, quiet, and trustworthy** — like infrastructure you forget is running until you need it.
 
+**This app is also a showcase for iroh.** Every connection — server, peer-to-peer DMs, federation — runs over iroh's encrypted QUIC transport with automatic NAT traversal. The server connection auto-upgrades from TCP to iroh when available. P2P DMs bypass the server entirely. This is what modern networking looks like.
+
 ---
 
 ## Architecture
@@ -17,6 +19,7 @@ The app should feel **fast, quiet, and trustworthy** — like infrastructure you
 | **UI** | SwiftUI (macOS 14+) | NavigationSplitView, native controls |
 | **Platform glue** | AppKit interop | Menu bar, notifications, dock badge, window management |
 | **Core logic** | `freeq-sdk` (Rust) via `freeq-sdk-ffi` (UniFFI) | Same SDK as iOS/Android — IRC, SASL, E2EE, media |
+| **Networking** | iroh (QUIC, encrypted, NAT-traversing) | Server connection + P2P DMs + endpoint discovery |
 | **Persistence** | SwiftData or SQLite (via SDK) | Message history, preferences, session state |
 | **Auth** | ASWebAuthenticationSession → auth broker | Same OAuth flow as iOS |
 
@@ -87,7 +90,8 @@ Three-column `NavigationSplitView` — the classic Mac chat layout:
 Ship a working client that's better than using the web app.
 
 **Connection & Auth**
-- [ ] Connect via WebSocket (TLS) to `irc.freeq.at`
+- [ ] Connect via iroh QUIC (auto-upgrade from TCP probe via `discover_iroh_id`)
+- [ ] Fallback to WebSocket (TLS) when iroh unavailable
 - [ ] AT Protocol OAuth via ASWebAuthenticationSession → auth broker
 - [ ] SASL `web-token` authentication (same as iOS)
 - [ ] Auto-reconnect with exponential backoff
@@ -115,6 +119,9 @@ Ship a working client that's better than using the web app.
 - [ ] Rich profile panel (avatar, handle, bio, Bluesky stats, DID)
 - [ ] Presence from shared channels
 - [ ] Offline messaging indicator ("messages will be saved")
+- [ ] **P2P DMs via iroh** — auto-start P2P endpoint, connect to peer, direct messaging
+- [ ] P2P indicator badge ("Direct 🔗" vs "Server-relayed")
+- [ ] Transparent fallback: P2P → server-relayed when peer unreachable
 
 **History**
 - [ ] CHATHISTORY LATEST on join
@@ -154,6 +161,7 @@ The features that make it feel like a premium Mac app.
 - [ ] Paste image from clipboard
 - [ ] Image lightbox (click to expand, arrow keys to navigate)
 - [ ] File attachment display with download
+- [ ] **P2P file transfer** — direct file send over iroh in P2P DMs (no server, no size limit)
 
 **Search**
 - [ ] `⌘F` full-text search (local messages + server FTS when available)
@@ -191,6 +199,7 @@ The features that make it feel like a premium Mac app.
 
 **Advanced**
 - [ ] IRC raw console (`/raw` or hidden panel)
+- [ ] **iroh transport inspector** — endpoint ID, connected peers, direct/relayed, NAT type, bandwidth
 - [ ] Connection inspector (latency, caps, server info)
 - [ ] Message signing verification display (🔒 badge from `+freeq.at/sig`)
 - [ ] OPER commands (for server admins)
@@ -232,6 +241,112 @@ The features that make it feel like a premium Mac app.
 ```
 
 The `EventHandler` callback dispatches `FreeqEvent` to `AppState` on the main actor. Same pattern as iOS but with macOS lifecycle.
+
+---
+
+## iroh Integration — Showcase Features
+
+The macOS app should be the **best demonstration of iroh's capabilities** across all freeq clients.
+
+### Server Connection via iroh
+
+The SDK already supports this (`establish_iroh_connection`, `discover_iroh_id`):
+
+1. Connect to server via TCP/TLS (fast, cheap)
+2. Probe `CAP LS` for `iroh=<endpoint-id>`
+3. If found, disconnect TCP and reconnect via iroh QUIC
+4. All IRC traffic now runs over iroh: encrypted, NAT-traversing, hole-punching
+
+The macOS app should do this **automatically** and show it in the UI:
+- Connection status: "Connected via iroh 🟢" vs "Connected via TLS 🟡"
+- Latency indicator (iroh QUIC RTT)
+- Transport info in settings/inspector panel
+
+### Peer-to-Peer Direct Messages
+
+The SDK has a complete P2P subsystem (`freeq-sdk/src/p2p.rs`):
+- Each client creates a local iroh endpoint
+- Peers connect directly via encrypted QUIC (no server involved)
+- Messages use a simple JSON wire format over bidirectional streams
+- NAT traversal handled by iroh's relay/discovery system
+
+The macOS app should make this a **first-class feature**:
+
+- **Automatic P2P**: When opening a DM with someone who's online, try P2P first
+- **P2P indicator**: Show "Direct 🔗" badge when a DM is running P2P
+- **Endpoint discovery**: Exchange iroh endpoint IDs via the IRC server (CTCP or user metadata)
+- **Fallback**: If P2P fails, fall back to server-relayed DMs transparently
+- **P2P status panel**: Show connected peers, their endpoint IDs, connection quality
+
+### iroh Transport Inspector
+
+A developer/power-user panel (Phase 2-3) showing:
+- Local iroh endpoint ID (shareable)
+- Connected peers + connection type (direct/relayed)
+- Relay server usage
+- NAT type detection
+- Bandwidth stats
+- Connection path visualization
+
+### P2P File Transfer
+
+Leverage iroh for direct file transfer between peers:
+- Drag-and-drop a file in a P2P DM → send directly over iroh stream
+- No server upload needed, no file size limits
+- Progress bar with speed indicator
+- Resume support (iroh QUIC handles this naturally)
+
+### Future: P2P Group Channels
+
+iroh's topic-based pub/sub could enable serverless group chats:
+- Create a channel backed by an iroh topic
+- Peers subscribe directly — no server needed
+- CRDT-based message ordering (already in `freeq-server/src/crdt.rs`)
+- Useful for local/ephemeral groups (conference hallway track, LAN parties)
+
+### FFI Surface for iroh
+
+The current `freeq-sdk-ffi` UDL doesn't expose P2P. We need to add:
+
+```udl
+interface FreeqP2p {
+    [Throws=FreeqError]
+    constructor();
+
+    [Throws=FreeqError]
+    string start();  // Returns endpoint ID
+
+    [Throws=FreeqError]
+    void connect_peer(string endpoint_id);
+
+    [Throws=FreeqError]
+    void send_message(string peer_id, string text);
+
+    [Throws=FreeqError]
+    void send_file(string peer_id, string file_path);
+
+    void shutdown();
+
+    string? endpoint_id();
+
+    sequence<string> connected_peers();
+};
+
+[Enum]
+interface P2pEvent {
+    EndpointReady(string endpoint_id);
+    PeerConnected(string peer_id);
+    PeerDisconnected(string peer_id);
+    DirectMessage(string peer_id, string text);
+    FileProgress(string peer_id, string filename, u64 bytes_sent, u64 total);
+    FileComplete(string peer_id, string filename, string local_path);
+    Error(string message);
+};
+
+callback interface P2pEventHandler {
+    void on_p2p_event(P2pEvent event);
+};
+```
 
 ---
 

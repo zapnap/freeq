@@ -149,6 +149,39 @@ interface FreeqE2ee {
     void import_session(string remote_did, string json);
 };
 
+// ── P2P via iroh ──
+
+[Enum]
+interface P2pEvent {
+    EndpointReady(string endpoint_id);
+    PeerConnected(string peer_id);
+    PeerDisconnected(string peer_id);
+    DirectMessage(string peer_id, string text);
+    Error(string message);
+};
+
+callback interface P2pEventHandler {
+    void on_p2p_event(P2pEvent event);
+};
+
+interface FreeqP2p {
+    [Throws=FreeqError]
+    constructor(P2pEventHandler handler);
+
+    [Throws=FreeqError]
+    string endpoint_id();
+
+    [Throws=FreeqError]
+    void connect_peer(string endpoint_id);
+
+    [Throws=FreeqError]
+    void send_message(string peer_id, string text);
+
+    sequence<string> connected_peers();
+
+    void shutdown();
+};
+
 [Error]
 enum FreeqError {
     "ConnectionFailed",
