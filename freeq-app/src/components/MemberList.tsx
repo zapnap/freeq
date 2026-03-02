@@ -197,7 +197,7 @@ function DMProfilePanel({ nick, channel }: { nick: string; channel: { members: M
               <span className="text-success">Online</span>
             )
           ) : (
-            <span className="text-fg-dim">Offline</span>
+            <span className="text-fg-dim">Offline{did ? ' — messages will be saved' : ''}</span>
           )}
         </div>
 

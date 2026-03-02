@@ -851,9 +851,11 @@ async function handleLine(rawLine: string) {
     // ── Error numerics ──
     case '401': {
       const failNick = msg.params[1];
-      // Show in the DM buffer if it exists, otherwise server buffer
+      // DMs are persisted server-side for authenticated users, so the message
+      // is stored even when the recipient is offline.  Only show in the DM
+      // buffer (not the server tab) to avoid alarm.
       if (failNick && store.channels.has(failNick.toLowerCase())) {
-        store.addSystemMessage(failNick, `${failNick} is not online — message was not delivered`);
+        store.addSystemMessage(failNick, `${failNick} is offline — message saved, they'll see it next time they connect`);
       } else {
         store.addSystemMessage('server', `No such nick: ${failNick}`);
       }
