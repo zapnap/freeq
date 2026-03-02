@@ -58,7 +58,7 @@ enum BrokerAuth {
     @MainActor
     static func startOAuth(brokerBase: String) async throws -> (brokerToken: String, session: BrokerSession) {
         let callbackScheme = "freeq"
-        let loginURL = URL(string: "\(brokerBase)/login?callback=\(callbackScheme)://auth")!
+        let loginURL = URL(string: "\(brokerBase)/auth/login?callback=\(callbackScheme)://auth")!
 
         return try await withCheckedThrowingContinuation { continuation in
             let session = ASWebAuthenticationSession(
