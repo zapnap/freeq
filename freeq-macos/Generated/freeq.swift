@@ -1304,11 +1304,12 @@ public struct IrcMessage {
     public var editOf: String?
     public var batchId: String?
     public var isAction: Bool
+    public var isSigned: Bool
     public var timestampMs: Int64
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(fromNick: String, target: String, text: String, msgid: String?, replyTo: String?, replacesMsgid: String?, editOf: String?, batchId: String?, isAction: Bool, timestampMs: Int64) {
+    public init(fromNick: String, target: String, text: String, msgid: String?, replyTo: String?, replacesMsgid: String?, editOf: String?, batchId: String?, isAction: Bool, isSigned: Bool, timestampMs: Int64) {
         self.fromNick = fromNick
         self.target = target
         self.text = text
@@ -1318,6 +1319,7 @@ public struct IrcMessage {
         self.editOf = editOf
         self.batchId = batchId
         self.isAction = isAction
+        self.isSigned = isSigned
         self.timestampMs = timestampMs
     }
 }
@@ -1356,6 +1358,9 @@ extension IrcMessage: Equatable, Hashable {
         if lhs.isAction != rhs.isAction {
             return false
         }
+        if lhs.isSigned != rhs.isSigned {
+            return false
+        }
         if lhs.timestampMs != rhs.timestampMs {
             return false
         }
@@ -1372,6 +1377,7 @@ extension IrcMessage: Equatable, Hashable {
         hasher.combine(editOf)
         hasher.combine(batchId)
         hasher.combine(isAction)
+        hasher.combine(isSigned)
         hasher.combine(timestampMs)
     }
 }
@@ -1394,6 +1400,7 @@ public struct FfiConverterTypeIrcMessage: FfiConverterRustBuffer {
                 editOf: FfiConverterOptionString.read(from: &buf), 
                 batchId: FfiConverterOptionString.read(from: &buf), 
                 isAction: FfiConverterBool.read(from: &buf), 
+                isSigned: FfiConverterBool.read(from: &buf), 
                 timestampMs: FfiConverterInt64.read(from: &buf)
         )
     }
@@ -1408,6 +1415,7 @@ public struct FfiConverterTypeIrcMessage: FfiConverterRustBuffer {
         FfiConverterOptionString.write(value.editOf, into: &buf)
         FfiConverterOptionString.write(value.batchId, into: &buf)
         FfiConverterBool.write(value.isAction, into: &buf)
+        FfiConverterBool.write(value.isSigned, into: &buf)
         FfiConverterInt64.write(value.timestampMs, into: &buf)
     }
 }

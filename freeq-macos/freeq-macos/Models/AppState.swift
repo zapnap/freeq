@@ -37,6 +37,21 @@ class AppState {
     var mentionCounts: [String: Int] = [:]
     var autoJoinChannels: [String] = ["#freeq"]
 
+    // MARK: - Favorites, Muted, Bookmarks
+    var favorites: Set<String> = []  // lowercase channel names
+    var mutedChannels: Set<String> = []  // lowercase channel names
+    var bookmarks: [Bookmark] = []
+    var lastReadMsgId: [String: String] = [:]  // lowercase channel → last read msgid
+
+    struct Bookmark: Identifiable, Codable {
+        var id: String { msgId }
+        let channel: String
+        let msgId: String
+        let from: String
+        let text: String
+        let timestamp: Date
+    }
+
     // MARK: - P2P
     var p2pEndpointId: String?
     var p2pConnectedPeers: Set<String> = []
@@ -121,6 +136,12 @@ class AppState {
         }
         brokerToken = KeychainHelper.load(key: "brokerToken")
         authenticatedDID = KeychainHelper.load(key: "did")
+        favorites = Set(UserDefaults.standard.stringArray(forKey: "freeq.favorites") ?? [])
+        mutedChannels = Set(UserDefaults.standard.stringArray(forKey: "freeq.muted") ?? [])
+        if let data = UserDefaults.standard.data(forKey: "freeq.bookmarks"),
+           let saved = try? JSONDecoder().decode([Bookmark].self, from: data) {
+            bookmarks = saved
+        }
     }
 
     private func requestNotificationPermission() {
@@ -383,6 +404,12 @@ class AppState {
     func clearUnread(_ channel: String) {
         unreadCounts[channel.lowercased()] = 0
         mentionCounts[channel.lowercased()] = 0
+        // Track read position
+        let ch = channels.first(where: { $0.name.lowercased() == channel.lowercased() })
+            ?? dmBuffers.first(where: { $0.name.lowercased() == channel.lowercased() })
+        if let lastMsg = ch?.messages.last {
+            lastReadMsgId[channel.lowercased()] = lastMsg.id
+        }
     }
 
     func isNickOnline(_ nick: String) -> Bool {
@@ -400,6 +427,35 @@ class AppState {
             }
         }
         return nil
+    }
+
+    func toggleFavorite(_ channel: String) {
+        let key = channel.lowercased()
+        if favorites.contains(key) { favorites.remove(key) } else { favorites.insert(key) }
+        UserDefaults.standard.set(Array(favorites), forKey: "freeq.favorites")
+    }
+
+    func toggleMuted(_ channel: String) {
+        let key = channel.lowercased()
+        if mutedChannels.contains(key) { mutedChannels.remove(key) } else { mutedChannels.insert(key) }
+        UserDefaults.standard.set(Array(mutedChannels), forKey: "freeq.muted")
+    }
+
+    func addBookmark(channel: String, msg: ChatMessage) {
+        guard !bookmarks.contains(where: { $0.msgId == msg.id }) else { return }
+        bookmarks.append(Bookmark(channel: channel, msgId: msg.id, from: msg.from, text: msg.text, timestamp: msg.timestamp))
+        saveBookmarks()
+    }
+
+    func removeBookmark(msgId: String) {
+        bookmarks.removeAll { $0.msgId == msgId }
+        saveBookmarks()
+    }
+
+    private func saveBookmarks() {
+        if let data = try? JSONEncoder().encode(bookmarks) {
+            UserDefaults.standard.set(data, forKey: "freeq.bookmarks")
+        }
     }
 
     /// Get the last message from self in the active channel (for edit-last).
@@ -557,7 +613,8 @@ extension AppState {
                 isAction: msg.isAction,
                 timestamp: Date(timeIntervalSince1970: Double(msg.timestampMs) / 1000.0),
                 replyTo: msg.replyTo,
-                isEdited: msg.editOf != nil
+                isEdited: msg.editOf != nil,
+                isSigned: msg.isSigned
             )
 
             // Handle edits
@@ -604,7 +661,9 @@ extension AppState {
                 // Mention notification
                 if !isSelf && msg.text.localizedCaseInsensitiveContains(nick) {
                     mentionCounts[target.lowercased(), default: 0] += 1
-                    sendNotification(title: "\(msg.fromNick) in \(target)", body: msg.text)
+                    if !mutedChannels.contains(target.lowercased()) {
+                        sendNotification(title: "\(msg.fromNick) in \(target)", body: msg.text)
+                    }
                 }
             } else {
                 let bufName = isSelf ? target : msg.fromNick
@@ -741,7 +800,13 @@ extension AppState {
         case .batchEnd(let id):
             guard let batch = batches.removeValue(forKey: id) else { return }
             let target = batch.target
-            let ch = target.hasPrefix("#") ? getOrCreateChannel(target) : getOrCreateDM(target)
+            // Case-insensitive: find existing channel/DM or create
+            let ch: ChannelState
+            if target.hasPrefix("#") {
+                ch = channels.first(where: { $0.name.lowercased() == target.lowercased() }) ?? getOrCreateChannel(target)
+            } else {
+                ch = dmBuffers.first(where: { $0.name.lowercased() == target.lowercased() }) ?? getOrCreateDM(target)
+            }
             for msg in batch.messages.sorted(by: { $0.timestamp < $1.timestamp }) {
                 ch.appendIfNew(msg)
             }

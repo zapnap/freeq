@@ -188,11 +188,20 @@ struct MessageRow: View {
                                 Image(systemName: "checkmark.seal.fill")
                                     .font(.caption2)
                                     .foregroundStyle(.blue)
+                                    .help("AT Protocol verified identity")
+                            }
+
+                            if message.isSigned {
+                                Image(systemName: "lock.fill")
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(.green)
+                                    .help("Cryptographically signed message")
                             }
 
                             Text(formatTime(message.timestamp))
                                 .font(.caption)
                                 .foregroundStyle(.tertiary)
+                                .help(fullTimestamp(message.timestamp))
 
                             if message.isEdited {
                                 Text("(edited)")
@@ -256,13 +265,19 @@ struct MessageRow: View {
                     }
                 }
 
+                // Bluesky post embed
+                if let bsky = extractBskyPost(from: message.text) {
+                    BlueskyEmbed(handle: bsky.handle, rkey: bsky.rkey)
+                }
+
                 // YouTube embed
                 if let ytId {
                     YouTubeThumbnail(videoId: ytId)
                 }
 
-                // Link preview (only if no images/YouTube)
-                if imageURLs.isEmpty && ytId == nil, let url = extractFirstURL(from: message.text) {
+                // Link preview (only if no images/YouTube/Bluesky)
+                if imageURLs.isEmpty && ytId == nil && extractBskyPost(from: message.text) == nil,
+                   let url = extractFirstURL(from: message.text) {
                     LinkPreviewView(url: url)
                 }
             }
@@ -331,6 +346,20 @@ struct MessageRow: View {
             Button("Copy Message ID") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(msgId, forType: .string)
+            }
+        }
+
+        if !isSystem {
+            if appState.bookmarks.contains(where: { $0.msgId == message.id }) {
+                Button("Remove Bookmark") {
+                    appState.removeBookmark(msgId: message.id)
+                }
+            } else {
+                Button("Bookmark") {
+                    if let target = appState.activeChannel {
+                        appState.addBookmark(channel: target, msg: message)
+                    }
+                }
             }
         }
 
@@ -476,6 +505,14 @@ struct FlowLayout: Layout {
             rowHeight = max(rowHeight, size.height)
         }
     }
+}
+
+// MARK: - Full timestamp for hover
+
+private func fullTimestamp(_ date: Date) -> String {
+    let formatter = DateFormatter()
+    formatter.dateFormat = "EEEE, MMM d, yyyy 'at' HH:mm:ss"
+    return formatter.string(from: date)
 }
 
 // MARK: - URL extraction

@@ -50,6 +50,7 @@ struct ChatView: View {
 
 struct TopBarView: View {
     @Environment(AppState.self) private var appState
+    @State private var showSettings = false
 
     private var channel: ChannelState? { appState.activeChannelState }
     private var isChannel: Bool { channel?.isChannel ?? false }
@@ -108,11 +109,23 @@ struct TopBarView: View {
             .buttonStyle(.plain)
             .help("Search (⌘F)")
 
-            // Member count (channels only)
+            // Member count + settings (channels only)
             if isChannel {
-                Label("\(channel?.members.count ?? 0)", systemImage: "person.2")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Button {
+                    showSettings = true
+                } label: {
+                    Label("\(channel?.members.count ?? 0)", systemImage: "person.2")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Channel settings")
+                .sheet(isPresented: $showSettings) {
+                    if let ch = channel {
+                        ChannelSettingsSheet(channel: ch)
+                            .environment(appState)
+                    }
+                }
             }
 
             // Detail panel toggle

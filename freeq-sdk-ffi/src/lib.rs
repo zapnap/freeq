@@ -25,6 +25,7 @@ pub struct IrcMessage {
     pub edit_of: Option<String>,
     pub batch_id: Option<String>,
     pub is_action: bool,
+    pub is_signed: bool,
     pub timestamp_ms: i64,
 }
 
@@ -391,6 +392,7 @@ fn convert_event(event: &freeq_sdk::event::Event) -> FreeqEvent {
                     edit_of,
                     batch_id,
                     is_action,
+                    is_signed: tags.contains_key("+freeq.at/sig"),
                     timestamp_ms: ts,
                 },
             }

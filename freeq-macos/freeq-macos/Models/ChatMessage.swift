@@ -10,6 +10,7 @@ struct ChatMessage: Identifiable, Equatable {
     let replyTo: String?
     var isEdited: Bool = false
     var isDeleted: Bool = false
+    var isSigned: Bool = false
     var reactions: [String: Set<String>] = [:]  // emoji -> set of nicks
 
     static func == (lhs: ChatMessage, rhs: ChatMessage) -> Bool {

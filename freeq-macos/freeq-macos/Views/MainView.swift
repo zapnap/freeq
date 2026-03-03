@@ -38,6 +38,11 @@ struct MainView: View {
                     if appState.connectionState == .disconnected && appState.hasSavedSession {
                         ReconnectBanner()
                     }
+
+                    // Guest upgrade banner
+                    if appState.connectionState == .registered && appState.authenticatedDID == nil {
+                        GuestUpgradeBanner()
+                    }
                 }
             }
         }
@@ -119,6 +124,36 @@ struct MainView: View {
         case .connecting: .orange
         case .disconnected: .red
         }
+    }
+}
+
+// MARK: - Guest Upgrade Banner
+
+struct GuestUpgradeBanner: View {
+    @Environment(AppState.self) private var appState
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "person.badge.key")
+                .font(.caption)
+            Text("You're connected as a guest.")
+                .font(.caption.weight(.medium))
+            Text("Sign in with AT Protocol for DMs, history, and identity.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button("Sign In") {
+                appState.disconnect()
+                appState.brokerToken = nil
+            }
+            .font(.caption)
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(.blue.opacity(0.1))
+        .foregroundStyle(.blue)
     }
 }
 

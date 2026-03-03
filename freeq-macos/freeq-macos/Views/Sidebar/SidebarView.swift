@@ -6,9 +6,20 @@ struct SidebarView: View {
     var body: some View {
         @Bindable var state = appState
         List(selection: $state.activeChannel) {
-            // Channels
+            // Favorites
+            let favChannels = appState.channels.filter { appState.favorites.contains($0.name.lowercased()) }
+            if !favChannels.isEmpty {
+                Section("Favorites") {
+                    ForEach(favChannels) { channel in
+                        ChannelRow(channel: channel)
+                            .tag(channel.name)
+                    }
+                }
+            }
+
+            // Channels (non-favorites)
             Section("Channels") {
-                ForEach(appState.channels) { channel in
+                ForEach(appState.channels.filter { !appState.favorites.contains($0.name.lowercased()) }) { channel in
                     ChannelRow(channel: channel)
                         .tag(channel.name)
                 }
@@ -193,10 +204,18 @@ struct ChannelRow: View {
                 .foregroundStyle(.secondary)
         }
         .contextMenu {
+            Button(appState.favorites.contains(channel.name.lowercased()) ? "Unfavorite" : "Favorite") {
+                appState.toggleFavorite(channel.name)
+            }
+            Button(appState.mutedChannels.contains(channel.name.lowercased()) ? "Unmute" : "Mute") {
+                appState.toggleMuted(channel.name)
+            }
+            Divider()
             Button("Leave Channel") {
                 appState.partChannel(channel.name)
             }
         }
+        .opacity(appState.mutedChannels.contains(channel.name.lowercased()) ? 0.5 : 1)
     }
 }
 

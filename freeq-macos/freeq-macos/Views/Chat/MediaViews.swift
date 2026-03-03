@@ -165,6 +165,95 @@ struct ImageLightbox: View {
     }
 }
 
+// MARK: - Bluesky Post Embed
+
+struct BlueskyEmbed: View {
+    let handle: String
+    let rkey: String
+    @State private var post: BskyPost?
+    @State private var loaded = false
+
+    struct BskyPost {
+        let authorName: String
+        let authorHandle: String
+        let authorAvatar: String?
+        let text: String
+        let createdAt: String
+    }
+
+    var body: some View {
+        Group {
+            if let post {
+                Link(destination: URL(string: "https://bsky.app/profile/\(handle)/post/\(rkey)")!) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 6) {
+                            if let avatar = post.authorAvatar, let url = URL(string: avatar) {
+                                AsyncImage(url: url) { phase in
+                                    if case .success(let img) = phase {
+                                        img.resizable().aspectRatio(contentMode: .fill)
+                                            .frame(width: 20, height: 20).clipShape(Circle())
+                                    }
+                                }
+                            }
+                            Text(post.authorName)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.primary)
+                            Text("@\(post.authorHandle)")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Image(systemName: "cloud.fill")
+                                .font(.caption2)
+                                .foregroundStyle(.blue)
+                        }
+                        Text(post.text)
+                            .font(.caption)
+                            .foregroundStyle(.primary)
+                            .lineLimit(4)
+                    }
+                    .padding(10)
+                    .frame(maxWidth: 380, alignment: .leading)
+                    .background(Color(nsColor: .controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .strokeBorder(Color.blue.opacity(0.2), lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 4)
+            }
+        }
+        .onAppear { fetchPost() }
+    }
+
+    private func fetchPost() {
+        guard !loaded else { return }
+        loaded = true
+        Task {
+            let url = "https://public.api.bsky.app/xrpc/app.bsky.feed.getPostThread?uri=at://\(handle)/app.bsky.feed.post/\(rkey)&depth=0"
+            guard let requestURL = URL(string: url) else { return }
+            do {
+                let (data, _) = try await URLSession.shared.data(from: requestURL)
+                let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+                let thread = json?["thread"] as? [String: Any]
+                let postObj = thread?["post"] as? [String: Any]
+                let author = postObj?["author"] as? [String: Any]
+                let record = postObj?["record"] as? [String: Any]
+                guard let text = record?["text"] as? String else { return }
+                let p = BskyPost(
+                    authorName: author?["displayName"] as? String ?? handle,
+                    authorHandle: author?["handle"] as? String ?? handle,
+                    authorAvatar: author?["avatar"] as? String,
+                    text: text,
+                    createdAt: record?["createdAt"] as? String ?? ""
+                )
+                await MainActor.run { self.post = p }
+            } catch {}
+        }
+    }
+}
+
 // MARK: - YouTube Thumbnail
 
 struct YouTubeThumbnail: View {

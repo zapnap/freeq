@@ -4,6 +4,7 @@ import SwiftUI
 struct FreeqApp: App {
     @State private var appState = AppState()
     @State private var showQuickSwitcher = false
+    @State private var showBookmarks = false
 
     var body: some Scene {
         WindowGroup {
@@ -12,6 +13,10 @@ struct FreeqApp: App {
                 .frame(minWidth: 700, minHeight: 400)
                 .sheet(isPresented: $showQuickSwitcher) {
                     QuickSwitcher()
+                        .environment(appState)
+                }
+                .sheet(isPresented: $showBookmarks) {
+                    BookmarksPanel()
                         .environment(appState)
                 }
                 .onAppear {
@@ -44,6 +49,11 @@ struct FreeqApp: App {
                     appState.showSearch.toggle()
                 }
                 .keyboardShortcut("f", modifiers: .command)
+
+                Button("Bookmarks") {
+                    showBookmarks = true
+                }
+                .keyboardShortcut("b", modifiers: [.command, .shift])
 
                 Button("Join Channel…") {
                     appState.showJoinSheet = true
