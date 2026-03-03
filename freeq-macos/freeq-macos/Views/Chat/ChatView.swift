@@ -91,6 +91,21 @@ struct TopBarView: View {
                     Text(isOnline ? (awayMsg != nil ? "away" : "online") : "offline")
                         .font(.caption)
                         .foregroundStyle(isOnline ? (awayMsg != nil ? .orange : .green) : .secondary)
+
+                    // E2EE badge for DMs
+                    if let did = ProfileCache.shared.did(for: channel?.name ?? ""),
+                       E2eeManager.shared.hasSession(remoteDid: did) {
+                        HStack(spacing: 3) {
+                            Image(systemName: "lock.shield.fill")
+                                .font(.caption2)
+                            Text("Encrypted")
+                                .font(.caption2)
+                        }
+                        .foregroundStyle(.green)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(.green.opacity(0.1)))
+                    }
                 }
             }
 

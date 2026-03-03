@@ -1,6 +1,6 @@
 # macOS App — Gap Analysis vs Web & iOS Clients
 
-## Status: 55/60 items complete ✅
+## Status: 58/60 items complete ✅
 
 ## Critical Bugs (P0)
 
@@ -25,7 +25,7 @@
 11. ✅ **Bluesky post embeds** — Rich cards with author avatar, text, click to open
 12. ✅ **Image lightbox** — Click image → popover with full size, Copy/Open/Save
 13. ✅ **Signed message badge** — 🔒 green lock on `+freeq.at/sig` messages (FFI `is_signed`)
-14. 🔲 **E2EE badge** — `FreeqE2ee` available in FFI but not yet integrated for per-DM encryption
+14. ✅ **E2EE badge** — Lock+shield badge on encrypted DMs, E2eeManager wraps FreeqE2ee FFI
 15. ✅ **Full timestamps on hover** — `.help()` tooltip with "Monday, Mar 2, 2026 at 13:45:23"
 16. ✅ **Message grouping** — Consecutive same-sender messages collapsed, compact mode available
 
@@ -53,7 +53,7 @@
 ### Navigation
 32. ✅ **Search (⌘F)** — Message search in current channel, click result → scroll
 33. ✅ **Scroll-to-message** — From search, reply click, bookmark, pin click
-34. 🔲 **Thread view** — Reply indicators clickable but no threaded view panel
+34. ✅ **Thread view** — Side panel with root message, replies, quick reply bar
 35. ✅ **Bookmarks** — Right-click → Bookmark, ⇧⌘B panel, click to jump, persisted
 
 ### Connection
@@ -80,7 +80,7 @@
 45. 🔲 **Account-notify** — SDK doesn't handle ACCOUNT command yet; WHOIS workaround sufficient
 46. 🔲 **Extended-join** — Would require SDK Event::Joined change (breaking); WHOIS workaround sufficient
 47. ✅ **Message signing** — SDK auto-generates ed25519 keypair + MSGSIG after SASL success
-48. 🔲 **E2EE** — `FreeqE2ee` available in FFI; needs session establishment UI
+48. ✅ **E2EE** — E2eeManager wraps FreeqE2ee, Settings UI for init/enable, session tracking
 49. ✅ **MSGSIG registration** — SDK handles automatically after auth
 50. ✅ **Caps negotiation** — SDK requests echo-message, message-tags, etc.
 
@@ -102,12 +102,9 @@
 
 ---
 
-## Remaining (5 items)
+## Remaining (2 items — SDK limitations, not app issues)
 
 | # | Item | Status | Notes |
 |---|------|--------|-------|
-| 14 | E2EE badge/integration | 🔲 | FreeqE2ee in FFI, needs session UI |
-| 34 | Thread view | 🔲 | Reply indicators work, no dedicated panel |
-| 45 | Account-notify | 🔲 | WHOIS workaround sufficient |
-| 46 | Extended-join | 🔲 | Breaking SDK change, WHOIS workaround |
-| 48 | E2EE sessions | 🔲 | Needs key exchange UI + per-DM encryption |
+| 45 | Account-notify | 🔲 | SDK doesn't handle ACCOUNT command; WHOIS workaround sufficient |
+| 46 | Extended-join | 🔲 | Would require breaking SDK Event::Joined change; WHOIS workaround |

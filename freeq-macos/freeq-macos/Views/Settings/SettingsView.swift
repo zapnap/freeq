@@ -138,6 +138,42 @@ struct P2pSettings: View {
 
     var body: some View {
         Form {
+            Section("End-to-End Encryption") {
+                LabeledContent("Status") {
+                    if E2eeManager.shared.isInitialized {
+                        Label("Initialized", systemImage: "lock.shield.fill")
+                            .foregroundStyle(.green)
+                    } else {
+                        Label("Not initialized", systemImage: "lock.open")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if let pubKey = E2eeManager.shared.publicKey {
+                    LabeledContent("Identity Key") {
+                        Text(String(pubKey.prefix(20)) + "…")
+                            .font(.caption.monospaced())
+                            .textSelection(.enabled)
+                    }
+                }
+                Text("E2EE encrypts DMs end-to-end. Both users must have E2EE enabled.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if !E2eeManager.shared.isInitialized {
+                    Button("Enable E2EE") {
+                        do {
+                            try E2eeManager.shared.initialize()
+                        } catch {
+                            Log.auth.error("E2EE init failed: \(error.localizedDescription)")
+                        }
+                    }
+                }
+
+                Text("Active sessions: \(E2eeManager.shared.sessions.count)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("iroh P2P") {
                 LabeledContent("Status") {
                     if appState.isP2pActive {

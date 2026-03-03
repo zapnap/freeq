@@ -71,6 +71,7 @@ class AppState {
     var showSearch: Bool = false
     var motd: String = ""
     var showMotd: Bool = false
+    var threadRootMessage: ChatMessage?
 
     // MARK: - Auth
     var authBrokerBase: String = "https://auth.freeq.at"

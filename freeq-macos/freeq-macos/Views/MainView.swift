@@ -19,6 +19,11 @@ struct MainView: View {
                         if appState.activeChannel != nil {
                             HStack(spacing: 0) {
                                 ChatView()
+                                if let threadRoot = appState.threadRootMessage,
+                                   let channel = appState.activeChannel {
+                                    Divider()
+                                    ThreadView(rootMessage: threadRoot, channel: channel)
+                                }
                                 if appState.showDetailPanel {
                                     DetailPanel()
                                         .frame(width: 260)

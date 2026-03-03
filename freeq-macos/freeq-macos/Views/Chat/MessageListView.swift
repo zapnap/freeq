@@ -214,10 +214,14 @@ struct MessageRow: View {
                 .padding(.top, 6)
             }
 
-            // Reply indicator (clickable → scroll to original)
+            // Reply indicator (click → scroll + option to open thread)
             if let replyTo = message.replyTo {
                 Button {
                     appState.scrollToMessageId = replyTo
+                    // Also open the thread if the original message exists
+                    if let original = appState.activeChannelState?.messages.first(where: { $0.id == replyTo }) {
+                        appState.threadRootMessage = original
+                    }
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "arrowshape.turn.up.left.fill")
@@ -340,6 +344,12 @@ struct MessageRow: View {
         Button("Copy Text") {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(message.text, forType: .string)
+        }
+
+        if !isSystem {
+            Button("Open Thread") {
+                appState.threadRootMessage = message
+            }
         }
 
         if let msgId = Optional(message.id) {
