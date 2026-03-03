@@ -190,7 +190,7 @@ struct MessageRow: View {
                 .padding(.leading, 2)
             }
 
-            // Message text
+            // Message text + media
             if message.isAction {
                 Text("• \(message.from) \(message.text)")
                     .italic()
@@ -202,13 +202,31 @@ struct MessageRow: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             } else {
-                Text(parseMessageText(message.text))
-                    .textSelection(.enabled)
-            }
+                let imageURLs = extractImageURLs(from: message.text)
+                let ytId = extractYouTubeID(from: message.text)
+                let cleanText = imageURLs.isEmpty ? message.text : textWithoutImages(message.text, imageURLs: imageURLs)
 
-            // Link previews
-            if !isSystem, let url = extractURL(from: message.text) {
-                LinkPreviewView(url: url)
+                if !cleanText.isEmpty {
+                    Text(parseMessageText(cleanText))
+                        .textSelection(.enabled)
+                }
+
+                // Inline images
+                if !imageURLs.isEmpty {
+                    ForEach(imageURLs, id: \.self) { url in
+                        InlineImageView(url: url)
+                    }
+                }
+
+                // YouTube embed
+                if let ytId {
+                    YouTubeThumbnail(videoId: ytId)
+                }
+
+                // Link preview (only if no images/YouTube)
+                if imageURLs.isEmpty && ytId == nil, let url = extractFirstURL(from: message.text) {
+                    LinkPreviewView(url: url)
+                }
             }
 
             // Reactions
@@ -419,7 +437,7 @@ struct FlowLayout: Layout {
 
 // MARK: - URL extraction
 
-private func extractURL(from text: String) -> String? {
+private func extractFirstURL(from text: String) -> String? {
     let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
     if let match = detector?.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
        let range = Range(match.range, in: text) {

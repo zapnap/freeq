@@ -114,9 +114,20 @@ struct ComposeBar: View {
         }
     }
 
+    // Input history
+    @State private var history: [String] = []
+    @State private var historyIndex: Int = -1
+
     private func send() {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let target = appState.activeChannel else { return }
+
+        // Save to history
+        if !trimmed.hasPrefix("/") || trimmed.hasPrefix("/me ") {
+            history.append(trimmed)
+            if history.count > 100 { history.removeFirst() }
+        }
+        historyIndex = -1
 
         // Editing mode
         if let editId = appState.editingMessageId {
