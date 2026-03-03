@@ -3,17 +3,27 @@ import SwiftUI
 @main
 struct FreeqApp: App {
     @State private var appState = AppState()
+    @State private var showQuickSwitcher = false
 
     var body: some Scene {
         WindowGroup {
             MainView()
                 .environment(appState)
                 .frame(minWidth: 700, minHeight: 400)
+                .sheet(isPresented: $showQuickSwitcher) {
+                    QuickSwitcher()
+                        .environment(appState)
+                }
                 .onAppear {
-                    // Auto-reconnect if we have a saved session
                     if appState.hasSavedSession && appState.connectionState == .disconnected {
                         appState.reconnectIfSaved()
                     }
+                }
+                .onChange(of: appState.activeChannel) { _, newValue in
+                    updateWindowTitle(newValue)
+                }
+                .onChange(of: appState.totalUnread) { _, newValue in
+                    NSApplication.shared.dockTile.badgeLabel = newValue > 0 ? "\(newValue)" : nil
                 }
         }
         .commands {
@@ -25,6 +35,11 @@ struct FreeqApp: App {
             }
 
             CommandGroup(replacing: .newItem) {
+                Button("Quick Switcher") {
+                    showQuickSwitcher = true
+                }
+                .keyboardShortcut("k", modifiers: .command)
+
                 Button("Join Channel…") {
                     appState.showJoinSheet = true
                 }
@@ -32,7 +47,6 @@ struct FreeqApp: App {
 
                 Divider()
 
-                // Quick channel switching ⌘1–9
                 ForEach(1...9, id: \.self) { i in
                     Button("Switch to Buffer \(i)") {
                         appState.switchToChannelByIndex(i - 1)
@@ -57,6 +71,16 @@ struct FreeqApp: App {
         Settings {
             SettingsView()
                 .environment(appState)
+        }
+    }
+
+    private func updateWindowTitle(_ channel: String?) {
+        DispatchQueue.main.async {
+            if let channel {
+                NSApplication.shared.mainWindow?.title = "\(channel) — freeq"
+            } else {
+                NSApplication.shared.mainWindow?.title = "freeq"
+            }
         }
     }
 }

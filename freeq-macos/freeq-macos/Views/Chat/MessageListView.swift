@@ -11,10 +11,28 @@ struct MessageListView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
+                    // Load more history button
+                    if !messages.isEmpty {
+                        Button {
+                            loadOlderHistory()
+                        } label: {
+                            HStack {
+                                Spacer()
+                                Image(systemName: "arrow.up.circle")
+                                Text("Load older messages")
+                                Spacer()
+                            }
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.vertical, 8)
+                        .id("load-more")
+                    }
+
                     ForEach(messages) { msg in
                         if !msg.isDeleted {
                             if msg.from.isEmpty {
-                                // System message (join/part/quit/kick)
                                 SystemMessageRow(message: msg)
                                     .id(msg.id)
                             } else {
@@ -26,8 +44,9 @@ struct MessageListView: View {
                 }
                 .padding(.vertical, 8)
             }
-            .onChange(of: messages.count) { _, _ in
-                if let last = messages.last {
+            .onChange(of: messages.count) { oldCount, newCount in
+                // Only auto-scroll if messages were added at the end (not prepended history)
+                if newCount > oldCount, let last = messages.last {
                     withAnimation(.easeOut(duration: 0.15)) {
                         proxy.scrollTo(last.id, anchor: .bottom)
                     }
@@ -40,6 +59,12 @@ struct MessageListView: View {
             }
         }
         .background(Color(nsColor: .textBackgroundColor))
+    }
+
+    private func loadOlderHistory() {
+        guard let target = appState.activeChannel,
+              let oldest = messages.first else { return }
+        appState.requestHistory(channel: target, before: oldest.timestamp)
     }
 }
 

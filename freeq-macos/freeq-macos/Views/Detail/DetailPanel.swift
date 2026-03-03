@@ -8,7 +8,6 @@ struct DetailPanel: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Divider()
             if let ch = channel {
                 if ch.isChannel {
                     MemberListView(channel: ch)
@@ -17,32 +16,57 @@ struct DetailPanel: View {
                 }
             }
         }
-        .background(.bar)
+        .background(Color(nsColor: .controlBackgroundColor))
     }
 }
 
 struct MemberListView: View {
+    @Environment(AppState.self) private var appState
     let channel: ChannelState
+    @State private var searchText: String = ""
 
-    private var ops: [MemberInfo] { channel.members.filter(\.isOp).sorted { $0.nick < $1.nick } }
-    private var voiced: [MemberInfo] { channel.members.filter { !$0.isOp && $0.isVoiced }.sorted { $0.nick < $1.nick } }
-    private var regular: [MemberInfo] { channel.members.filter { !$0.isOp && !$0.isVoiced }.sorted { $0.nick < $1.nick } }
+    private var ops: [MemberInfo] { filtered.filter(\.isOp).sorted { $0.nick < $1.nick } }
+    private var voiced: [MemberInfo] { filtered.filter { !$0.isOp && $0.isVoiced }.sorted { $0.nick < $1.nick } }
+    private var regular: [MemberInfo] { filtered.filter { !$0.isOp && !$0.isVoiced }.sorted { $0.nick < $1.nick } }
+
+    private var filtered: [MemberInfo] {
+        if searchText.isEmpty { return channel.members }
+        let q = searchText.lowercased()
+        return channel.members.filter { $0.nick.lowercased().contains(q) }
+    }
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                if !ops.isEmpty {
-                    memberSection("Operators — \(ops.count)", members: ops)
-                }
-                if !voiced.isEmpty {
-                    memberSection("Voiced — \(voiced.count)", members: voiced)
-                }
-                memberSection(
-                    "\(ops.isEmpty && voiced.isEmpty ? "Online" : "Members") — \(regular.count)",
-                    members: regular
-                )
+        VStack(spacing: 0) {
+            // Search
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                TextField("Search members", text: $searchText)
+                    .textFieldStyle(.plain)
+                    .font(.caption)
             }
-            .padding(.vertical, 8)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Color(nsColor: .textBackgroundColor).opacity(0.5))
+
+            Divider()
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    if !ops.isEmpty {
+                        memberSection("Operators — \(ops.count)", members: ops)
+                    }
+                    if !voiced.isEmpty {
+                        memberSection("Voiced — \(voiced.count)", members: voiced)
+                    }
+                    memberSection(
+                        "\(ops.isEmpty && voiced.isEmpty ? "Online" : "Members") — \(regular.count)",
+                        members: regular
+                    )
+                }
+                .padding(.vertical, 8)
+            }
         }
     }
 
@@ -57,13 +81,15 @@ struct MemberListView: View {
             .padding(.bottom, 4)
 
         ForEach(members) { member in
-            MemberRow(member: member)
+            MemberRow(member: member, channelName: channel.name)
         }
     }
 }
 
 struct MemberRow: View {
+    @Environment(AppState.self) private var appState
     let member: MemberInfo
+    let channelName: String
 
     var body: some View {
         HStack(spacing: 8) {
@@ -96,12 +122,12 @@ struct MemberRow: View {
                         .font(.system(.body, weight: member.isAway ? .regular : .medium))
                         .foregroundStyle(member.isAway ? .secondary : .primary)
                         .lineLimit(1)
-
-                    if member.isVerified {
-                        Image(systemName: "checkmark.seal.fill")
-                            .font(.caption2)
-                            .foregroundStyle(.blue)
-                    }
+                }
+                if member.isAway, let away = member.awayMsg {
+                    Text(away)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
                 }
             }
             Spacer()
@@ -109,6 +135,30 @@ struct MemberRow: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 4)
         .contentShape(Rectangle())
+        .onTapGesture {
+            // Open DM with this user
+            if member.nick.lowercased() != appState.nick.lowercased() {
+                let dm = appState.getOrCreateDM(member.nick)
+                appState.activeChannel = dm.name
+            }
+        }
+        .contextMenu {
+            Button("Send Message") {
+                let dm = appState.getOrCreateDM(member.nick)
+                appState.activeChannel = dm.name
+            }
+            Button("WHOIS") {
+                appState.sendWhois(member.nick)
+            }
+            Divider()
+            Button("Op") { appState.setMode(channelName, "+o", member.nick) }
+            Button("Deop") { appState.setMode(channelName, "-o", member.nick) }
+            Button("Voice") { appState.setMode(channelName, "+v", member.nick) }
+            Divider()
+            Button("Kick", role: .destructive) {
+                appState.kickUser(channelName, member.nick)
+            }
+        }
     }
 }
 
@@ -165,12 +215,12 @@ struct DMProfilePanel: View {
                                 .foregroundStyle(.green)
                         }
                     } else {
-                        Label("Offline", systemImage: "circle")
+                        Label("Offline — messages saved", systemImage: "circle")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
 
-                    // P2P connection info
+                    // P2P
                     if isP2p {
                         Label("Direct P2P via iroh", systemImage: "point.3.connected.trianglepath.dotted")
                             .font(.caption)
@@ -182,6 +232,20 @@ struct DMProfilePanel: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 16)
+
+                Divider()
+
+                // Actions
+                VStack(spacing: 8) {
+                    Button {
+                        appState.sendWhois(nick)
+                    } label: {
+                        Label("WHOIS", systemImage: "person.text.rectangle")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .padding(16)
             }
         }
     }

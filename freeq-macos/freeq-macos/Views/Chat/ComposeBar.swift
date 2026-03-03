@@ -69,9 +69,14 @@ struct ComposeBar: View {
                             .padding(.horizontal, 6)
                             .padding(.vertical, 8)
                     }
-                    ComposeTextView(text: $text, onSubmit: send, onUpArrow: editLastMessage)
-                        .frame(minHeight: 32, maxHeight: 120)
-                        .fixedSize(horizontal: false, vertical: true)
+                    ComposeTextView(
+                        text: $text,
+                        onSubmit: send,
+                        onUpArrow: editLastMessage,
+                        members: appState.activeChannelState?.members.map(\.nick) ?? []
+                    )
+                    .frame(minHeight: 32, maxHeight: 120)
+                    .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(4)
                 .background(
@@ -262,11 +267,12 @@ struct ComposeBar: View {
     }
 }
 
-/// NSTextView wrapper that handles Enter vs Shift+Enter and Up arrow.
+/// NSTextView wrapper that handles Enter vs Shift+Enter, Up arrow, and Tab completion.
 struct ComposeTextView: NSViewRepresentable {
     @Binding var text: String
     var onSubmit: () -> Void
     var onUpArrow: () -> Void
+    var members: [String]  // For tab completion
 
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView()
@@ -300,6 +306,7 @@ struct ComposeTextView: NSViewRepresentable {
         }
         textView.submitAction = onSubmit
         textView.upArrowAction = onUpArrow
+        textView.members = members
     }
 
     func makeCoordinator() -> Coordinator {
@@ -323,14 +330,19 @@ struct ComposeTextView: NSViewRepresentable {
 class ComposeNSTextView: NSTextView {
     var submitAction: (() -> Void)?
     var upArrowAction: (() -> Void)?
+    var members: [String] = []
+    private var tabCompletionCandidates: [String] = []
+    private var tabCompletionIndex: Int = 0
+    private var tabCompletionPrefix: String = ""
 
     override func keyDown(with event: NSEvent) {
         // Enter without Shift = send
         if event.keyCode == 36 && !event.modifierFlags.contains(.shift) {
+            resetTabCompletion()
             submitAction?()
             return
         }
-        // Up arrow when cursor is at start and text is empty = edit last
+        // Up arrow when text is empty = edit last
         if event.keyCode == 126 && string.isEmpty {
             upArrowAction?()
             return
@@ -338,12 +350,77 @@ class ComposeNSTextView: NSTextView {
         // Escape = cancel edit
         if event.keyCode == 53 {
             string = ""
-            submitAction = nil  // Will be reset on next updateNSView
-            // Post notification to cancel edit
+            resetTabCompletion()
             NotificationCenter.default.post(name: .cancelEdit, object: nil)
             return
         }
+        // Tab = nick completion
+        if event.keyCode == 48 {
+            performTabCompletion()
+            return
+        }
+        // Any other key resets tab completion
+        if event.keyCode != 48 {
+            resetTabCompletion()
+        }
         super.keyDown(with: event)
+    }
+
+    private func performTabCompletion() {
+        if tabCompletionCandidates.isEmpty {
+            // Start new completion
+            let text = string
+            guard let lastWord = text.split(separator: " ").last else { return }
+            let prefix = String(lastWord).lowercased()
+            let candidates = members.filter { $0.lowercased().hasPrefix(prefix) }.sorted()
+            guard !candidates.isEmpty else { return }
+
+            tabCompletionPrefix = prefix
+            tabCompletionCandidates = candidates
+            tabCompletionIndex = 0
+        } else {
+            // Cycle through candidates
+            tabCompletionIndex = (tabCompletionIndex + 1) % tabCompletionCandidates.count
+        }
+
+        // Replace the prefix with the candidate
+        let candidate = tabCompletionCandidates[tabCompletionIndex]
+        var text = string
+        // Find and replace the last word
+        if let range = text.range(of: tabCompletionPrefix, options: [.backwards, .caseInsensitive]) {
+            let isStartOfLine = range.lowerBound == text.startIndex ||
+                text[text.index(before: range.lowerBound)] == " "
+            let suffix = isStartOfLine && text.distance(from: text.startIndex, to: range.lowerBound) == 0 ? ": " : " "
+            text.replaceSubrange(range, with: candidate + suffix)
+        } else if let prevCandidate = tabCompletionCandidates[safe: tabCompletionIndex == 0 ? tabCompletionCandidates.count - 1 : tabCompletionIndex - 1] {
+            // Replace previous candidate
+            let suffixes = [": ", " "]
+            for suf in suffixes {
+                if let range = text.range(of: prevCandidate + suf, options: [.backwards, .caseInsensitive]) {
+                    let isStart = range.lowerBound == text.startIndex
+                    let newSuf = isStart ? ": " : " "
+                    text.replaceSubrange(range, with: candidate + newSuf)
+                    break
+                }
+            }
+        }
+        string = text
+        // Move cursor to end
+        setSelectedRange(NSRange(location: string.count, length: 0))
+        // Notify delegate of change
+        delegate?.textDidChange?(Notification(name: NSText.didChangeNotification, object: self))
+    }
+
+    private func resetTabCompletion() {
+        tabCompletionCandidates = []
+        tabCompletionIndex = 0
+        tabCompletionPrefix = ""
+    }
+}
+
+extension Array {
+    subscript(safe index: Int) -> Element? {
+        indices.contains(index) ? self[index] : nil
     }
 }
 

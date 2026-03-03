@@ -6,29 +6,53 @@ struct SettingsView: View {
     var body: some View {
         TabView {
             GeneralSettings()
+                .environment(appState)
                 .tabItem {
                     Label("General", systemImage: "gear")
                 }
 
             ConnectionSettings()
+                .environment(appState)
                 .tabItem {
                     Label("Connection", systemImage: "network")
                 }
 
             P2pSettings()
+                .environment(appState)
                 .tabItem {
                     Label("P2P / iroh", systemImage: "point.3.connected.trianglepath.dotted")
                 }
+
+            ShortcutsSettings()
+                .tabItem {
+                    Label("Shortcuts", systemImage: "keyboard")
+                }
         }
-        .frame(width: 450, height: 300)
+        .frame(width: 480, height: 340)
     }
 }
 
 struct GeneralSettings: View {
+    @Environment(AppState.self) private var appState
+    @AppStorage("freeq.showJoinPart") private var showJoinPart = true
+    @AppStorage("freeq.notificationsEnabled") private var notificationsEnabled = true
+    @AppStorage("freeq.compactMode") private var compactMode = false
+
     var body: some View {
         Form {
             Section("Appearance") {
-                Text("Follows system appearance automatically")
+                Toggle("Compact message display", isOn: $compactMode)
+                Toggle("Show join/part/quit messages", isOn: $showJoinPart)
+            }
+            Section("Notifications") {
+                Toggle("Enable notifications", isOn: $notificationsEnabled)
+                Text("Notifications fire for mentions and DMs")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Auto-join Channels") {
+                Text(appState.autoJoinChannels.joined(separator: ", "))
+                    .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
             }
         }
@@ -44,16 +68,29 @@ struct ConnectionSettings: View {
             Section("Server") {
                 LabeledContent("Address") {
                     Text(appState.serverAddress)
+                        .font(.body.monospaced())
+                        .textSelection(.enabled)
                 }
                 LabeledContent("Transport") {
                     switch appState.transportType {
-                    case .iroh: Text("iroh QUIC ✓").foregroundStyle(.green)
-                    case .tls: Text("TLS")
-                    case .tcp: Text("TCP")
+                    case .iroh:
+                        Label("iroh QUIC", systemImage: "bolt.fill")
+                            .foregroundStyle(.green)
+                    case .tls:
+                        Label("TLS", systemImage: "lock.fill")
+                            .foregroundStyle(.green)
+                    case .tcp:
+                        Label("TCP", systemImage: "network")
+                            .foregroundStyle(.orange)
                     }
                 }
                 LabeledContent("Status") {
-                    Text("\(String(describing: appState.connectionState))")
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(statusColor)
+                            .frame(width: 8, height: 8)
+                        Text(statusText)
+                    }
                 }
             }
             Section("Identity") {
@@ -73,6 +110,24 @@ struct ConnectionSettings: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private var statusColor: Color {
+        switch appState.connectionState {
+        case .registered: .green
+        case .connected: .yellow
+        case .connecting: .orange
+        case .disconnected: .red
+        }
+    }
+
+    private var statusText: String {
+        switch appState.connectionState {
+        case .registered: "Registered"
+        case .connected: "Connected"
+        case .connecting: "Connecting…"
+        case .disconnected: "Disconnected"
+        }
     }
 }
 
@@ -94,9 +149,20 @@ struct P2pSettings: View {
 
                 if let id = appState.p2pEndpointId {
                     LabeledContent("Endpoint ID") {
-                        Text(id)
-                            .font(.caption.monospaced())
-                            .textSelection(.enabled)
+                        HStack {
+                            Text(id)
+                                .font(.caption.monospaced())
+                                .textSelection(.enabled)
+                                .lineLimit(1)
+                            Button {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(id, forType: .string)
+                            } label: {
+                                Image(systemName: "doc.on.doc")
+                                    .font(.caption)
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
                 }
 
@@ -108,9 +174,47 @@ struct P2pSettings: View {
                     Button("Start P2P") {
                         appState.startP2p()
                     }
+                } else {
+                    Button("Stop P2P") {
+                        appState.shutdownP2p()
+                    }
                 }
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+struct ShortcutsSettings: View {
+    var body: some View {
+        Form {
+            Section("Navigation") {
+                shortcutRow("Quick Switcher", "⌘K")
+                shortcutRow("Join Channel", "⌘J")
+                shortcutRow("Toggle Detail Panel", "⇧⌘D")
+                shortcutRow("Switch to Buffer 1-9", "⌘1–9")
+            }
+            Section("Compose") {
+                shortcutRow("Send Message", "↩")
+                shortcutRow("New Line", "⇧↩")
+                shortcutRow("Edit Last Message", "↑ (empty input)")
+                shortcutRow("Tab-complete Nick", "⇥")
+                shortcutRow("Cancel Edit/Reply", "⎋")
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private func shortcutRow(_ action: String, _ key: String) -> some View {
+        HStack {
+            Text(action)
+            Spacer()
+            Text(key)
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(RoundedRectangle(cornerRadius: 4).fill(Color(nsColor: .quaternaryLabelColor)))
+        }
     }
 }

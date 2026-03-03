@@ -11,25 +11,32 @@ struct MainView: View {
             } else if appState.connectionState == .connecting {
                 connectingView
             } else {
-                NavigationSplitView {
-                    SidebarView()
-                        .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 300)
-                } detail: {
-                    if appState.activeChannel != nil {
-                        HStack(spacing: 0) {
-                            ChatView()
-                            if appState.showDetailPanel {
-                                DetailPanel()
-                                    .frame(width: 260)
+                ZStack(alignment: .top) {
+                    NavigationSplitView {
+                        SidebarView()
+                            .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 300)
+                    } detail: {
+                        if appState.activeChannel != nil {
+                            HStack(spacing: 0) {
+                                ChatView()
+                                if appState.showDetailPanel {
+                                    DetailPanel()
+                                        .frame(width: 260)
+                                }
                             }
+                        } else {
+                            emptyState
                         }
-                    } else {
-                        emptyState
                     }
-                }
-                .toolbar {
-                    ToolbarItem(placement: .navigation) {
-                        connectionIndicator
+                    .toolbar {
+                        ToolbarItem(placement: .navigation) {
+                            connectionIndicator
+                        }
+                    }
+
+                    // Reconnect banner
+                    if appState.connectionState == .disconnected && appState.hasSavedSession {
+                        ReconnectBanner()
                     }
                 }
             }
@@ -101,7 +108,6 @@ struct MainView: View {
                 Text("iroh")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                    .help("Connected via iroh QUIC")
             }
         }
     }
@@ -113,5 +119,31 @@ struct MainView: View {
         case .connecting: .orange
         case .disconnected: .red
         }
+    }
+}
+
+// MARK: - Reconnect Banner
+
+struct ReconnectBanner: View {
+    @Environment(AppState.self) private var appState
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "wifi.exclamationmark")
+                .font(.caption)
+            Text("Disconnected — reconnecting…")
+                .font(.caption.weight(.medium))
+            Spacer()
+            Button("Reconnect Now") {
+                appState.reconnectIfSaved()
+            }
+            .font(.caption)
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(.red.opacity(0.15))
+        .foregroundStyle(.red)
     }
 }
