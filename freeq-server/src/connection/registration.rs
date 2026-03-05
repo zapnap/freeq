@@ -330,10 +330,11 @@ pub(super) fn try_complete_registration(
             &format!("Your host is {server_name}, running freeq 0.1"),
         ],
     );
+    let boot_str = state.boot_timestamp.format("%Y-%m-%d %H:%M:%S UTC").to_string();
     let created = Message::from_server(
         server_name,
         irc::RPL_CREATED,
-        vec![nick, "This server was created just now"],
+        vec![nick, &format!("This server was started {boot_str}")],
     );
     let myinfo = Message::from_server(
         server_name,
@@ -371,6 +372,23 @@ pub(super) fn try_complete_registration(
             vec![nick, "MOTD File is missing"],
         );
         send(state, session_id, format!("{no_motd}\r\n"));
+    }
+
+    // Send server restart notice if the server booted recently (within 5 minutes)
+    {
+        let uptime = state.boot_time.elapsed();
+        if uptime.as_secs() < 300 {
+            let boot_ts = state.boot_timestamp.format("%Y-%m-%d %H:%M:%S UTC");
+            let ago = if uptime.as_secs() < 60 {
+                format!("{}s ago", uptime.as_secs())
+            } else {
+                format!("{}m {}s ago", uptime.as_secs() / 60, uptime.as_secs() % 60)
+            };
+            let notice = format!(
+                ":{server_name} NOTICE {nick} :⚡ Server restarted at {boot_ts} ({ago})\r\n"
+            );
+            send(state, session_id, notice);
+        }
     }
 
     // Send synthetic state for ghost-reclaimed channels (now that registration is complete,

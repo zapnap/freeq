@@ -458,6 +458,9 @@ pub struct SharedState {
     pub msg_signing_key: ed25519_dalek::SigningKey,
     /// Client-registered message signing keys: session_id → VerifyingKey.
     /// Clients send MSGSIG <base64url-pubkey> after SASL to register.
+    /// Server boot time (for "server restarted" notices).
+    pub boot_time: std::time::Instant,
+    pub boot_timestamp: chrono::DateTime<chrono::Utc>,
     pub session_msg_keys: Mutex<HashMap<String, ed25519_dalek::VerifyingKey>>,
     /// DID → latest message signing public key (base64url-encoded).
     /// Published via /api/v1/signing-keys/{did} for verification.
@@ -887,6 +890,8 @@ impl Server {
                     }
                 }
             },
+            boot_time: std::time::Instant::now(),
+            boot_timestamp: chrono::Utc::now(),
             prekey_bundles: Mutex::new(prekey_bundles),
             msg_timestamps: Mutex::new(HashMap::new()),
             ip_connections: Mutex::new(HashMap::new()),
