@@ -389,7 +389,7 @@ pub(super) fn handle_join(
             && !ch.history.is_empty()
         {
             // Start batch if client supports it
-            let batch_id = format!("hist{}", session_id.len());
+            let batch_id = format!("hist{}", crate::msgid::generate());
             if has_batch_cap {
                 let batch_start =
                     format!(":{server_name} BATCH +{batch_id} chathistory {channel}\r\n");

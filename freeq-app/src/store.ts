@@ -118,6 +118,7 @@ export interface Store {
   editingMsg: EditContext | null;
   theme: 'dark' | 'light';
   messageDensity: 'default' | 'compact' | 'cozy';
+  showJoinPart: boolean;
   loadExternalMedia: boolean;
   favorites: Set<string>; // lowercase channel names
   mutedChannels: Set<string>; // lowercase channel names
@@ -185,6 +186,7 @@ export interface Store {
   setEditingMsg: (ctx: EditContext | null) => void;
   setTheme: (theme: 'dark' | 'light') => void;
   setMessageDensity: (d: 'default' | 'compact' | 'cozy') => void;
+  setShowJoinPart: (v: boolean) => void;
   setLoadExternalMedia: (v: boolean) => void;
   toggleFavorite: (channel: string) => void;
   toggleMuted: (channel: string) => void;
@@ -253,6 +255,7 @@ export const useStore = create<Store>((set, get) => ({
   editingMsg: null,
   theme: (localStorage.getItem('freeq-theme') as 'dark' | 'light') || 'dark',
   messageDensity: (localStorage.getItem('freeq-density') as 'default' | 'compact' | 'cozy') || 'default',
+  showJoinPart: localStorage.getItem('freeq-show-join-part') === 'true',
   loadExternalMedia: localStorage.getItem('freeq-load-media') !== 'false',
   favorites: new Set(JSON.parse(localStorage.getItem('freeq-favorites') || '[]')),
   mutedChannels: new Set(JSON.parse(localStorage.getItem('freeq-muted') || '[]')),
@@ -679,6 +682,10 @@ export const useStore = create<Store>((set, get) => ({
   setMessageDensity: (d) => {
     localStorage.setItem('freeq-density', d);
     set({ messageDensity: d });
+  },
+  setShowJoinPart: (v) => {
+    localStorage.setItem('freeq-show-join-part', v ? 'true' : 'false');
+    set({ showJoinPart: v });
   },
   setLoadExternalMedia: (v) => {
     localStorage.setItem('freeq-load-media', v ? 'true' : 'false');

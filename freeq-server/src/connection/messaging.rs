@@ -590,7 +590,7 @@ pub(super) fn handle_privmsg(
 
         // Persist DM if both sender and recipient have DIDs
         let sender_did = conn.authenticated_did.as_deref();
-        let recipient_did = state.nick_owners.lock().get(target).cloned();
+        let recipient_did = state.nick_owners.lock().get(&target.to_lowercase()).cloned();
         if let (Some(s_did), Some(r_did)) = (sender_did, recipient_did.as_deref()) {
             let dm_key = crate::db::canonical_dm_key(s_did, r_did);
             state.with_db(|db| {

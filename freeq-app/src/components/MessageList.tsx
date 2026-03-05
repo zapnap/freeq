@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useState } from 'react';
+import { useEffect, useRef, useCallback, useState, useMemo } from 'react';
 import { useStore, type Message, type PinnedMessage } from '../store';
 import { getNick, requestHistory, sendReaction } from '../irc/client';
 import { fetchProfile, getCachedProfile, type ATProfile } from '../lib/profiles';
@@ -1030,10 +1030,20 @@ function PinnedBar({ pins, messages }: { pins: PinnedMessage[]; messages: Messag
 
 export function MessageList() {
   const activeChannel = useStore((s) => s.activeChannel);
-  const messages = useStore((s) => {
+  const rawMessages = useStore((s) => {
     if (s.activeChannel === 'server') return s.serverMessages;
     return s.channels.get(s.activeChannel.toLowerCase())?.messages || [];
   });
+  const showJoinPart = useStore((s) => s.showJoinPart);
+
+  // Filter out join/part/quit noise unless the user opted in.
+  // Keep moderation actions (kicks, bans, mode changes) always visible.
+  const JOIN_PART_RE = /^.+ (joined|left|quit)(\s|$)/;
+  const messages = useMemo(() => {
+    if (showJoinPart) return rawMessages;
+    return rawMessages.filter((m) => !m.isSystem || !JOIN_PART_RE.test(m.text));
+  }, [rawMessages, showJoinPart]);
+
   const lastReadMsgId = useStore((s) => s.channels.get(s.activeChannel.toLowerCase())?.lastReadMsgId);
   const pins = useStore((s) => s.channels.get(s.activeChannel.toLowerCase())?.pins ?? EMPTY_PINS);
   const density = useStore((s) => s.messageDensity);

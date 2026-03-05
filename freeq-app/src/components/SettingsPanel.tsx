@@ -16,6 +16,8 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
   const setTheme = useStore((s) => s.setTheme);
   const density = useStore((s) => s.messageDensity);
   const setDensity = useStore((s) => s.setMessageDensity);
+  const showJoinPart = useStore((s) => s.showJoinPart);
+  const setShowJoinPart = useStore((s) => s.setShowJoinPart);
   const loadMedia = useStore((s) => s.loadExternalMedia);
   const setLoadMedia = useStore((s) => s.setLoadExternalMedia);
 
@@ -83,6 +85,14 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
                 ))}
               </div>
             </div>
+            <Toggle
+              label="Show join/part messages"
+              checked={showJoinPart}
+              onChange={setShowJoinPart}
+            />
+            <p className="text-[11px] text-fg-dim leading-relaxed mt-1">
+              Show when users join and leave channels. Kicks and moderation actions are always shown.
+            </p>
           </Section>
 
           {/* Notifications */}

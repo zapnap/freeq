@@ -114,9 +114,9 @@ export function connect(url: string, desiredNick: string, channels?: string[]) {
           sendRegistration();
         } else if (brokerToken && brokerBase && saslDid) {
           const ctrl = new AbortController();
-          const tm = setTimeout(() => ctrl.abort(), 5000);
+          const tm = setTimeout(() => ctrl.abort(), 8000);
           // Broker /session returns 502 on first call due to DPoP nonce rotation —
-          // retry once on 502 which always succeeds after nonce is cached.
+          // retry up to 2 times on transient errors.
           const brokerBody = JSON.stringify({ broker_token: brokerToken });
           const doFetch = () => fetch(`${brokerBase}/session`, {
             method: 'POST',
@@ -124,24 +124,47 @@ export function connect(url: string, desiredNick: string, channels?: string[]) {
             body: brokerBody,
             signal: ctrl.signal,
           });
-          doFetch()
-            .then(r => {
-              clearTimeout(tm);
-              if (r.status === 502) return doFetch().then(r2 => r2.ok ? r2.json() : Promise.reject('broker 502 retry failed'));
-              return r.ok ? r.json() : Promise.reject('broker refresh failed');
-            })
+          const fetchWithRetry = async (): Promise<any> => {
+            for (let attempt = 0; attempt < 3; attempt++) {
+              try {
+                const r = await doFetch();
+                if (r.status === 502 && attempt < 2) {
+                  await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
+                  continue;
+                }
+                if (r.status === 401) {
+                  // Token genuinely invalid — clear it
+                  localStorage.removeItem('freeq-broker-token');
+                  throw new Error('broker token invalid');
+                }
+                if (!r.ok) throw new Error('broker refresh failed');
+                return r.json();
+              } catch (e: any) {
+                if (e?.name === 'AbortError' || attempt >= 2) throw e;
+                await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
+              }
+            }
+            throw new Error('broker fetch exhausted retries');
+          };
+          fetchWithRetry()
             .then((session: { token: string; nick: string; did: string; handle: string }) => {
+              clearTimeout(tm);
               clearTimeout(safetyTimer);
               sendRegistration(session.token);
             })
             .catch(() => {
               clearTimeout(tm);
               clearTimeout(safetyTimer);
-              // Broker refresh failed — register without SASL (guest mode)
-              saslToken = '';
-              saslDid = '';
-              saslMethod = '';
-              sendRegistration();
+              // Broker refresh failed — still try with existing saslToken if we have one.
+              // Only fall back to guest if we have no token at all.
+              if (saslToken) {
+                sendRegistration();
+              } else {
+                saslToken = '';
+                saslDid = '';
+                saslMethod = '';
+                sendRegistration();
+              }
             });
         } else {
           clearTimeout(safetyTimer);
@@ -466,20 +489,20 @@ async function handleLine(rawLine: string) {
       const serverNick = msg.params[0] || nick;
 
       // If we were authenticated but server gave us a Guest nick,
-      // the web-token was consumed or expired. Retry once (server restart
-      // clears in-memory sessions — broker refresh re-pushes on reconnect
-      // but there may be a race).
+      // the web-token was consumed or expired. Retry with a fresh broker session.
       const wasAuthenticated = localStorage.getItem('freeq-handle');
       if (wasAuthenticated && /^Guest\d+$/i.test(serverNick)) {
         guestFallbackCount++;
-        if (guestFallbackCount <= 2) {
+        if (guestFallbackCount <= 3) {
           // Disconnect and let auto-reconnect retry with fresh broker session
           raw('QUIT :Retrying auth');
           return;
         }
-        // After 2 retries, give up and show login
+        // After 3 retries, give up — but DON'T delete the broker token.
+        // The broker token is a long-lived credential; the issue is likely
+        // transient (server restart, DPoP nonce, etc.). Let the user retry
+        // from the connect screen which will try broker again.
         guestFallbackCount = 0;
-        localStorage.removeItem('freeq-broker-token');
         raw('QUIT :Session expired');
         transport?.disconnect();
         transport = null;

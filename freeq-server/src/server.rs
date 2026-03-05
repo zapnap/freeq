@@ -1095,12 +1095,12 @@ impl Server {
                 loop {
                     interval.tick().await;
                     reconcile_crdt_to_local(&reconcile_state).await;
-                    // Prune expired web auth tokens (TTL 5 min)
+                    // Prune expired web auth tokens (TTL 30 min)
                     reconcile_state
                         .web_auth_tokens
                         .lock()
                         .retain(|_, (_, _, created)| {
-                            created.elapsed() < std::time::Duration::from_secs(300)
+                            created.elapsed() < std::time::Duration::from_secs(1800)
                         });
                 }
             });
@@ -1151,11 +1151,11 @@ impl Server {
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
                 loop {
                     interval.tick().await;
-                    // Prune expired web-auth tokens (300s TTL)
+                    // Prune expired web-auth tokens (30 min TTL)
                     {
                         let mut tokens = cleanup_state.web_auth_tokens.lock();
                         let before = tokens.len();
-                        tokens.retain(|_, (_, _, created)| created.elapsed().as_secs() < 300);
+                        tokens.retain(|_, (_, _, created)| created.elapsed().as_secs() < 1800);
                         let pruned = before - tokens.len();
                         if pruned > 0 {
                             tracing::info!("Pruned {pruned} expired web-auth tokens");

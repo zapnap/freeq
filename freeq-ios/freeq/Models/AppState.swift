@@ -414,8 +414,8 @@ class AppState: ObservableObject {
     }
 
     private func fetchBrokerSession(brokerToken: String) async throws -> BrokerSessionResponse {
-        // Retry once on 502 — DPoP nonce rotation causes the first call to fail
-        for attempt in 0..<2 {
+        // Retry up to 3 times with backoff — DPoP nonce rotation causes the first call to fail
+        for attempt in 0..<3 {
             let url = URL(string: "\(authBrokerBase)/session")!
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
@@ -423,9 +423,17 @@ class AppState: ObservableObject {
             request.httpBody = try JSONSerialization.data(withJSONObject: ["broker_token": brokerToken])
             let (data, response) = try await URLSession.shared.data(for: request)
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-            if status == 502 && attempt == 0 {
-                try? await Task.sleep(nanoseconds: 300_000_000) // 300ms
+            if status == 502 && attempt < 2 {
+                try? await Task.sleep(nanoseconds: UInt64(500_000_000 * (attempt + 1))) // 500ms, 1s
                 continue
+            }
+            // 401 = broker token is genuinely invalid — clear it so user re-authenticates
+            if status == 401 {
+                await MainActor.run {
+                    self.brokerToken = nil
+                    KeychainHelper.delete(key: "brokerToken")
+                }
+                throw NSError(domain: "Broker", code: 401, userInfo: [NSLocalizedDescriptionKey: "Session expired — please sign in again"])
             }
             guard status == 200 else { throw NSError(domain: "Broker", code: status) }
             return try JSONDecoder().decode(BrokerSessionResponse.self, from: data)
