@@ -540,6 +540,27 @@ impl Db {
         }
     }
 
+    /// Find a message by msgid across all channels.
+    pub fn find_message_by_msgid(&self, msgid: &str) -> SqlResult<Option<MessageRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, channel, sender, text, timestamp, tags_json, msgid, replaces_msgid, deleted_at
+             FROM messages
+             WHERE msgid = ?1 AND deleted_at IS NULL
+             LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map(params![msgid], map_message_row)?;
+        match rows.next() {
+            Some(row) => {
+                let mut msg = row?;
+                if let Some(ref key) = self.encryption_key {
+                    msg.text = decrypt_at_rest(key, &msg.text);
+                }
+                Ok(Some(msg))
+            }
+            None => Ok(None),
+        }
+    }
+
     /// Soft-delete a message by setting deleted_at timestamp.
     pub fn soft_delete_message(&self, channel: &str, msgid: &str) -> SqlResult<usize> {
         let now = std::time::SystemTime::now()

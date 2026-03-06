@@ -442,9 +442,23 @@ async fn api_verify_message(
     }
     drop(channels);
 
+    // Fall back to database if not in memory
+    if found.is_none() {
+        if let Some(row) = state.with_db(|db| db.find_message_by_msgid(&msgid)).flatten() {
+            found = Some(crate::server::HistoryMessage {
+                from: row.sender,
+                text: row.text,
+                timestamp: row.timestamp,
+                tags: row.tags,
+                msgid: row.msgid,
+            });
+            found_channel = row.channel;
+        }
+    }
+
     let msg = found.ok_or((
         axum::http::StatusCode::NOT_FOUND,
-        format!("Message {msgid} not found in recent history"),
+        format!("Message {msgid} not found"),
     ))?;
 
     let sig_b64 = msg.tags.get("+freeq.at/sig").cloned();
