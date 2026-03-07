@@ -4,7 +4,7 @@
  * Uses react-markdown (remark AST → React elements, no innerHTML).
  * Only allows safe URL schemes. Raw HTML is disabled.
  */
-import React, { memo } from 'react';
+import { memo } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Components } from 'react-markdown';
