@@ -7,6 +7,7 @@ import { UserPopover } from './UserPopover';
 import { BlueskyEmbed } from './BlueskyEmbed';
 import { LinkPreview } from './LinkPreview';
 import { MessageContextMenu } from './MessageContextMenu';
+import { MarkdownMessage } from './MarkdownRenderer';
 
 // ── Colors ──
 
@@ -370,6 +371,19 @@ function MessageContent({ msg }: { msg: Message }) {
     return (
       <div className="text-fg-muted italic text-[15px] mt-0.5">
         <span style={{ color }} className="font-semibold not-italic">{'* '}{msg.from}</span>{' '}{msg.text}
+      </div>
+    );
+  }
+
+  // Markdown messages — render with full markdown support
+  const mimeType = msg.tags?.['+freeq.at/mime'];
+  if (mimeType === 'text/markdown') {
+    // Decode multiline encoding
+    const decoded = isMultiline ? msg.text.replace(/\\n/g, '\n') : msg.text;
+    return (
+      <div className="mt-0.5">
+        {msg.replyTo && <ReplyBadge msgId={msg.replyTo} />}
+        <MarkdownMessage text={decoded} />
       </div>
     );
   }

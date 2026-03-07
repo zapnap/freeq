@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo, type KeyboardEvent, type DragEvent } from 'react';
 import { useStore } from '../store';
-import { sendMessage, sendReply, sendEdit, joinChannel, partChannel, setTopic, setMode, kickUser, inviteUser, setAway, rawCommand, sendWhois } from '../irc/client';
+import { sendMessage, sendReply, sendEdit, sendMarkdown, joinChannel, partChannel, setTopic, setMode, kickUser, inviteUser, setAway, rawCommand, sendWhois } from '../irc/client';
 import { EmojiPicker, EMOJI_DATA } from './EmojiPicker';
 import { SlashCommands, getCommandCount } from './SlashCommands';
 import { FormatToolbar } from './FormatToolbar';
@@ -390,7 +390,7 @@ export function ComposeBox() {
           e.preventDefault();
           // Get the filtered list and pick the selected one
           const filter = slashCmd.filter.toLowerCase();
-          const COMMANDS = ['join','part','topic','invite','kick','op','deop','voice','mode','msg','me','whois','away','encrypt','decrypt','policy','raw','help'];
+          const COMMANDS = ['join','part','topic','invite','kick','op','deop','voice','mode','msg','me','md','whois','away','encrypt','decrypt','policy','raw','help'];
           const filtered = filter ? COMMANDS.filter(c => c.startsWith(filter)) : COMMANDS;
           if (filtered[slashCmd.selected]) {
             setText(`/${filtered[slashCmd.selected]} `);
@@ -823,6 +823,9 @@ function handleCommand(text: string, activeChannel: string) {
       if (mp[0] && mp[1]) sendMessage(mp[0], mp.slice(1).join(' '));
       break;
     }
+    case 'md': case 'markdown':
+      if (args && target) sendMarkdown(target, args);
+      break;
     case 'me': case 'action':
       if (target) rawCommand(`PRIVMSG ${target} :\x01ACTION ${args}\x01`);
       break;
@@ -835,6 +838,7 @@ function handleCommand(text: string, activeChannel: string) {
       store.addSystemMessage(activeChannel, '/kick user  ·  /op user  ·  /voice user  ·  /invite user');
       store.addSystemMessage(activeChannel, '/whois user  ·  /away reason  ·  /me action');
       store.addSystemMessage(activeChannel, '/msg user text  ·  /mode +o user  ·  /raw IRC_LINE');
+      store.addSystemMessage(activeChannel, '/md **bold** text  — send as rendered markdown');
       store.addSystemMessage(activeChannel, '── Encryption ──');
       store.addSystemMessage(activeChannel, '/encrypt passphrase  ·  /decrypt  — E2EE for channels');
       store.addSystemMessage(activeChannel, '── Policy ──');

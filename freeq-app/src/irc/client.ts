@@ -349,6 +349,26 @@ export function sendEdit(target: string, originalMsgId: string, newText: string,
   raw(line);
 }
 
+export function sendMarkdown(target: string, text: string) {
+  const isMultiline = text.includes('\n');
+  const wireText = isMultiline ? text.replace(/\n/g, '\\n') : text;
+  const tags: Record<string, string> = { '+freeq.at/mime': 'text/markdown' };
+  if (isMultiline) tags['+freeq.at/multiline'] = '';
+  signedPrivmsg(target, wireText, tags);
+
+  // Local echo if no echo-message cap
+  if (!ackedCaps.has('echo-message')) {
+    useStore.getState().addMessage(target, {
+      id: crypto.randomUUID(),
+      from: nick,
+      text: wireText,
+      timestamp: new Date(),
+      tags,
+      isSelf: true,
+    });
+  }
+}
+
 export function sendDelete(target: string, msgId: string) {
   useStore.getState().deleteMessage(target, msgId);
   const line = format('TAGMSG', [target], { '+draft/delete': msgId });
