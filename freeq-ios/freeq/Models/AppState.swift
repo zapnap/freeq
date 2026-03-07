@@ -353,19 +353,28 @@ class AppState: ObservableObject {
         sendRaw("@+typing=done TAGMSG \(target)")
         lastTypingSent = .distantPast
 
+        let isMultiline = text.contains("\n")
+        let wireText = text.replacingOccurrences(of: "\r", with: "")
+        let encoded = isMultiline ? wireText.replacingOccurrences(of: "\n", with: "\\n") : wireText
+        let multilineTag = isMultiline ? ";+freeq.at/multiline" : ""
+
         // Check for edit mode
         if let editing = editingMessage {
-            let escaped = text.replacingOccurrences(of: "\r", with: "").replacingOccurrences(of: "\n", with: " ")
-            sendRaw("@+draft/edit=\(editing.id) PRIVMSG \(target) :\(escaped)")
+            sendRaw("@+draft/edit=\(editing.id)\(multilineTag) PRIVMSG \(target) :\(encoded)")
             editingMessage = nil
             return true
         }
 
         // Check for reply mode
         if let reply = replyingTo {
-            let escaped = text.replacingOccurrences(of: "\r", with: "").replacingOccurrences(of: "\n", with: " ")
-            sendRaw("@+reply=\(reply.id) PRIVMSG \(target) :\(escaped)")
+            sendRaw("@+reply=\(reply.id)\(multilineTag) PRIVMSG \(target) :\(encoded)")
             replyingTo = nil
+            return true
+        }
+
+        if isMultiline {
+            // Send via raw to include multiline tag
+            sendRaw("@+freeq.at/multiline PRIVMSG \(target) :\(encoded)")
             return true
         }
 
@@ -677,10 +686,13 @@ final class SwiftEventHandler: @unchecked Sendable, EventHandler {
             let from = ircMsg.fromNick
             let isSelf = from.lowercased() == state.nick.lowercased()
 
+            // Decode multiline: \\n → newline (server encodes newlines as literal \n)
+            let decodedText = ircMsg.text.replacingOccurrences(of: "\\n", with: "\n")
+
             let msg = ChatMessage(
                 id: ircMsg.msgid ?? UUID().uuidString,
                 from: from,
-                text: ircMsg.text,
+                text: decodedText,
                 isAction: ircMsg.isAction,
                 timestamp: Date(timeIntervalSince1970: Double(ircMsg.timestampMs) / 1000.0),
                 replyTo: ircMsg.replyTo
@@ -729,6 +741,8 @@ final class SwiftEventHandler: @unchecked Sendable, EventHandler {
                     NotificationManager.shared.sendMessageNotification(
                         from: from, text: ircMsg.text, channel: target
                     )
+                    // Haptic when mentioned in active app
+                    UINotificationFeedbackGenerator().notificationOccurred(.warning)
                 }
             } else {
                 let bufferName = isSelf ? target : from
@@ -883,6 +897,10 @@ final class SwiftEventHandler: @unchecked Sendable, EventHandler {
             } else if !text.isEmpty {
                 print("Notice: \(text)")
             }
+
+        case .whoisReply(_, _):
+            // WHOIS replies — currently unused in UI
+            break
 
         case .disconnected(let reason):
             state.connectionState = .disconnected

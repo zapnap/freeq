@@ -490,10 +490,18 @@ struct MessageListView: View {
                 .padding(.top, 6)
                 .padding(.bottom, 2)
             } else {
-                messageBody(msg)
-                    .padding(.leading, 68)
-                    .padding(.trailing, 16)
-                    .padding(.vertical, 1)
+                HStack(alignment: .top, spacing: 0) {
+                    // Subtle timestamp for continuation messages
+                    Text(shortTime(msg.timestamp))
+                        .font(.system(size: 9))
+                        .foregroundColor(Theme.textMuted.opacity(0.5))
+                        .frame(width: 56, alignment: .center)
+                        .padding(.top, 4)
+
+                    messageBody(msg)
+                        .padding(.trailing, 16)
+                }
+                .padding(.vertical, 1)
             }
 
             // Reactions
@@ -808,22 +816,72 @@ struct MessageListView: View {
 
     private func attributedMessage(_ text: String) -> AttributedString {
         var result = AttributedString(text)
+        let nsRange = NSRange(text.startIndex..., in: text)
+
+        // Code blocks: ```text``` (must be before inline code)
+        let codeBlockPattern = #"```(?:\w*\n?)?([\s\S]*?)```"#
+        if let regex = try? NSRegularExpression(pattern: codeBlockPattern) {
+            for match in regex.matches(in: text, range: nsRange).reversed() {
+                if let range = Range(match.range, in: result) {
+                    result[range].font = .system(size: 13, design: .monospaced)
+                    result[range].backgroundColor = Theme.bgTertiary
+                }
+            }
+        }
 
         // Bold: **text**
         let boldPattern = #"\*\*(.+?)\*\*"#
-        if let regex = try? NSRegularExpression(pattern: boldPattern),
-           let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
-           let range = Range(match.range, in: result) {
-            result[range].font = .system(size: 15, weight: .bold)
+        if let regex = try? NSRegularExpression(pattern: boldPattern) {
+            for match in regex.matches(in: text, range: nsRange).reversed() {
+                if let range = Range(match.range, in: result) {
+                    result[range].font = .system(size: 15, weight: .bold)
+                }
+            }
         }
 
-        // Inline code: `text`
-        let codePattern = #"`([^`]+)`"#
-        if let regex = try? NSRegularExpression(pattern: codePattern),
-           let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
-           let range = Range(match.range, in: result) {
-            result[range].font = .system(size: 14, design: .monospaced)
-            result[range].backgroundColor = Theme.bgTertiary
+        // Italic: *text* (but not **text**)
+        let italicPattern = #"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)"#
+        if let regex = try? NSRegularExpression(pattern: italicPattern) {
+            for match in regex.matches(in: text, range: nsRange).reversed() {
+                if let range = Range(match.range, in: result) {
+                    result[range].font = .system(size: 15).italic()
+                }
+            }
+        }
+
+        // Strikethrough: ~~text~~
+        let strikePattern = #"~~(.+?)~~"#
+        if let regex = try? NSRegularExpression(pattern: strikePattern) {
+            for match in regex.matches(in: text, range: nsRange).reversed() {
+                if let range = Range(match.range, in: result) {
+                    result[range].strikethroughStyle = .single
+                    result[range].foregroundColor = Theme.textMuted
+                }
+            }
+        }
+
+        // Inline code: `text` (skip if inside code block)
+        let codePattern = #"(?<!`)`(?!`)([^`\n]+)(?<!`)`(?!`)"#
+        if let regex = try? NSRegularExpression(pattern: codePattern) {
+            for match in regex.matches(in: text, range: nsRange).reversed() {
+                if let range = Range(match.range, in: result) {
+                    result[range].font = .system(size: 14, design: .monospaced)
+                    result[range].backgroundColor = Theme.bgTertiary
+                }
+            }
+        }
+
+        // Clickable URLs
+        let urlPattern = #"https?://[^\s<>\]\)]+"#
+        if let regex = try? NSRegularExpression(pattern: urlPattern) {
+            for match in regex.matches(in: text, range: nsRange) {
+                if let swiftRange = Range(match.range, in: text),
+                   let attrRange = Range(match.range, in: result),
+                   let url = URL(string: String(text[swiftRange])) {
+                    result[attrRange].link = url
+                    result[attrRange].foregroundColor = Theme.accent
+                }
+            }
         }
 
         return result
@@ -837,6 +895,12 @@ struct MessageListView: View {
         return f
     }()
 
+    private static let shortTimeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "h:mm"
+        return f
+    }()
+
     private static let dateFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "MMMM d, yyyy"
@@ -845,6 +909,10 @@ struct MessageListView: View {
 
     private func formatTime(_ date: Date) -> String {
         Self.timeFormatter.string(from: date)
+    }
+
+    private func shortTime(_ date: Date) -> String {
+        Self.shortTimeFormatter.string(from: date)
     }
 
     private func formatDate(_ date: Date) -> String {

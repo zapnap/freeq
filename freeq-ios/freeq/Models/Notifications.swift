@@ -34,6 +34,7 @@ class NotificationManager {
         content.body = text
         content.sound = .default
         content.threadIdentifier = channel
+        content.userInfo = ["channel": channel]
 
         let request = UNNotificationRequest(
             identifier: UUID().uuidString,
