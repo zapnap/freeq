@@ -11,6 +11,7 @@ struct MessageListView: View {
 
     @State private var showScrollButton = false
     @State private var lastReadId: String? = nil
+    @State private var isNearBottom = true
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -118,7 +119,9 @@ struct MessageListView: View {
                     // When at bottom, it's near screen height; when scrolled up, it goes large/positive
                     let screenHeight = UIScreen.main.bounds.height
                     // If the bottom anchor is more than 150pt below the screen, user has scrolled up
-                    showScrollButton = value > screenHeight + 150
+                    let nearBottom = value <= screenHeight + 150
+                    isNearBottom = nearBottom
+                    showScrollButton = !nearBottom
                 }
 
                 // Scroll to bottom FAB with message preview
@@ -185,20 +188,10 @@ struct MessageListView: View {
                 }
             }
             .onChange(of: channel.messages.count) {
-                if let last = channel.messages.last {
-                    // Always scroll if the new message is from us
-                    let isOwnMessage = last.from == appState.nick
-                    if isOwnMessage || !showScrollButton {
-                        withAnimation(.easeOut(duration: 0.15)) {
-                            proxy.scrollTo(last.id, anchor: .bottom)
-                        }
-                        showScrollButton = false
-                    }
-                }
-                // Mark read if this is the active channel
-                if appState.activeChannel == channel.name {
-                    appState.markRead(channel.name)
-                }
+                onNewMessages(proxy: proxy)
+            }
+            .onChange(of: channel.messages.last?.id) {
+                onNewMessages(proxy: proxy)
             }
             .onAppear {
                 // Capture current read position before marking read
@@ -249,6 +242,23 @@ struct MessageListView: View {
             if let last = channel.messages.last {
                 proxy.scrollTo(last.id, anchor: .bottom)
             }
+        }
+    }
+
+    private func onNewMessages(proxy: ScrollViewProxy) {
+        guard let last = channel.messages.last else { return }
+        // Always scroll if the new message is from us, or if user was near bottom
+        let isOwnMessage = last.from == appState.nick
+        if isOwnMessage || isNearBottom {
+            withAnimation(.easeOut(duration: 0.15)) {
+                proxy.scrollTo(last.id, anchor: .bottom)
+            }
+            showScrollButton = false
+            isNearBottom = true
+        }
+        // Mark read if this is the active channel
+        if appState.activeChannel == channel.name {
+            appState.markRead(channel.name)
         }
     }
 
