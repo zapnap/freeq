@@ -244,7 +244,7 @@ struct ChatRow: View {
                             .foregroundColor(Theme.textMuted)
                             .lineLimit(1)
                     } else {
-                        Text(isChannel ? "No messages yet" : "Start a conversation")
+                        Text("No messages yet")
                             .font(.system(size: 14))
                             .foregroundColor(Theme.textMuted)
                             .lineLimit(1)
