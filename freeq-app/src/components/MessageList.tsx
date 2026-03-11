@@ -1121,13 +1121,10 @@ export function MessageList() {
     const t4 = setTimeout(scrollBottom, 1200); // slow networks
 
     // DM buffers don't get NAMES/366 so history isn't auto-fetched.
-    // Request it on first activation if the buffer has no messages.
+    // Always request on activation (dedup handles duplicates).
     const isDM = activeChannel !== 'server' && !activeChannel.startsWith('#') && !activeChannel.startsWith('&');
     if (isDM) {
-      const ch = useStore.getState().channels.get(activeChannel.toLowerCase());
-      if (!ch || ch.messages.length === 0) {
-        requestHistory(activeChannel);
-      }
+      requestHistory(activeChannel);
     }
 
     return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); clearTimeout(t4); };
