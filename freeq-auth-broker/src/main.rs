@@ -250,6 +250,13 @@ async fn main() {
     let shared_secret = std::env::var("BROKER_SHARED_SECRET").unwrap_or_else(|_| "".to_string());
     let db_path = std::env::var("BROKER_DB_PATH").unwrap_or_else(|_| "broker.db".to_string());
 
+    // Ensure parent directory exists (for /app/data/broker.db etc.)
+    if let Some(parent) = std::path::Path::new(&db_path).parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).ok();
+        }
+    }
+
     if shared_secret.is_empty() {
         tracing::warn!("BROKER_SHARED_SECRET not set — broker cannot mint web-tokens");
     }

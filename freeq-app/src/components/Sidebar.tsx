@@ -20,12 +20,16 @@ export function Sidebar({ onOpenSettings }: SidebarProps) {
 
   const favorites = useStore((s) => s.favorites);
   useStore((s) => s.mutedChannels); // subscribe for re-render
+  const hiddenDMs = useStore((s) => s.hiddenDMs);
 
   const allJoined = [...channels.values()].filter((ch) => ch.isJoined);
   const allChans = allJoined.filter((ch) => ch.name.startsWith('#') || ch.name.startsWith('&')).sort((a, b) => a.name.localeCompare(b.name));
   const favList = allChans.filter((ch) => favorites.has(ch.name.toLowerCase()));
   const chanList = allChans.filter((ch) => !favorites.has(ch.name.toLowerCase()));
-  const dmList = allJoined.filter((ch) => !ch.name.startsWith('#') && !ch.name.startsWith('&') && ch.name !== 'server').sort((a, b) => a.name.localeCompare(b.name));
+  const dmList = allJoined
+    .filter((ch) => !ch.name.startsWith('#') && !ch.name.startsWith('&') && ch.name !== 'server')
+    .filter((ch) => !hiddenDMs.has(ch.name.toLowerCase()))
+    .sort((a, b) => a.name.localeCompare(b.name));
 
   const handleJoin = () => {
     const ch = joinInput.trim();
@@ -347,11 +351,17 @@ function SidebarContextMenu({ channel, isFav, isMuted, isChannel, position, onCl
         Copy invite link
       </button>
       <div className="h-px bg-border mx-2 my-1" />
-      {isChannel && (
+      {isChannel ? (
         <button onClick={() => { partChannel(channel); onClose(); }}
           className="w-full text-left px-3 py-1.5 text-sm flex items-center gap-2 hover:bg-danger/10 text-danger">
           <span className="w-5 text-center">🚪</span>
           Leave channel
+        </button>
+      ) : (
+        <button onClick={() => { useStore.getState().hideDM(channel); onClose(); }}
+          className="w-full text-left px-3 py-1.5 text-sm flex items-center gap-2 hover:bg-danger/10 text-danger">
+          <span className="w-5 text-center">✕</span>
+          Close conversation
         </button>
       )}
     </div>

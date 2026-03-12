@@ -197,16 +197,14 @@ class AppState: ObservableObject {
     }
 
     /// Whether we have a saved session that should auto-reconnect.
-    /// True if we have a broker token (the durable credential) OR a recent login.
+    /// True if we have a broker token — the durable, long-lived credential.
+    /// No expiry window: the broker token is valid until the PDS revokes the
+    /// underlying refresh token (typically 90+ days of inactivity).
     var hasSavedSession: Bool {
-        // Broker token is the primary signal — it's the long-lived credential
-        if brokerToken != nil && !nick.isEmpty { return true }
-        // Fallback: recent login timestamp (covers edge cases during migration)
-        let lastLogin = UserDefaults.standard.double(forKey: "freeq.lastLogin")
-        let twoWeeks: TimeInterval = 14 * 24 * 60 * 60
-        return lastLogin > 0
-            && Date().timeIntervalSince1970 - lastLogin < twoWeeks
-            && !nick.isEmpty
+        // Broker token is the only signal — it's the long-lived credential.
+        // Nick might be empty on first launch after migration; the broker
+        // session response will provide the correct nick.
+        return brokerToken != nil
     }
 
     init() {
@@ -270,13 +268,13 @@ class AppState: ObservableObject {
         guard hasSavedSession, connectionState == .disconnected else { return }
 
         // 1. Already have a pending token (e.g., from initial login)
-        if pendingWebToken != nil {
+        if pendingWebToken != nil && !nick.isEmpty {
             connect(nick: nick)
             return
         }
 
         // 2. Reuse cached web-token if still valid (25 min window — token TTL is 30 min)
-        if let cached = cachedWebToken, Date() < cachedWebTokenExpiry {
+        if let cached = cachedWebToken, Date() < cachedWebTokenExpiry, !nick.isEmpty {
             pendingWebToken = cached
             connect(nick: nick)
             return
@@ -303,16 +301,28 @@ class AppState: ObservableObject {
                     KeychainHelper.save(key: "did", value: session.did)
                     self.connect(nick: session.nick)
                 }
-            } catch {
+            } catch let error as NSError {
                 await MainActor.run {
+                    // If broker token was cleared (genuinely expired), stop retrying
+                    if error.code == 401 && self.brokerToken == nil {
+                        // Credentials cleared — show login screen
+                        return
+                    }
+
                     self.brokerRetryCount += 1
-                    if self.brokerRetryCount <= 8 {
-                        // Retry with backoff: 2, 3, 4, 6, 8, 10, 15, 20 seconds
-                        let delay = min(2.0 + Double(self.brokerRetryCount), 20.0)
-                        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                            if self.connectionState == .disconnected {
-                                self.reconnectSavedSession()
-                            }
+                    // Keep retrying indefinitely with capped backoff (max 60s)
+                    // The user will see "Connecting..." and can cancel after 15s
+                    let delay: Double
+                    if self.brokerRetryCount <= 3 {
+                        delay = Double(self.brokerRetryCount) // 1, 2, 3s
+                    } else if self.brokerRetryCount <= 10 {
+                        delay = min(Double(self.brokerRetryCount * 2), 20.0) // 8..20s
+                    } else {
+                        delay = 60.0 // After 10 failures, try once per minute
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                        if self.connectionState == .disconnected && self.hasSavedSession {
+                            self.reconnectSavedSession()
                         }
                     }
                     // Don't set errorMessage — let it keep trying silently
@@ -477,33 +487,65 @@ class AppState: ObservableObject {
         let handle: String
     }
 
+    /// Track consecutive 401s — only clear broker token after multiple failures
+    private var consecutive401Count = 0
+
     private func fetchBrokerSession(brokerToken: String) async throws -> BrokerSessionResponse {
-        // Retry up to 3 times with backoff — DPoP nonce rotation causes the first call to fail
-        for attempt in 0..<3 {
+        // Retry up to 4 times with backoff — DPoP nonce rotation and transient errors
+        for attempt in 0..<4 {
             let url = URL(string: "\(authBrokerBase)/session")!
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONSerialization.data(withJSONObject: ["broker_token": brokerToken])
-            let (data, response) = try await URLSession.shared.data(for: request)
+
+            let data: Data
+            let response: URLResponse
+            do {
+                (data, response) = try await URLSession.shared.data(for: request)
+            } catch {
+                // Network error (offline, timeout, DNS) — don't clear anything, just throw
+                if attempt < 3 {
+                    try? await Task.sleep(nanoseconds: UInt64(1_000_000_000 * (attempt + 1)))
+                    continue
+                }
+                throw error
+            }
+
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-            if status == 502 && attempt < 2 {
-                try? await Task.sleep(nanoseconds: UInt64(500_000_000 * (attempt + 1))) // 500ms, 1s
+
+            if (status == 502 || status == 503 || status == 504) && attempt < 3 {
+                try? await Task.sleep(nanoseconds: UInt64(500_000_000 * (attempt + 1)))
                 continue
             }
-            // 401 = broker token is genuinely invalid — clear it so user re-authenticates
+
+            // 401 = broker token might be invalid, but could also be transient
+            // (e.g., broker DB was just recreated). Only clear after 3 consecutive 401s
+            // across separate reconnect attempts.
             if status == 401 {
-                await MainActor.run {
-                    self.brokerToken = nil
-                    self.cachedWebToken = nil
-                    self.cachedWebTokenExpiry = .distantPast
-                    KeychainHelper.delete(key: "brokerToken")
-                    KeychainHelper.delete(key: "webToken")
-                    UserDefaults.standard.removeObject(forKey: "freeq.webTokenExpiry")
+                await MainActor.run { self.consecutive401Count += 1 }
+                if attempt < 3 {
+                    // Retry — the broker might recover (e.g., DB migration, restart)
+                    try? await Task.sleep(nanoseconds: UInt64(1_000_000_000 * (attempt + 1)))
+                    continue
+                }
+                let count = await MainActor.run { self.consecutive401Count }
+                if count >= 3 {
+                    // Genuinely invalid — clear credentials
+                    await MainActor.run {
+                        self.brokerToken = nil
+                        self.cachedWebToken = nil
+                        self.cachedWebTokenExpiry = .distantPast
+                        KeychainHelper.delete(key: "brokerToken")
+                        KeychainHelper.delete(key: "webToken")
+                        UserDefaults.standard.removeObject(forKey: "freeq.webTokenExpiry")
+                    }
                 }
                 throw NSError(domain: "Broker", code: 401, userInfo: [NSLocalizedDescriptionKey: "Session expired — please sign in again"])
             }
             guard status == 200 else { throw NSError(domain: "Broker", code: status) }
+            // Success — reset 401 counter
+            await MainActor.run { self.consecutive401Count = 0 }
             return try JSONDecoder().decode(BrokerSessionResponse.self, from: data)
         }
         throw NSError(domain: "Broker", code: 502)

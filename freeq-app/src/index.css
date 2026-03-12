@@ -57,13 +57,24 @@
   src: local('Inter');
 }
 
-html { font-size: 16px; }
+html {
+  font-size: 16px;
+  height: 100%;
+  overflow: hidden;
+}
 
 body {
+  height: 100%;
+  overflow: hidden;
   background: var(--color-bg);
   color: var(--color-fg);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+}
+
+#root {
+  height: 100%;
+  overflow: hidden;
 }
 
 /* Scrollbar */

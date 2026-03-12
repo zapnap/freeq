@@ -124,6 +124,7 @@ export interface Store {
   mutedChannels: Set<string>; // lowercase channel names
   bookmarks: { channel: string; msgId: string; from: string; text: string; timestamp: Date }[];
   bookmarksPanelOpen: boolean;
+  hiddenDMs: Set<string>; // lowercase nicks — hidden from sidebar but messages preserved
   searchOpen: boolean;
   scrollToMsgId: string | null;
   searchQuery: string;
@@ -190,6 +191,8 @@ export interface Store {
   setLoadExternalMedia: (v: boolean) => void;
   toggleFavorite: (channel: string) => void;
   toggleMuted: (channel: string) => void;
+  hideDM: (nick: string) => void;
+  unhideDM: (nick: string) => void;
   isFavorite: (channel: string) => boolean;
   isMuted: (channel: string) => boolean;
   addBookmark: (channel: string, msgId: string, from: string, text: string, timestamp: Date) => void;
@@ -261,6 +264,7 @@ export const useStore = create<Store>((set, get) => ({
   mutedChannels: new Set(JSON.parse(localStorage.getItem('freeq-muted') || '[]')),
   bookmarks: JSON.parse(localStorage.getItem('freeq-bookmarks') || '[]').map((b: any) => ({ ...b, timestamp: new Date(b.timestamp) })),
   bookmarksPanelOpen: false,
+  hiddenDMs: new Set(JSON.parse(localStorage.getItem('freeq-hidden-dms') || '[]')),
   searchOpen: false,
   scrollToMsgId: null,
   searchQuery: '',
@@ -527,6 +531,16 @@ export const useStore = create<Store>((set, get) => ({
       ch.unreadCount++;
     }
     channels.set(channel.toLowerCase(), ch);
+
+    // Auto-unhide DM conversations when a new live message arrives
+    const isDM = !channel.startsWith('#') && !channel.startsWith('&') && channel !== 'server';
+    if (isDM && !msg.isSystem && s.hiddenDMs.has(channel.toLowerCase())) {
+      const hidden = new Set(s.hiddenDMs);
+      hidden.delete(channel.toLowerCase());
+      localStorage.setItem('freeq-hidden-dms', JSON.stringify([...hidden]));
+      return { channels, hiddenDMs: hidden };
+    }
+
     return { channels };
   }),
 
@@ -707,6 +721,20 @@ export const useStore = create<Store>((set, get) => ({
     if (muted.has(key)) muted.delete(key); else muted.add(key);
     localStorage.setItem('freeq-muted', JSON.stringify([...muted]));
     return { mutedChannels: muted };
+  }),
+  hideDM: (nick) => set((s) => {
+    const hidden = new Set(s.hiddenDMs);
+    hidden.add(nick.toLowerCase());
+    localStorage.setItem('freeq-hidden-dms', JSON.stringify([...hidden]));
+    // If we're viewing this DM, switch away
+    const activeChannel = s.activeChannel.toLowerCase() === nick.toLowerCase() ? 'server' : s.activeChannel;
+    return { hiddenDMs: hidden, activeChannel };
+  }),
+  unhideDM: (nick) => set((s) => {
+    const hidden = new Set(s.hiddenDMs);
+    hidden.delete(nick.toLowerCase());
+    localStorage.setItem('freeq-hidden-dms', JSON.stringify([...hidden]));
+    return { hiddenDMs: hidden };
   }),
   isFavorite: (channel) => get().favorites.has(channel.toLowerCase()),
   isMuted: (channel) => get().mutedChannels.has(channel.toLowerCase()),

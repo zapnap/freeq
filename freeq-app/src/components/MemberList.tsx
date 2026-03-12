@@ -27,7 +27,7 @@ export function MemberList() {
   const isDM = !activeChannel.startsWith('#');
 
   if (isDM) {
-    return <DMProfilePanel nick={activeChannel} channel={ch} />;
+    return <DMProfilePanel key={activeChannel} nick={activeChannel} channel={ch} />;
   }
 
   const members = [...ch.members.values()].sort((a, b) => {
