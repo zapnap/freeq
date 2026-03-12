@@ -689,6 +689,14 @@ class AndroidEventHandler(private val state: AppState) : EventHandler {
                 val ch = state.getOrCreateChannel(event.channel)
                 ch.lastActivityTime = System.currentTimeMillis()
                 if (event.nick.equals(state.nick.value, ignoreCase = true)) {
+                    // We joined — clear stale members before NAMES arrives
+                    ch.members.clear()
+                }
+                // Add joiner to members if not already present
+                if (ch.members.none { it.nick.equals(event.nick, ignoreCase = true) }) {
+                    ch.members.add(MemberInfo(nick = event.nick, isOp = false, isVoiced = false))
+                }
+                if (event.nick.equals(state.nick.value, ignoreCase = true)) {
                     // Navigate if this was a user-initiated join
                     if (state.pendingJoinChannel?.equals(event.channel, ignoreCase = true) == true) {
                         state.pendingJoinChannel = null
@@ -807,11 +815,13 @@ class AndroidEventHandler(private val state: AppState) : EventHandler {
             }
 
             is FreeqEvent.Names -> {
+                // Add members from NAMES reply (may arrive in multiple 353 batches)
                 val ch = state.getOrCreateChannel(event.channel)
-                ch.members.clear()
-                ch.members.addAll(event.members.map {
-                    MemberInfo(nick = it.nick, isOp = it.isOp, isHalfop = it.isHalfop, isVoiced = it.isVoiced, awayMsg = it.awayMsg)
-                })
+                for (m in event.members) {
+                    if (ch.members.none { it.nick.equals(m.nick, ignoreCase = true) }) {
+                        ch.members.add(MemberInfo(nick = m.nick, isOp = m.isOp, isHalfop = m.isHalfop, isVoiced = m.isVoiced, awayMsg = m.awayMsg))
+                    }
+                }
                 AvatarCache.prefetchAll(event.members.map { it.nick })
             }
 
