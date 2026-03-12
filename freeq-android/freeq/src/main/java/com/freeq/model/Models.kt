@@ -150,6 +150,7 @@ class AppState(application: Application) : AndroidViewModel(application) {
     var brokerToken: String? = null
     var authBrokerBase: String = "https://irc.freeq.at/auth/broker"
     private var brokerRetryCount = 0
+    private var consecutive401Count = 0  // Require 3 consecutive 401s before nuking token
     internal var intentionalDisconnect = false
     var loggedOut = mutableStateOf(false)
     private var cachedWebToken: String? = null
@@ -387,18 +388,26 @@ class AppState(application: Application) : AndroidViewModel(application) {
                 Thread.sleep(if (attempt == 0) 500 else 1000)
                 continue
             }
-            // 401 = broker token genuinely invalid — clear it
+            // 401 = broker token may be invalid — require 3 consecutive 401s before nuking
             if (status == 401) {
-                this.brokerToken = null
-                cachedWebToken = null
-                cachedWebTokenExpiry = 0L
-                securePrefs.edit().remove("brokerToken").remove("webToken").apply()
-                prefs.edit().remove("webTokenExpiry").apply()
-                throw Exception("Session expired — please sign in again")
+                consecutive401Count++
+                if (consecutive401Count >= 3) {
+                    consecutive401Count = 0
+                    this.brokerToken = null
+                    cachedWebToken = null
+                    cachedWebTokenExpiry = 0L
+                    securePrefs.edit().remove("brokerToken").remove("webToken").apply()
+                    prefs.edit().remove("webTokenExpiry").apply()
+                    throw Exception("Session expired — please sign in again")
+                } else {
+                    throw Exception("Auth failed (attempt $consecutive401Count/3)")
+                }
             }
             if (status != 200) {
                 throw Exception("Broker returned $status")
             }
+            // Success — reset 401 counter
+            consecutive401Count = 0
             val body = conn.inputStream.bufferedReader().readText()
             val json = org.json.JSONObject(body)
             return BrokerSessionResponse(
