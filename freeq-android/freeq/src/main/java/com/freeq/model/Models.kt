@@ -139,6 +139,7 @@ class AppState(application: Application) : AndroidViewModel(application) {
     val dmBuffers = mutableStateListOf<ChannelState>()
     val autoJoinChannels = mutableStateListOf<String>()
     val unreadCounts = mutableStateMapOf<String, Int>()
+    val mutedChannels = mutableStateListOf<String>()
 
     var replyingTo = mutableStateOf<ChatMessage?>(null)
     var editingMessage = mutableStateOf<ChatMessage?>(null)
@@ -234,6 +235,11 @@ class AppState(application: Application) : AndroidViewModel(application) {
             prefs.getString("readPos_$key", null)?.let { lastReadMessageIds[key] = it }
             val ts = prefs.getLong("readPosTime_$key", 0L)
             if (ts > 0) lastReadTimestamps[key] = ts
+        }
+
+        // Restore muted channels
+        prefs.getStringSet("mutedChannels", emptySet())?.forEach { ch ->
+            if (ch !in mutedChannels) mutedChannels.add(ch)
         }
 
         // Prune stale typing indicators every 3 seconds
@@ -517,7 +523,7 @@ class AppState(application: Application) : AndroidViewModel(application) {
     }
 
     fun incrementUnread(channel: String) {
-        if (activeChannel.value != channel) {
+        if (activeChannel.value != channel && !isMuted(channel)) {
             unreadCounts[channel] = (unreadCounts[channel] ?: 0) + 1
         }
     }
@@ -527,6 +533,21 @@ class AppState(application: Application) : AndroidViewModel(application) {
     fun toggleTheme() {
         isDarkTheme.value = !isDarkTheme.value
         prefs.edit().putBoolean("darkTheme", isDarkTheme.value).apply()
+    }
+
+    // ── Muted channels ──
+
+    fun isMuted(channel: String): Boolean =
+        mutedChannels.any { it.equals(channel, ignoreCase = true) }
+
+    fun toggleMute(channel: String) {
+        val existing = mutedChannels.indexOfFirst { it.equals(channel, ignoreCase = true) }
+        if (existing >= 0) {
+            mutedChannels.removeAt(existing)
+        } else {
+            mutedChannels.add(channel)
+        }
+        prefs.edit().putStringSet("mutedChannels", mutedChannels.toSet()).apply()
     }
 
     // ── Channel helpers ──
@@ -766,7 +787,7 @@ class AndroidEventHandler(private val state: AppState) : EventHandler {
                     state.incrementUnread(ircMsg.target)
                     ch.typingUsers.remove(ircMsg.fromNick)
 
-                    if (!isSelf && ircMsg.text.contains(state.nick.value, ignoreCase = true)) {
+                    if (!isSelf && !state.isMuted(ircMsg.target) && ircMsg.text.contains(state.nick.value, ignoreCase = true)) {
                         state.notificationManager.sendMessageNotification(
                             from = ircMsg.fromNick, text = ircMsg.text, channel = ircMsg.target
                         )
