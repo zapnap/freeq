@@ -383,6 +383,9 @@ export function sendReaction(target: string, emoji: string, msgId?: string) {
 
 export function joinChannel(channel: string) {
   raw(`JOIN ${channel}`);
+  // Optimistic switch — user expects to land on the channel they just joined
+  useStore.getState().addChannel(channel);
+  useStore.getState().setActiveChannel(channel);
 }
 
 export function partChannel(channel: string) {
