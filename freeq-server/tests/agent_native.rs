@@ -1131,3 +1131,208 @@ async fn coordination_evidence_rest_api() {
     bot_handle.quit(None).await.unwrap();
     server_handle.abort();
 }
+
+// ══════════════════════════════════════════════════════════════════════
+// Phase 4: Interop and Spawning
+// ══════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn manifest_registration() {
+    start_deadlock_detector();
+    let (addr, server_handle) = start_test_server_with_db(empty_resolver(), true).await;
+
+    let (_did, handle, mut events) = connect_did_key(addr, "manifbot").await;
+    handle.register_agent("agent").await.unwrap();
+    expect_raw_line(&mut events, 2000, "registered as agent", "AGENT REGISTER").await;
+
+    // Submit manifest via TOML
+    let manifest_toml = r#"
+[agent]
+display_name = "manifbot"
+description = "Test manifest agent"
+version = "0.1.0"
+
+[provenance]
+origin_type = "template"
+creator_did = "did:plc:test"
+revocation_authority = "did:plc:test"
+
+[capabilities]
+default = ["post_message", "read_channel"]
+
+[presence]
+heartbeat_interval_seconds = 15
+"#;
+    handle.submit_manifest(manifest_toml).await.unwrap();
+    expect_raw_line(&mut events, 2000, "Manifest registered", "Manifest accepted").await;
+
+    handle.quit(None).await.unwrap();
+    server_handle.abort();
+}
+
+#[tokio::test]
+async fn spawn_and_despawn() {
+    start_deadlock_detector();
+    let (addr, server_handle) = start_test_server_with_db(empty_resolver(), true).await;
+
+    let (_did, parent, mut parent_ev) = connect_did_key(addr, "factory").await;
+    let (_did2, watcher, mut watch_ev) = connect_did_key(addr, "watcher2").await;
+    parent.register_agent("agent").await.unwrap();
+    expect_raw_line(&mut parent_ev, 2000, "registered as agent", "AGENT REGISTER").await;
+
+    parent.join("#spawn").await.unwrap();
+    expect_event(&mut parent_ev, 2000, |e| matches!(e, Event::Joined { .. }), "Parent joined").await;
+    watcher.join("#spawn").await.unwrap();
+    expect_event(&mut watch_ev, 2000, |e| matches!(e, Event::Joined { .. }), "Watcher joined").await;
+
+    // Spawn a child agent
+    parent.spawn_agent("#spawn", "qa-worker", &["post_message", "call_tool"], Some(60), Some("TASK123")).await.unwrap();
+    expect_raw_line(&mut parent_ev, 2000, "Spawned qa-worker", "Spawn confirmed").await;
+
+    // Watcher sees child JOIN
+    expect_raw_line(&mut watch_ev, 2000, "qa-worker", "Watcher sees child JOIN").await;
+
+    // Parent sends message as child
+    parent.send_as_child("qa-worker", "#spawn", "Running tests...").await.unwrap();
+    expect_raw_line(&mut watch_ev, 2000, "Running tests", "Watcher sees child message").await;
+
+    // Despawn
+    parent.despawn_agent("qa-worker").await.unwrap();
+    expect_raw_line(&mut parent_ev, 2000, "Despawned qa-worker", "Despawn confirmed").await;
+
+    // Watcher sees QUIT
+    expect_raw_line(&mut watch_ev, 2000, "qa-worker", "Watcher sees child QUIT").await;
+
+    parent.quit(None).await.unwrap();
+    watcher.quit(None).await.unwrap();
+    server_handle.abort();
+}
+
+#[tokio::test]
+async fn spawn_nick_conflict() {
+    start_deadlock_detector();
+    let (addr, server_handle) = start_test_server_with_db(empty_resolver(), true).await;
+
+    let (_did, parent, mut parent_ev) = connect_did_key(addr, "spawner").await;
+    let (_did2, _other, _other_ev) = connect_did_key(addr, "taken").await;
+    parent.register_agent("agent").await.unwrap();
+    expect_raw_line(&mut parent_ev, 2000, "registered as agent", "AGENT REGISTER").await;
+
+    parent.join("#nicktest").await.unwrap();
+    expect_event(&mut parent_ev, 2000, |e| matches!(e, Event::Joined { .. }), "Joined").await;
+
+    // Try to spawn with an existing nick
+    parent.spawn_agent("#nicktest", "taken", &[], None, None).await.unwrap();
+    expect_raw_line(&mut parent_ev, 2000, "already in use", "Nick conflict detected").await;
+
+    parent.quit(None).await.unwrap();
+    server_handle.abort();
+}
+
+#[tokio::test]
+async fn spawn_ttl_expiry() {
+    start_deadlock_detector();
+    let (addr, server_handle) = start_test_server_with_db(empty_resolver(), true).await;
+
+    let (_did, parent, mut parent_ev) = connect_did_key(addr, "ttlparent").await;
+    let (_did2, watcher, mut watch_ev) = connect_did_key(addr, "ttlwatch").await;
+    parent.register_agent("agent").await.unwrap();
+    expect_raw_line(&mut parent_ev, 2000, "registered as agent", "AGENT REGISTER").await;
+
+    parent.join("#ttltest").await.unwrap();
+    expect_event(&mut parent_ev, 2000, |e| matches!(e, Event::Joined { .. }), "Parent joined").await;
+    watcher.join("#ttltest").await.unwrap();
+    expect_event(&mut watch_ev, 2000, |e| matches!(e, Event::Joined { .. }), "Watcher joined").await;
+
+    // Spawn with 1-second TTL
+    parent.spawn_agent("#ttltest", "ephemeral", &[], Some(1), None).await.unwrap();
+    expect_raw_line(&mut parent_ev, 2000, "Spawned ephemeral", "Spawn confirmed").await;
+    expect_raw_line(&mut watch_ev, 2000, "ephemeral", "Watcher sees spawn JOIN").await;
+
+    // Wait for TTL expiry
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Watcher should see the QUIT or expiry notice
+    expect_raw_line(&mut watch_ev, 3000, "expired", "Watcher sees TTL expiry").await;
+
+    parent.quit(None).await.unwrap();
+    watcher.quit(None).await.unwrap();
+    server_handle.abort();
+}
+
+#[tokio::test]
+async fn manifest_rest_api() {
+    start_deadlock_detector();
+    let (addr, web_addr, server_handle) = start_test_server_with_web_and_db(empty_resolver()).await;
+
+    let (_did, handle, mut events) = connect_did_key(addr, "restmanif").await;
+    handle.register_agent("agent").await.unwrap();
+    expect_raw_line(&mut events, 2000, "registered as agent", "AGENT REGISTER").await;
+
+    let manifest_toml = r#"
+[agent]
+display_name = "restmanif"
+version = "1.0.0"
+
+[provenance]
+origin_type = "template"
+creator_did = "did:plc:test"
+revocation_authority = "did:plc:test"
+
+[capabilities]
+default = ["post_message"]
+
+[presence]
+heartbeat_interval_seconds = 30
+"#;
+    handle.submit_manifest(manifest_toml).await.unwrap();
+    expect_raw_line(&mut events, 2000, "Manifest registered", "Manifest accepted").await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // List manifests
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("http://{web_addr}/api/v1/agents/manifests"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let manifests = body["manifests"].as_array().unwrap();
+    assert!(!manifests.is_empty(), "Expected at least 1 manifest");
+
+    handle.quit(None).await.unwrap();
+    server_handle.abort();
+}
+
+#[tokio::test]
+async fn spawned_agents_rest_api() {
+    start_deadlock_detector();
+    let (addr, web_addr, server_handle) = start_test_server_with_web_and_db(empty_resolver()).await;
+
+    let (_did, parent, mut parent_ev) = connect_did_key(addr, "restspawn").await;
+    parent.register_agent("agent").await.unwrap();
+    expect_raw_line(&mut parent_ev, 2000, "registered as agent", "AGENT REGISTER").await;
+
+    parent.join("#restspawnch").await.unwrap();
+    expect_event(&mut parent_ev, 2000, |e| matches!(e, Event::Joined { .. }), "Joined").await;
+
+    parent.spawn_agent("#restspawnch", "rest-child", &["post_message"], None, None).await.unwrap();
+    expect_raw_line(&mut parent_ev, 2000, "Spawned rest-child", "Spawn confirmed").await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("http://{web_addr}/api/v1/agents/spawned"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let agents = body["spawned_agents"].as_array().unwrap();
+    assert!(!agents.is_empty(), "Expected at least 1 spawned agent");
+    assert_eq!(agents[0]["nick"], "rest-child");
+
+    parent.quit(None).await.unwrap();
+    server_handle.abort();
+}

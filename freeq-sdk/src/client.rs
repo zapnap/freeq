@@ -512,6 +512,47 @@ impl ClientHandle {
         Ok(())
     }
 
+    // ── Phase 4: Manifests and Spawning ────────────────────────────
+
+    /// Submit an agent manifest (base64-encoded TOML).
+    pub async fn submit_manifest(&self, toml_content: &str) -> Result<()> {
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(toml_content.as_bytes());
+        self.raw(&format!("AGENT MANIFEST {encoded}")).await
+    }
+
+    /// Spawn a child agent in a channel.
+    pub async fn spawn_agent(
+        &self,
+        channel: &str,
+        nick: &str,
+        capabilities: &[&str],
+        ttl_seconds: Option<u64>,
+        task_ref: Option<&str>,
+    ) -> Result<()> {
+        let mut params = format!("nick={nick}");
+        if !capabilities.is_empty() {
+            params.push_str(&format!(";capabilities={}", capabilities.join(",")));
+        }
+        if let Some(ttl) = ttl_seconds {
+            params.push_str(&format!(";ttl={ttl}"));
+        }
+        if let Some(task) = task_ref {
+            params.push_str(&format!(";task={task}"));
+        }
+        self.raw(&format!("AGENT SPAWN {channel} :{params}")).await
+    }
+
+    /// Despawn a child agent.
+    pub async fn despawn_agent(&self, nick: &str) -> Result<()> {
+        self.raw(&format!("AGENT DESPAWN {nick}")).await
+    }
+
+    /// Send a message as a spawned child agent.
+    pub async fn send_as_child(&self, child_nick: &str, channel: &str, text: &str) -> Result<()> {
+        self.raw(&format!("AGENT MSG {child_nick} {channel} :{text}")).await
+    }
+
     /// Start automatic heartbeat in a background task.
     /// Returns a handle that stops the heartbeat when dropped.
     pub fn start_heartbeat(

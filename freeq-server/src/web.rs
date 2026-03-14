@@ -199,6 +199,9 @@ pub fn router(state: Arc<SharedState>) -> Router {
         .route("/api/v1/channels/{name}/events", get(api_channel_events))
         .route("/api/v1/channels/{name}/audit", get(api_channel_audit))
         .route("/api/v1/tasks/{task_id}", get(api_task))
+        .route("/api/v1/agents/manifests", get(api_list_manifests))
+        .route("/api/v1/agents/manifests/{did}", get(api_get_manifest))
+        .route("/api/v1/agents/spawned", get(api_spawned_agents))
         .route("/auth/mobile", get(auth_mobile_redirect))
         .route("/join/{channel}", get(channel_invite_page))
         .layer(axum::extract::DefaultBodyLimit::max(12 * 1024 * 1024)) // 12MB
@@ -645,6 +648,62 @@ async fn api_channel_audit(
     }
 
     Json(serde_json::json!({ "channel": channel, "timeline": timeline }))
+}
+
+/// GET /api/v1/agents/manifests — list all registered manifests.
+async fn api_list_manifests(
+    State(state): State<Arc<SharedState>>,
+) -> Json<serde_json::Value> {
+    let manifests: Vec<serde_json::Value> = state
+        .with_db(|db| {
+            Ok(db.list_manifests().into_iter().map(|(did, json, ts)| {
+                let parsed = serde_json::from_str::<serde_json::Value>(&json)
+                    .unwrap_or(serde_json::json!({}));
+                serde_json::json!({
+                    "agent_did": did,
+                    "manifest": parsed,
+                    "registered_at": ts,
+                })
+            }).collect::<Vec<_>>())
+        })
+        .unwrap_or_default();
+    Json(serde_json::json!({ "manifests": manifests }))
+}
+
+/// GET /api/v1/agents/manifests/{did} — get a specific manifest.
+async fn api_get_manifest(
+    State(state): State<Arc<SharedState>>,
+    axum::extract::Path(did): axum::extract::Path<String>,
+) -> Json<serde_json::Value> {
+    let did_decoded = did.replace("%3A", ":").replace("%3a", ":");
+    match state.with_db(|db| Ok(db.get_manifest(&did_decoded))) {
+        Some(Some(json)) => {
+            let parsed = serde_json::from_str::<serde_json::Value>(&json)
+                .unwrap_or(serde_json::json!({}));
+            Json(serde_json::json!({ "agent_did": did_decoded, "manifest": parsed }))
+        }
+        _ => Json(serde_json::json!({ "error": "Manifest not found" })),
+    }
+}
+
+/// GET /api/v1/agents/spawned — list all active spawned agents.
+async fn api_spawned_agents(
+    State(state): State<Arc<SharedState>>,
+) -> Json<serde_json::Value> {
+    let agents: Vec<serde_json::Value> = state.spawned_agents.lock()
+        .values()
+        .map(|sa| serde_json::json!({
+            "child_did": sa.child_did,
+            "parent_did": sa.parent_did,
+            "nick": sa.nick,
+            "channel": sa.channel,
+            "capabilities": sa.capabilities,
+            "ttl": sa.ttl,
+            "task_ref": sa.task_ref,
+            "spawned_at": sa.spawned_at,
+        }))
+        .collect();
+    Json(serde_json::json!({ "spawned_agents": agents }))
 }
 
 /// GET /api/v1/actors/{did} — identity card for any actor (human or agent).

@@ -500,6 +500,22 @@ pub struct SharedState {
     /// If they reconnect within the grace period, suppress QUIT/JOIN churn.
     /// Key: DID, Value: (nick, hostmask, channels_with_modes, disconnect_time, cancel_sender)
     pub ghost_sessions: Mutex<HashMap<String, GhostSession>>,
+    /// Spawned (virtual) agents: child_did → SpawnedAgent.
+    pub spawned_agents: Mutex<HashMap<String, SpawnedAgent>>,
+}
+
+/// A spawned virtual agent (child of a real agent session).
+#[derive(Debug, Clone)]
+pub struct SpawnedAgent {
+    pub child_did: String,
+    pub parent_did: String,
+    pub parent_session: String,
+    pub nick: String,
+    pub channel: String,
+    pub capabilities: Vec<String>,
+    pub ttl: Option<u64>,
+    pub task_ref: Option<String>,
+    pub spawned_at: i64,
 }
 
 /// A ghost session represents a recently-disconnected DID user.
@@ -935,6 +951,7 @@ impl Server {
             session_client_info: Mutex::new(HashMap::new()),
             upload_tokens: Mutex::new(HashMap::new()),
             ghost_sessions: Mutex::new(HashMap::new()),
+            spawned_agents: Mutex::new(HashMap::new()),
         }))
     }
 
