@@ -858,10 +858,14 @@ async function handleLine(rawLine: string) {
       const channel = msg.params[2];
       const nicks = (msg.params[3] || '').split(' ').filter(Boolean);
       for (const n of nicks) {
-        const isOp = n.startsWith('@');
-        const isHalfop = n.startsWith('%');
-        const isVoiced = n.startsWith('+');
-        const bare = n.replace(/^[@%+]/, '');
+        // With multi-prefix, nicks can have multiple prefixes: @+nick, @%+nick, etc.
+        // Strip all leading prefix chars to get bare nick.
+        const prefixMatch = n.match(/^([@%+]+)/);
+        const prefixes = prefixMatch ? prefixMatch[1] : '';
+        const bare = n.slice(prefixes.length);
+        const isOp = prefixes.includes('@');
+        const isHalfop = prefixes.includes('%');
+        const isVoiced = prefixes.includes('+');
         store.addMember(channel, { nick: bare, isOp, isHalfop, isVoiced });
       }
       break;
