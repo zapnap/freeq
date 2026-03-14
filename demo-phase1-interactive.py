@@ -174,7 +174,7 @@ class IRCBot:
     def wait_for_continue(self):
         """Wait for owner to say 'next', 'n', 'continue', 'go', 'ok', etc."""
         self.say(CHAN, "")
-        self.say(CHAN, "👉 Say "next" when you're ready to continue.")
+        self.say(CHAN, "👉 Say 'next' when you're ready to continue.")
         while True:
             msg = self.wait_for_owner(timeout=300)
             if msg is None:
@@ -213,7 +213,7 @@ bot.drain()
 # ─── Intro ──────────────────────────────────────
 bot.say(CHAN, "👋 Hey! I'm scout-bot — a demo agent for Phase 1: Known Actors.")
 bot.say(CHAN, "I'll walk you through each feature one at a time.")
-bot.say(CHAN, "After each feature, I'll wait for you to say "next" before continuing.")
+bot.say(CHAN, "After each feature, I'll wait for you to say 'next' before continuing.")
 bot.say(CHAN, "There are 7 features to demo. Let's start.")
 
 if not bot.wait_for_continue():
@@ -381,7 +381,7 @@ bot.say(CHAN, "")
 bot.say(CHAN, "This works on EVERY IRC client — irssi, weechat, Textual, the web client.")
 bot.say(CHAN, "Slash commands would fail on any client that isn't ours.")
 bot.say(CHAN, "")
-bot.say(CHAN, "Try it now — ask me something! Say "next" when you're done playing.")
+bot.say(CHAN, "Try it now — ask me something! Say 'next' when you're done playing.")
 
 # Interactive sub-loop for step 7
 while True:

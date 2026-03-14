@@ -8,6 +8,13 @@ interface ActorInfo {
   actor_class?: string;
   did?: string;
   online?: boolean;
+  spawned?: boolean;
+  parent_did?: string;
+  parent_nick?: string;
+  channel?: string;
+  capabilities?: string[];
+  ttl?: number;
+  task?: string;
   provenance?: {
     creator_did?: string;
     source_repo?: string;
@@ -73,14 +80,19 @@ export function UserPopover({ nick, did, position, onClose }: UserPopoverProps) 
   }, [effectiveDid]);
 
   // Fetch actor info from REST API (agent class, provenance, presence)
+  // Try by DID first, fall back to nick (for spawned agents before WHOIS completes)
   useEffect(() => {
-    if (effectiveDid) {
-      fetch(`/api/v1/actors/${encodeURIComponent(effectiveDid)}`)
-        .then((r) => r.ok ? r.json() : null)
-        .then((data) => data && setActorInfo(data))
-        .catch(() => {});
-    }
-  }, [effectiveDid]);
+    const fetchActor = async () => {
+      if (effectiveDid) {
+        const r = await fetch(`/api/v1/actors/${encodeURIComponent(effectiveDid)}`);
+        if (r.ok) { setActorInfo(await r.json()); return; }
+      }
+      // Fallback: try by nick (spawned agents may not have DID yet)
+      const r2 = await fetch(`/api/v1/actors/${encodeURIComponent(nick)}`);
+      if (r2.ok) { setActorInfo(await r2.json()); }
+    };
+    fetchActor().catch(() => {});
+  }, [effectiveDid, nick]);
 
   const startDM = () => {
     addChannel(nick);
@@ -137,7 +149,35 @@ export function UserPopover({ nick, did, position, onClose }: UserPopoverProps) 
           {/* Agent badge */}
           {actorInfo && (actorInfo.actor_class === 'agent' || actorInfo.actor_class === 'external_agent') && (
             <div className="inline-flex items-center gap-1 mt-1 px-2 py-0.5 bg-accent/10 rounded-full text-xs text-accent">
-              🤖 {actorInfo.actor_class === 'external_agent' ? 'External Agent' : 'Agent'}
+              🤖 {actorInfo.spawned ? 'Spawned Agent' : actorInfo.actor_class === 'external_agent' ? 'External Agent' : 'Agent'}
+            </div>
+          )}
+
+          {/* Spawned agent info */}
+          {actorInfo?.spawned && (
+            <div className="mt-2 p-2 bg-bg-tertiary rounded-lg text-left">
+              <div className="text-[10px] text-fg-dim font-semibold mb-1">Spawned Agent</div>
+              {actorInfo.parent_nick && (
+                <div className="text-[10px] text-fg-dim">
+                  <span className="text-fg-dim/60">Parent:</span>{' '}
+                  <span className="font-semibold text-fg-muted">{actorInfo.parent_nick}</span>
+                </div>
+              )}
+              {actorInfo.task && (
+                <div className="text-[10px] text-fg-dim">
+                  <span className="text-fg-dim/60">Task:</span> {actorInfo.task}
+                </div>
+              )}
+              {actorInfo.capabilities && actorInfo.capabilities.length > 0 && (
+                <div className="text-[10px] text-fg-dim">
+                  <span className="text-fg-dim/60">Caps:</span> {actorInfo.capabilities.join(', ')}
+                </div>
+              )}
+              {actorInfo.ttl && (
+                <div className="text-[10px] text-fg-dim">
+                  <span className="text-fg-dim/60">TTL:</span> {actorInfo.ttl}s
+                </div>
+              )}
             </div>
           )}
 
