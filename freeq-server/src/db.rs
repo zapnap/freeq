@@ -266,6 +266,32 @@ impl Db {
         )?;
 
         self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS agent_manifests (
+                agent_did TEXT PRIMARY KEY,
+                manifest_json TEXT NOT NULL,
+                manifest_url TEXT,
+                registered_by TEXT NOT NULL,
+                registered_at INTEGER NOT NULL,
+                active INTEGER DEFAULT 1
+            );
+            CREATE TABLE IF NOT EXISTS spawned_agents (
+                child_did TEXT PRIMARY KEY,
+                parent_did TEXT NOT NULL,
+                parent_session TEXT NOT NULL,
+                nick TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                capabilities_json TEXT NOT NULL DEFAULT '[]',
+                ttl_seconds INTEGER,
+                task_ref TEXT,
+                spawned_at INTEGER NOT NULL,
+                despawned_at INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_spawn_parent ON spawned_agents(parent_did);
+            CREATE INDEX IF NOT EXISTS idx_spawn_channel ON spawned_agents(channel);
+            ",
+        )?;
+
+        self.conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS coordination_events (
                 event_id TEXT PRIMARY KEY,
                 event_type TEXT NOT NULL,
@@ -1329,6 +1355,20 @@ impl Db {
     }
 }
 
+/// A spawned agent record.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SpawnedAgentRow {
+    pub child_did: String,
+    pub parent_did: String,
+    pub parent_session: String,
+    pub nick: String,
+    pub channel: String,
+    pub capabilities_json: String,
+    pub ttl_seconds: Option<u64>,
+    pub task_ref: Option<String>,
+    pub spawned_at: i64,
+}
+
 // ── Coordination events DB methods ─────────────────────────────────
 
 /// A coordination event row.
@@ -1480,6 +1520,140 @@ impl Db {
             Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
             Err(_) => Vec::new(),
         }
+    }
+
+    // ── Agent manifests ──────────────────────────────────────────────
+
+    pub fn save_manifest(
+        &self,
+        agent_did: &str,
+        manifest_json: &str,
+        manifest_url: Option<&str>,
+        registered_by: &str,
+    ) -> SqlResult<()> {
+        let now = chrono::Utc::now().timestamp();
+        self.conn.execute(
+            "INSERT OR REPLACE INTO agent_manifests
+             (agent_did, manifest_json, manifest_url, registered_by, registered_at, active)
+             VALUES (?1, ?2, ?3, ?4, ?5, 1)",
+            params![agent_did, manifest_json, manifest_url, registered_by, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_manifest(&self, agent_did: &str) -> Option<String> {
+        self.conn
+            .query_row(
+                "SELECT manifest_json FROM agent_manifests WHERE agent_did = ?1 AND active = 1",
+                params![agent_did],
+                |row| row.get(0),
+            )
+            .ok()
+    }
+
+    pub fn deactivate_manifest(&self, agent_did: &str) -> SqlResult<()> {
+        self.conn.execute(
+            "UPDATE agent_manifests SET active = 0 WHERE agent_did = ?1",
+            params![agent_did],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_manifests(&self) -> Vec<(String, String, i64)> {
+        let mut stmt = match self.conn.prepare(
+            "SELECT agent_did, manifest_json, registered_at FROM agent_manifests WHERE active = 1 ORDER BY registered_at DESC",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        match stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        }) {
+            Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    // ── Spawned agents ─────────────────────────────────────────────
+
+    pub fn record_spawn(
+        &self,
+        child_did: &str,
+        parent_did: &str,
+        parent_session: &str,
+        nick: &str,
+        channel: &str,
+        capabilities: &[String],
+        ttl_seconds: Option<u64>,
+        task_ref: Option<&str>,
+    ) -> SqlResult<()> {
+        let now = chrono::Utc::now().timestamp();
+        let caps_json = serde_json::to_string(capabilities).unwrap_or_else(|_| "[]".to_string());
+        self.conn.execute(
+            "INSERT OR REPLACE INTO spawned_agents
+             (child_did, parent_did, parent_session, nick, channel, capabilities_json, ttl_seconds, task_ref, spawned_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![child_did, parent_did, parent_session, nick, channel, caps_json, ttl_seconds.map(|t| t as i64), task_ref, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn record_despawn(&self, child_did: &str) -> SqlResult<()> {
+        let now = chrono::Utc::now().timestamp();
+        self.conn.execute(
+            "UPDATE spawned_agents SET despawned_at = ?1 WHERE child_did = ?2",
+            params![now, child_did],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_active_spawns(&self, parent_did: &str) -> Vec<SpawnedAgentRow> {
+        let mut stmt = match self.conn.prepare(
+            "SELECT child_did, parent_did, parent_session, nick, channel, capabilities_json, ttl_seconds, task_ref, spawned_at
+             FROM spawned_agents WHERE parent_did = ?1 AND despawned_at IS NULL",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        match stmt.query_map(params![parent_did], |row| {
+            Ok(SpawnedAgentRow {
+                child_did: row.get(0)?,
+                parent_did: row.get(1)?,
+                parent_session: row.get(2)?,
+                nick: row.get(3)?,
+                channel: row.get(4)?,
+                capabilities_json: row.get(5)?,
+                ttl_seconds: row.get::<_, Option<i64>>(6)?.map(|t| t as u64),
+                task_ref: row.get(7)?,
+                spawned_at: row.get(8)?,
+            })
+        }) {
+            Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    pub fn get_spawn_by_nick(&self, channel: &str, nick: &str) -> Option<SpawnedAgentRow> {
+        self.conn.query_row(
+            "SELECT child_did, parent_did, parent_session, nick, channel, capabilities_json, ttl_seconds, task_ref, spawned_at
+             FROM spawned_agents WHERE channel = ?1 AND nick = ?2 AND despawned_at IS NULL",
+            params![channel, nick],
+            |row| Ok(SpawnedAgentRow {
+                child_did: row.get(0)?,
+                parent_did: row.get(1)?,
+                parent_session: row.get(2)?,
+                nick: row.get(3)?,
+                channel: row.get(4)?,
+                capabilities_json: row.get(5)?,
+                ttl_seconds: row.get::<_, Option<i64>>(6)?.map(|t| t as u64),
+                task_ref: row.get(7)?,
+                spawned_at: row.get(8)?,
+            }),
+        ).ok()
     }
 
     /// Query governance log entries for a channel.

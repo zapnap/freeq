@@ -1576,11 +1576,253 @@ where
                         }
                     }
 
+                    // ── Phase 4: Manifests ──────────────────────────
+                    // AGENT MANIFEST <url-or-inline-toml>
+                    "MANIFEST" => {
+                        let raw = msg.params.get(1).cloned().unwrap_or_default();
+                        if raw.is_empty() {
+                            let reply = Message::from_server(&server_name, irc::ERR_NEEDMOREPARAMS,
+                                vec![&nick, "AGENT", "Usage: AGENT MANIFEST <url-or-inline-toml>"]);
+                            send(&state, &session_id, format!("{reply}\r\n"));
+                            continue;
+                        }
+
+                        // Try to parse as TOML first, then as URL
+                        let manifest_result = if raw.starts_with("http://") || raw.starts_with("https://") {
+                            // URL — we don't fetch in tests, just store the URL
+                            Err("URL manifests require REST API".to_string())
+                        } else {
+                            // Inline TOML (base64-encoded to survive IRC)
+                            use base64::Engine;
+                            match base64::engine::general_purpose::STANDARD.decode(&raw) {
+                                Ok(bytes) => match String::from_utf8(bytes) {
+                                    Ok(toml_str) => crate::manifest::AgentManifest::from_toml(&toml_str)
+                                        .map_err(|e| format!("Invalid TOML: {e}")),
+                                    Err(e) => Err(format!("Invalid UTF-8: {e}")),
+                                },
+                                Err(_) => crate::manifest::AgentManifest::from_toml(&raw)
+                                    .map_err(|e| format!("Invalid TOML: {e}")),
+                            }
+                        };
+
+                        match manifest_result {
+                            Ok(manifest) => {
+                                if let Err(e) = manifest.validate() {
+                                    let reply = Message::from_server(&server_name, "NOTICE",
+                                        vec![&nick, &format!("Invalid manifest: {e}")]);
+                                    send(&state, &session_id, format!("{reply}\r\n"));
+                                    continue;
+                                }
+                                let agent_did = conn.authenticated_did.as_deref().unwrap_or("unknown");
+                                let registrar = conn.authenticated_did.as_deref().unwrap_or(&nick);
+                                let manifest_json = manifest.to_json();
+                                state.with_db(|db| db.save_manifest(agent_did, &manifest_json, None, registrar));
+
+                                // Auto-apply: set actor class + provenance
+                                if let Ok(class) = manifest.agent.actor_class.parse::<ActorClass>() {
+                                    conn.actor_class = class;
+                                    state.session_actor_class.lock().insert(session_id.clone(), class);
+                                }
+
+                                let caps = manifest.capabilities.default.join(", ");
+                                let reply = Message::from_server(&server_name, "NOTICE",
+                                    vec![&nick, &format!("✅ Manifest registered for {}. Capabilities: {caps}", manifest.agent.display_name)]);
+                                send(&state, &session_id, format!("{reply}\r\n"));
+                                tracing::info!(nick = %nick, display_name = %manifest.agent.display_name, "AGENT MANIFEST registered");
+                            }
+                            Err(e) => {
+                                let reply = Message::from_server(&server_name, "NOTICE",
+                                    vec![&nick, &format!("Manifest error: {e}")]);
+                                send(&state, &session_id, format!("{reply}\r\n"));
+                            }
+                        }
+                    }
+
+                    // ── Phase 4: Spawn ──────────────────────────────
+                    // AGENT SPAWN #channel :nick=child;capabilities=cap1,cap2;ttl=300;task=01JQXYZ
+                    "SPAWN" => {
+                        let channel = match msg.params.get(1) {
+                            Some(c) if c.starts_with('#') => c.clone(),
+                            _ => {
+                                let reply = Message::from_server(&server_name, irc::ERR_NEEDMOREPARAMS,
+                                    vec![&nick, "AGENT", "Usage: AGENT SPAWN #channel :nick=name;capabilities=a,b;ttl=300;task=id"]);
+                                send(&state, &session_id, format!("{reply}\r\n"));
+                                continue;
+                            }
+                        };
+                        let params_str = msg.params.get(2).cloned().unwrap_or_default();
+                        let mut child_nick = String::new();
+                        let mut capabilities: Vec<String> = Vec::new();
+                        let mut ttl: Option<u64> = None;
+                        let mut task_ref: Option<String> = None;
+                        for part in params_str.split(';') {
+                            if let Some((k, v)) = part.split_once('=') {
+                                match k.trim() {
+                                    "nick" => child_nick = v.trim().to_string(),
+                                    "capabilities" => capabilities = v.split(',').map(|s| s.trim().to_string()).collect(),
+                                    "ttl" => ttl = v.trim().parse().ok(),
+                                    "task" => task_ref = Some(v.trim().to_string()),
+                                    _ => {}
+                                }
+                            }
+                        }
+                        if child_nick.is_empty() {
+                            let reply = Message::from_server(&server_name, "NOTICE",
+                                vec![&nick, "SPAWN requires nick= parameter"]);
+                            send(&state, &session_id, format!("{reply}\r\n"));
+                            continue;
+                        }
+
+                        // Check nick availability
+                        if state.nick_to_session.lock().get_session(&child_nick).is_some() {
+                            let reply = Message::from_server(&server_name, "433",
+                                vec![&nick, &child_nick, "Nickname already in use"]);
+                            send(&state, &session_id, format!("{reply}\r\n"));
+                            continue;
+                        }
+
+                        // Generate session-scoped DID for child
+                        let child_did = format!("did:freeq:spawn:{}", crate::msgid::generate());
+                        let parent_did = conn.authenticated_did.clone().unwrap_or_else(|| nick.clone());
+
+                        // Record spawn
+                        state.with_db(|db| db.record_spawn(
+                            &child_did, &parent_did, &session_id,
+                            &child_nick, &channel, &capabilities,
+                            ttl, task_ref.as_deref(),
+                        ));
+
+                        // Store in spawned_agents map (in-memory for fast lookup)
+                        state.spawned_agents.lock().insert(child_did.clone(), crate::server::SpawnedAgent {
+                            child_did: child_did.clone(),
+                            parent_did: parent_did.clone(),
+                            parent_session: session_id.clone(),
+                            nick: child_nick.clone(),
+                            channel: channel.clone(),
+                            capabilities: capabilities.clone(),
+                            ttl,
+                            task_ref: task_ref.clone(),
+                            spawned_at: chrono::Utc::now().timestamp(),
+                        });
+
+                        // Broadcast JOIN for child to channel
+                        let child_hostmask = format!("{child_nick}!spawn@freeq/spawn/{}", &child_did[child_did.len().saturating_sub(8)..]);
+                        let join_line = format!(
+                            "@+freeq.at/actor-class=agent;+freeq.at/parent={} :{child_hostmask} JOIN {channel}\r\n",
+                            nick
+                        );
+                        helpers::broadcast_to_channel(&state, &channel, &join_line);
+
+                        // Set up TTL expiry
+                        if let Some(ttl_secs) = ttl {
+                            let state_clone = Arc::clone(&state);
+                            let child_did_clone = child_did.clone();
+                            let child_nick_clone = child_nick.clone();
+                            let channel_clone = channel.clone();
+                            let server_name_clone = server_name.clone();
+                            tokio::spawn(async move {
+                                tokio::time::sleep(std::time::Duration::from_secs(ttl_secs)).await;
+                                // Auto-despawn
+                                if state_clone.spawned_agents.lock().remove(&child_did_clone).is_some() {
+                                    let quit_line = format!(
+                                        ":{child_nick_clone}!spawn@freeq/spawn QUIT :TTL expired\r\n"
+                                    );
+                                    helpers::broadcast_to_channel(&state_clone, &channel_clone, &quit_line);
+                                    let notice = format!(
+                                        ":{server_name_clone} NOTICE {channel_clone} :⏱ Spawned agent {child_nick_clone} expired (TTL)\r\n"
+                                    );
+                                    helpers::broadcast_to_channel(&state_clone, &channel_clone, &notice);
+                                    state_clone.with_db(|db| db.record_despawn(&child_did_clone));
+                                    tracing::info!(child = %child_nick_clone, "Spawned agent TTL expired");
+                                }
+                            });
+                        }
+
+                        let caps_str = if capabilities.is_empty() { "none".to_string() } else { capabilities.join(", ") };
+                        let ttl_str = ttl.map(|t| format!(", TTL: {t}s")).unwrap_or_default();
+                        let reply = Message::from_server(&server_name, "NOTICE",
+                            vec![&nick, &format!("✅ Spawned {child_nick} in {channel} (caps: {caps_str}{ttl_str})")]);
+                        send(&state, &session_id, format!("{reply}\r\n"));
+                        tracing::info!(parent = %nick, child = %child_nick, channel = %channel, "AGENT SPAWN");
+                    }
+
+                    // AGENT DESPAWN <nick>
+                    "DESPAWN" => {
+                        let child_nick = match msg.params.get(1) {
+                            Some(n) => n.clone(),
+                            None => {
+                                let reply = Message::from_server(&server_name, irc::ERR_NEEDMOREPARAMS,
+                                    vec![&nick, "AGENT", "Usage: AGENT DESPAWN <nick>"]);
+                                send(&state, &session_id, format!("{reply}\r\n"));
+                                continue;
+                            }
+                        };
+
+                        // Find the spawned agent owned by this session
+                        let removed = {
+                            let mut spawned = state.spawned_agents.lock();
+                            let found = spawned.iter()
+                                .find(|(_, sa)| sa.nick.eq_ignore_ascii_case(&child_nick) && sa.parent_session == session_id)
+                                .map(|(k, v)| (k.clone(), v.clone()));
+                            if let Some((key, _)) = &found {
+                                spawned.remove(key);
+                            }
+                            found
+                        };
+
+                        if let Some((child_did, sa)) = removed {
+                            let quit_line = format!(
+                                ":{child_nick}!spawn@freeq/spawn QUIT :Despawned by {nick}\r\n"
+                            );
+                            helpers::broadcast_to_channel(&state, &sa.channel, &quit_line);
+                            state.with_db(|db| db.record_despawn(&child_did));
+
+                            let reply = Message::from_server(&server_name, "NOTICE",
+                                vec![&nick, &format!("✅ Despawned {child_nick}")]);
+                            send(&state, &session_id, format!("{reply}\r\n"));
+                            tracing::info!(parent = %nick, child = %child_nick, "AGENT DESPAWN");
+                        } else {
+                            let reply = Message::from_server(&server_name, "NOTICE",
+                                vec![&nick, &format!("No spawned agent '{child_nick}' owned by you")]);
+                            send(&state, &session_id, format!("{reply}\r\n"));
+                        }
+                    }
+
+                    // AGENT MSG <child-nick> #channel :text — send message as spawned child
+                    "MSG" => {
+                        let (child_nick, target, text) = match (msg.params.get(1), msg.params.get(2), msg.params.get(3)) {
+                            (Some(cn), Some(t), Some(txt)) => (cn.clone(), t.clone(), txt.clone()),
+                            _ => {
+                                let reply = Message::from_server(&server_name, irc::ERR_NEEDMOREPARAMS,
+                                    vec![&nick, "AGENT", "Usage: AGENT MSG <child-nick> #channel :text"]);
+                                send(&state, &session_id, format!("{reply}\r\n"));
+                                continue;
+                            }
+                        };
+
+                        // Verify child is owned by this session
+                        let child_exists = state.spawned_agents.lock().values()
+                            .any(|sa| sa.nick.eq_ignore_ascii_case(&child_nick) && sa.parent_session == session_id);
+
+                        if child_exists {
+                            let child_hostmask = format!("{child_nick}!spawn@freeq/spawn");
+                            let msgid = crate::msgid::generate();
+                            let line = format!(
+                                "@msgid={msgid};+freeq.at/actor-class=agent;+freeq.at/parent={nick} :{child_hostmask} PRIVMSG {target} :{text}\r\n"
+                            );
+                            helpers::broadcast_to_channel(&state, &target, &line);
+                        } else {
+                            let reply = Message::from_server(&server_name, "NOTICE",
+                                vec![&nick, &format!("No spawned agent '{child_nick}' owned by you")]);
+                            send(&state, &session_id, format!("{reply}\r\n"));
+                        }
+                    }
+
                     _ => {
                         let reply = Message::from_server(
                             &server_name,
                             "NOTICE",
-                            vec![&nick, &format!("Unknown AGENT subcommand: {subcmd}. Use: REGISTER, PAUSE, RESUME, REVOKE, APPROVE, DENY")],
+                            vec![&nick, &format!("Unknown AGENT subcommand: {subcmd}. Use: REGISTER, PAUSE, RESUME, REVOKE, APPROVE, DENY, MANIFEST, SPAWN, DESPAWN, MSG")],
                         );
                         send(&state, &session_id, format!("{reply}\r\n"));
                     }

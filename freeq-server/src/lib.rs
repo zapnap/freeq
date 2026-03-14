@@ -7,6 +7,7 @@ pub mod crdt;
 pub mod db;
 pub mod irc;
 pub mod iroh;
+pub mod manifest;
 pub mod msgid;
 pub mod plugin;
 pub mod policy;
