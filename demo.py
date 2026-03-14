@@ -6,6 +6,7 @@ demonstrates governance, coordination, spawning, and budgets.
 """
 
 import ssl, socket, time, base64, hashlib, json, threading, sys
+sys.stdout.reconfigure(line_buffering=True)  # unbuffered output
 
 # --- ed25519 key handling (uses PyNaCl or falls back to cryptography) ---
 try:
@@ -110,33 +111,49 @@ class IRCAgent:
         self.send_raw("CAP LS 302")
         self.send_raw(f"NICK {self.nick}")
         self.send_raw(f"USER {self.nick} 0 * :Agent-Native Demo Bot")
+        time.sleep(1)  # let server respond
 
         if self.key:
+            self.drain(0.5)  # clear CAP LS response
             self.send_raw("CAP REQ :sasl message-tags server-time echo-message")
-            self.wait_for("CAP", 5)
+            self.wait_for("ACK", 5)
             self.send_raw("AUTHENTICATE ATPROTO-CHALLENGE")
             
-            # Wait for challenge
+            # Wait for challenge — server sends: AUTHENTICATE <base64-challenge>
             challenge_line = self.wait_for("AUTHENTICATE", 5)
-            if challenge_line and '+' in challenge_line:
-                # Parse challenge: base64(did\0session\0nonce\0timestamp)
-                parts = challenge_line.split(' ')
-                challenge_b64 = parts[-1] if parts[-1] != '+' else None
+            if challenge_line:
+                # Extract the base64 payload (last space-separated token)
+                challenge_b64 = challenge_line.split(' ')[-1]
                 if challenge_b64 and challenge_b64 != '+':
-                    challenge_bytes = base64.b64decode(challenge_b64)
-                    # Sign the challenge
+                    padded = challenge_b64 + '=' * (-len(challenge_b64) % 4)
+                    try:
+                        challenge_bytes = base64.urlsafe_b64decode(padded)
+                    except Exception:
+                        challenge_bytes = base64.b64decode(padded)
+                    
+                    # Sign the raw challenge bytes
                     signature = sign(self.key, challenge_bytes)
-                    # Response: base64(did\0signature_b64)
                     sig_b64 = base64.urlsafe_b64encode(signature).rstrip(b'=').decode()
-                    response = f"{self.did}\0{sig_b64}"
-                    resp_b64 = base64.b64encode(response.encode()).decode()
+                    
+                    # Response: base64url(JSON{ did, signature })
+                    response_json = json.dumps({
+                        "did": self.did,
+                        "signature": sig_b64
+                    })
+                    resp_b64 = base64.urlsafe_b64encode(response_json.encode()).rstrip(b'=').decode()
                     self.send_raw(f"AUTHENTICATE {resp_b64}")
                     
                     result = self.wait_for("90", 5)  # 903 success or 904 failure
                     if result and "903" in result:
-                        print(f"  ✅ {self.nick} authenticated as {self.did[:40]}...")
+                        print(f"  ✅ {self.nick} authenticated as {self.did[:50]}...")
+                    elif result:
+                        print(f"  ⚠ {self.nick} auth failed: {result}")
                     else:
-                        print(f"  ⚠ {self.nick} auth result: {result}")
+                        print(f"  ⚠ {self.nick} auth timeout")
+                else:
+                    print(f"  ⚠ {self.nick} got AUTHENTICATE + (no challenge)")
+            else:
+                print(f"  ⚠ {self.nick} no AUTHENTICATE response")
             
             self.send_raw("CAP END")
         else:
@@ -145,6 +162,8 @@ class IRCAgent:
         welcome = self.wait_for("001", 5)
         if welcome:
             print(f"  ✅ {self.nick} connected")
+        else:
+            print(f"  ⚠ {self.nick} no welcome received")
         self.drain()
 
     def join(self, channel):
@@ -346,7 +365,7 @@ time.sleep(0.3)
 factory.cmd(f"SPEND {CHAN} :amount=8.50;unit=usd;desc=claude-sonnet: 32k/11k tokens (building);task={task_id}")
 time.sleep(0.3)
 factory.cmd(f"SPEND {CHAN} :amount=2.10;unit=usd;desc=claude-sonnet: 8k/3k tokens (testing);task={task_id}")
-time.drain(0.5)
+factory.drain(0.5)
 
 factory.say(CHAN, f"💰 Total spend: $18.60 / $25.00 budget (74.4%) — 4 LLM calls for task {task_id}")
 
@@ -428,16 +447,21 @@ print("  Demo complete! Agents staying connected.")
 print("  Press Ctrl+C to disconnect.")
 print("=" * 60)
 
-# Keep agents alive with heartbeats
+# Keep agents alive with heartbeats for 5 minutes
+print("  Agents staying online for 5 minutes (Ctrl+C to disconnect early)")
 try:
-    while True:
+    for _ in range(12):  # 12 * 25s = 5 min
         factory.cmd("HEARTBEAT 30")
         auditor.cmd("HEARTBEAT 30")
         time.sleep(25)
 except KeyboardInterrupt:
-    print("\nDisconnecting agents...")
-    factory.say(CHAN, "👋 factory-bot signing off")
-    auditor.say(CHAN, "👋 auditor-bot signing off")
-    factory.send_raw("QUIT :demo over")
-    auditor.send_raw("QUIT :demo over")
-    time.sleep(1)
+    pass
+
+print("\nDisconnecting agents...")
+factory.say(CHAN, "👋 factory-bot signing off")
+auditor.say(CHAN, "👋 auditor-bot signing off")
+time.sleep(0.5)
+factory.send_raw("QUIT :demo over")
+auditor.send_raw("QUIT :demo over")
+time.sleep(1)
+print("Done.")
