@@ -196,23 +196,26 @@ pub(crate) fn broadcast_account_notify(
     let hostmask = format!("{nick}!~u@{host}");
     let line = format!(":{hostmask} ACCOUNT {did}\r\n");
 
-    // Find all channels this user is in
-    let channels = state.channels.lock();
-    let mut notified = std::collections::HashSet::new();
-    for ch in channels.values() {
-        if ch.members.contains(session_id) {
-            let cap_set = state.cap_account_notify.lock();
-            let conns = state.connections.lock();
-            for member_sid in &ch.members {
-                if member_sid != session_id && !notified.contains(member_sid) {
-                    if cap_set.contains(member_sid)
-                        && let Some(tx) = conns.get(member_sid)
-                    {
-                        let _ = tx.try_send(line.clone());
+    // Collect targets first (release channels lock before acquiring connections)
+    let mut targets = std::collections::HashSet::new();
+    {
+        let channels = state.channels.lock();
+        let cap_set = state.cap_account_notify.lock();
+        for ch in channels.values() {
+            if ch.members.contains(session_id) {
+                for member_sid in &ch.members {
+                    if member_sid != session_id && cap_set.contains(member_sid) {
+                        targets.insert(member_sid.clone());
                     }
-                    notified.insert(member_sid.clone());
                 }
             }
+        }
+    }
+    // Now send with only connections lock held
+    let conns = state.connections.lock();
+    for sid in &targets {
+        if let Some(tx) = conns.get(sid) {
+            let _ = tx.try_send(line.clone());
         }
     }
 }
