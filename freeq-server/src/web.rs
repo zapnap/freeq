@@ -851,6 +851,36 @@ async fn api_actor_identity(
         })
     });
 
+    // Check if this is a spawned agent (by DID or nick)
+    let spawned = state.spawned_agents.lock().values()
+        .find(|sa| sa.child_did == did || sa.nick.eq_ignore_ascii_case(&did))
+        .cloned();
+
+    if let Some(sa) = spawned {
+        // Return spawned agent identity card
+        let parent_nick = {
+            let nts = state.nick_to_session.lock();
+            nts.get_nick(&sa.parent_session).map(|n| n.to_string())
+        };
+        let parent_provenance = state.provenance_declarations.lock().get(&sa.parent_did).cloned();
+        let result = serde_json::json!({
+            "did": sa.child_did,
+            "actor_class": "agent",
+            "online": true,
+            "nick": sa.nick,
+            "spawned": true,
+            "parent_did": sa.parent_did,
+            "parent_nick": parent_nick,
+            "channel": sa.channel,
+            "capabilities": sa.capabilities,
+            "ttl": sa.ttl,
+            "task": sa.task_ref,
+            "spawned_at": sa.spawned_at,
+            "provenance": parent_provenance,
+        });
+        return Ok(Json(result));
+    }
+
     let mut result = serde_json::json!({
         "did": did,
         "actor_class": actor_class.to_string(),

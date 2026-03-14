@@ -143,6 +143,14 @@ impl PrivateKey {
         }
     }
 
+    /// Get the raw private key bytes (32 bytes for both key types).
+    pub fn secret_bytes(&self) -> Vec<u8> {
+        match self {
+            PrivateKey::Secp256k1(key) => key.to_bytes().to_vec(),
+            PrivateKey::Ed25519(key) => key.to_bytes().to_vec(),
+        }
+    }
+
     /// Get the corresponding public key.
     pub fn public_key(&self) -> PublicKey {
         match self {
