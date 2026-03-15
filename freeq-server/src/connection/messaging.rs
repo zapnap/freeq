@@ -531,7 +531,15 @@ pub(super) fn handle_privmsg(
                         &plain_line
                     };
                     if let Some(tx) = conns.get(target_session) {
-                        let _ = tx.try_send(line.clone());
+                        if let Err(_e) = tx.try_send(line.clone()) {
+                            let target_nick = state.nick_to_session.lock().get_nick(target_session).map(|s| s.to_string()).unwrap_or_default();
+                            tracing::warn!(
+                                from = %conn.nick.as_deref().unwrap_or("?"),
+                                to = %target_nick,
+                                session = %target_session,
+                                "DM dropped: target send buffer full"
+                            );
+                        }
                     }
                 }
 

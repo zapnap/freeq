@@ -56,7 +56,7 @@ export function AuditTimeline({ channel, onClose }: AuditTimelineProps) {
     fetch(`/api/v1/channels/${encodeURIComponent(channel.replace(/^#/, ''))}/audit?${params}`)
       .then(r => r.ok ? r.json() : { events: [] })
       .then(data => {
-        setEvents(data.events || []);
+        setEvents(data.timeline || data.events || []);
         setLoading(false);
       })
       .catch(() => setLoading(false));
