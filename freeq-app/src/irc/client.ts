@@ -951,6 +951,7 @@ async function handleLine(rawLine: string) {
       if (sub === 'TARGETS' && msg.params[1]) {
         const targetNick = msg.params[1];
         store.addDmTarget(targetNick);
+        requestHistory(targetNick);
       }
       break;
     }
