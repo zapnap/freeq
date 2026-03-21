@@ -858,8 +858,9 @@ where
                             ch.pins.truncate(50);
                             drop(channels);
                             // Notify channel with tag for clients to update cache
+                            // Use plain text, not CTCP ACTION — the tag is what matters for sync
                             let notice = format!(
-                                "@+freeq.at/pin={msgid} :{nick}!~u@host NOTICE {channel} :\x01ACTION pinned a message\x01\r\n"
+                                "@+freeq.at/pin={msgid} :{nick}!~u@host NOTICE {channel} :pinned a message\r\n"
                             );
                             helpers::broadcast_to_channel(&state, &channel, &notice);
                         }
@@ -870,7 +871,7 @@ where
                             drop(channels);
                             // Notify channel with tag for clients to update cache
                             let notice = format!(
-                                "@+freeq.at/unpin={msgid} :{nick}!~u@host NOTICE {channel} :\x01ACTION unpinned a message\x01\r\n"
+                                "@+freeq.at/unpin={msgid} :{nick}!~u@host NOTICE {channel} :unpinned a message\r\n"
                             );
                             helpers::broadcast_to_channel(&state, &channel, &notice);
                         } else {
@@ -2168,7 +2169,7 @@ where
                 state.agent_presence.lock().insert(session_id.clone(), presence.clone());
 
                 // Broadcast via AWAY mechanism for backwards compat
-                let away_json = serde_json::to_string(&presence).unwrap_or_default();
+                let _away_json = serde_json::to_string(&presence).unwrap_or_default();
                 let hostmask = conn.hostmask();
 
                 // Set/clear AWAY state

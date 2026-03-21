@@ -203,6 +203,8 @@ export interface Store {
   setSearchOpen: (open: boolean) => void;
   setScrollToMsgId: (id: string | null) => void;
   setPins: (channel: string, pins: PinnedMessage[]) => void;
+  addPin: (channel: string, msgid: string, pinnedBy: string) => void;
+  removePin: (channel: string, msgid: string) => void;
   setSearchQuery: (query: string) => void;
   setChannelListOpen: (open: boolean) => void;
   setChannelList: (list: ChannelListEntry[]) => void;
@@ -767,6 +769,24 @@ export const useStore = create<Store>((set, get) => ({
     const channels = new Map(state.channels);
     const ch = channels.get(channel.toLowerCase());
     if (ch) { ch.pins = pins; channels.set(channel.toLowerCase(), { ...ch }); }
+    return { channels };
+  }),
+  addPin: (channel, msgid, pinnedBy) => set((state) => {
+    const channels = new Map(state.channels);
+    const ch = channels.get(channel.toLowerCase());
+    if (ch && !ch.pins.some(p => p.msgid === msgid)) {
+      ch.pins = [...ch.pins, { msgid, pinned_by: pinnedBy, pinned_at: Date.now() }];
+      channels.set(channel.toLowerCase(), { ...ch });
+    }
+    return { channels };
+  }),
+  removePin: (channel, msgid) => set((state) => {
+    const channels = new Map(state.channels);
+    const ch = channels.get(channel.toLowerCase());
+    if (ch) {
+      ch.pins = ch.pins.filter(p => p.msgid !== msgid);
+      channels.set(channel.toLowerCase(), { ...ch });
+    }
     return { channels };
   }),
   setSearchQuery: (query) => set({ searchQuery: query }),

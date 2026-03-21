@@ -766,15 +766,17 @@ class AndroidEventHandler(private val state: AppState) : EventHandler {
                 val ircMsg = event.msg
                 val isSelf = ircMsg.fromNick.equals(state.nick.value, ignoreCase = true)
 
-                // Handle pin/unpin sync broadcasts
+                // Handle pin/unpin sync broadcasts (don't show as chat message)
                 ircMsg.pinMsgid?.let { msgId ->
                     if (ircMsg.target.startsWith("#")) {
                         PinCache.addPin(ircMsg.target, msgId)
+                        return@launch // Don't display sync message in chat
                     }
                 }
                 ircMsg.unpinMsgid?.let { msgId ->
                     if (ircMsg.target.startsWith("#")) {
                         PinCache.removePin(ircMsg.target, msgId)
+                        return@launch // Don't display sync message in chat
                     }
                 }
 

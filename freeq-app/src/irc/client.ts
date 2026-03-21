@@ -805,6 +805,17 @@ async function handleLine(rawLine: string) {
       if (noticeActorClass && from && (target.startsWith('#') || target.startsWith('&'))) {
         store.addMember(target, { nick: from, actorClass: noticeActorClass });
       }
+      // Handle pin/unpin sync broadcasts (don't show as system message)
+      const pinMsgid = msg.tags?.['+freeq.at/pin'];
+      const unpinMsgid = msg.tags?.['+freeq.at/unpin'];
+      if (pinMsgid && (target.startsWith('#') || target.startsWith('&'))) {
+        store.addPin(target, pinMsgid, from);
+        break; // Don't show sync message in chat
+      }
+      if (unpinMsgid && (target.startsWith('#') || target.startsWith('&'))) {
+        store.removePin(target, unpinMsgid);
+        break; // Don't show sync message in chat
+      }
       store.addSystemMessage(buf, `[${from || 'server'}] ${text}`);
       break;
     }
