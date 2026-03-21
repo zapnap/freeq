@@ -815,7 +815,13 @@ async function handleLine(rawLine: string) {
       if (unpinMsgid && (target.startsWith('#') || target.startsWith('&'))) {
         store.removePin(target, unpinMsgid);
       }
-      store.addSystemMessage(buf, `[${from || 'server'}] ${text}`);
+      // Strip CTCP ACTION wrapper for display (e.g., pin/unpin notifications)
+      const isAction = text.startsWith('\x01ACTION ') && text.endsWith('\x01');
+      if (isAction) {
+        store.addSystemMessage(buf, `${from} ${text.slice(8, -1)}`);
+      } else {
+        store.addSystemMessage(buf, `[${from || 'server'}] ${text}`);
+      }
       break;
     }
 
