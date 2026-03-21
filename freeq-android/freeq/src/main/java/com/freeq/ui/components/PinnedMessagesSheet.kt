@@ -14,6 +14,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.freeq.model.PinCache
 import com.freeq.ui.theme.FreeqColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -47,6 +48,8 @@ fun PinnedMessagesSheet(
         try {
             val result = withContext(Dispatchers.IO) { fetchPins(channelName) }
             pins = result
+            // Update PinCache so message list visual treatment reflects latest state
+            PinCache.setAll(channelName, result.map { it.id }.toSet())
         } catch (e: Exception) {
             error = e.message ?: "Failed to load pins"
         }

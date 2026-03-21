@@ -857,9 +857,9 @@ where
                             // Cap at 50 pins
                             ch.pins.truncate(50);
                             drop(channels);
-                            // Notify channel
+                            // Notify channel with tag for clients to update cache
                             let notice = format!(
-                                ":{nick}!~u@host NOTICE {channel} :\x01ACTION pinned a message\x01\r\n"
+                                "@+freeq.at/pin={msgid} :{nick}!~u@host NOTICE {channel} :\x01ACTION pinned a message\x01\r\n"
                             );
                             helpers::broadcast_to_channel(&state, &channel, &notice);
                         }
@@ -868,8 +868,9 @@ where
                         ch.pins.retain(|p| p.msgid != *msgid);
                         if ch.pins.len() < before {
                             drop(channels);
+                            // Notify channel with tag for clients to update cache
                             let notice = format!(
-                                ":{nick}!~u@host NOTICE {channel} :\x01ACTION unpinned a message\x01\r\n"
+                                "@+freeq.at/unpin={msgid} :{nick}!~u@host NOTICE {channel} :\x01ACTION unpinned a message\x01\r\n"
                             );
                             helpers::broadcast_to_channel(&state, &channel, &notice);
                         } else {

@@ -24,6 +24,8 @@ pub struct IrcMessage {
     pub replaces_msgid: Option<String>,
     pub edit_of: Option<String>,
     pub batch_id: Option<String>,
+    pub pin_msgid: Option<String>,
+    pub unpin_msgid: Option<String>,
     pub is_action: bool,
     pub is_signed: bool,
     pub timestamp_ms: i64,
@@ -368,6 +370,8 @@ fn convert_event(event: &freeq_sdk::event::Event) -> FreeqEvent {
             let replaces_msgid = tags.get("+draft/edit").cloned();
             let edit_of = tags.get("+draft/edit").cloned();
             let batch_id = tags.get("batch").cloned();
+            let pin_msgid = tags.get("+freeq.at/pin").cloned();
+            let unpin_msgid = tags.get("+freeq.at/unpin").cloned();
             let is_action = text.starts_with("\x01ACTION ") && text.ends_with('\x01');
             let clean_text = if is_action {
                 text.trim_start_matches("\x01ACTION ")
@@ -391,6 +395,8 @@ fn convert_event(event: &freeq_sdk::event::Event) -> FreeqEvent {
                     replaces_msgid,
                     edit_of,
                     batch_id,
+                    pin_msgid,
+                    unpin_msgid,
                     is_action,
                     is_signed: tags.contains_key("+freeq.at/sig"),
                     timestamp_ms: ts,

@@ -2729,6 +2729,8 @@ data class IrcMessage (
     var `replacesMsgid`: kotlin.String?, 
     var `editOf`: kotlin.String?, 
     var `batchId`: kotlin.String?, 
+    var `pinMsgid`: kotlin.String?, 
+    var `unpinMsgid`: kotlin.String?, 
     var `isAction`: kotlin.Boolean, 
     var `isSigned`: kotlin.Boolean, 
     var `timestampMs`: kotlin.Long
@@ -2751,6 +2753,8 @@ public object FfiConverterTypeIrcMessage: FfiConverterRustBuffer<IrcMessage> {
             FfiConverterOptionalString.read(buf),
             FfiConverterOptionalString.read(buf),
             FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
             FfiConverterBoolean.read(buf),
             FfiConverterBoolean.read(buf),
             FfiConverterLong.read(buf),
@@ -2766,6 +2770,8 @@ public object FfiConverterTypeIrcMessage: FfiConverterRustBuffer<IrcMessage> {
             FfiConverterOptionalString.allocationSize(value.`replacesMsgid`) +
             FfiConverterOptionalString.allocationSize(value.`editOf`) +
             FfiConverterOptionalString.allocationSize(value.`batchId`) +
+            FfiConverterOptionalString.allocationSize(value.`pinMsgid`) +
+            FfiConverterOptionalString.allocationSize(value.`unpinMsgid`) +
             FfiConverterBoolean.allocationSize(value.`isAction`) +
             FfiConverterBoolean.allocationSize(value.`isSigned`) +
             FfiConverterLong.allocationSize(value.`timestampMs`)
@@ -2780,6 +2786,8 @@ public object FfiConverterTypeIrcMessage: FfiConverterRustBuffer<IrcMessage> {
             FfiConverterOptionalString.write(value.`replacesMsgid`, buf)
             FfiConverterOptionalString.write(value.`editOf`, buf)
             FfiConverterOptionalString.write(value.`batchId`, buf)
+            FfiConverterOptionalString.write(value.`pinMsgid`, buf)
+            FfiConverterOptionalString.write(value.`unpinMsgid`, buf)
             FfiConverterBoolean.write(value.`isAction`, buf)
             FfiConverterBoolean.write(value.`isSigned`, buf)
             FfiConverterLong.write(value.`timestampMs`, buf)

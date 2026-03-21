@@ -1,5 +1,6 @@
 package com.freeq.model
 
+import androidx.compose.runtime.mutableStateMapOf
 import kotlinx.coroutines.*
 import org.json.JSONObject
 import java.net.URL
@@ -7,7 +8,8 @@ import java.net.URLEncoder
 import java.util.concurrent.ConcurrentHashMap
 
 object PinCache {
-    private val cache = ConcurrentHashMap<String, Set<String>>()
+    // Observable state for Compose - triggers recomposition when pins change
+    private val cache = mutableStateMapOf<String, Set<String>>()
     private val pending = ConcurrentHashMap.newKeySet<String>()
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
@@ -31,6 +33,10 @@ object PinCache {
         cache[key]?.let { cache[key] = it - msgId }
     }
 
+    fun setAll(channel: String, msgIds: Set<String>) {
+        cache[channel.lowercase()] = msgIds
+    }
+
     private suspend fun fetchPins(channel: String, key: String) {
         try {
             val encoded = URLEncoder.encode(channel, "UTF-8")
@@ -46,7 +52,7 @@ object PinCache {
                 val msgIds = (0 until pinsArray.length()).mapNotNull { i ->
                     pinsArray.getJSONObject(i).optString("msgid").takeIf { it.isNotEmpty() }
                 }.toSet()
-                cache[key] = msgIds
+                withContext(Dispatchers.Main) { cache[key] = msgIds }
             }
         } catch (_: Exception) {}
         finally { pending.remove(key) }
