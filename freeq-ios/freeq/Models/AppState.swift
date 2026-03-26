@@ -130,6 +130,7 @@ enum ConnectionState: Equatable {
 
 /// Main application state — bridges the Rust SDK to SwiftUI.
 class AppState: ObservableObject {
+    private static let minimumPersistentSessionDuration: TimeInterval = 14 * 24 * 60 * 60  // 14 days
     struct BatchBuffer {
         let target: String
         var messages: [ChatMessage]
@@ -519,6 +520,18 @@ class AppState: ObservableObject {
 
     /// Track consecutive 401s — only clear broker token after multiple failures
     private var consecutive401Count = 0
+    private var lastLoginDate: Date? {
+        let ts = UserDefaults.standard.double(forKey: "freeq.lastLogin")
+        guard ts > 0 else { return nil }
+        return Date(timeIntervalSince1970: ts)
+    }
+
+    /// Keep users logged in for at least two weeks unless they explicitly log out.
+    /// During this window, never clear broker credentials automatically.
+    private var canAutoClearBrokerCredentials: Bool {
+        guard let lastLoginDate else { return false }
+        return Date().timeIntervalSince(lastLoginDate) >= Self.minimumPersistentSessionDuration
+    }
 
     private func fetchBrokerSession(brokerToken: String) async throws -> BrokerSessionResponse {
         // Retry up to 4 times with backoff — DPoP nonce rotation and transient errors
@@ -560,7 +573,7 @@ class AppState: ObservableObject {
                     continue
                 }
                 let count = await MainActor.run { self.consecutive401Count }
-                if count >= 3 {
+                if count >= 3 && canAutoClearBrokerCredentials {
                     // Genuinely invalid — clear credentials
                     await MainActor.run {
                         self.brokerToken = nil
