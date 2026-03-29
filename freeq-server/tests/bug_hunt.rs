@@ -121,22 +121,19 @@ impl C {
     c.num("368"); // End of ban list
 }).await; }
 
-/// BUG: NAMES on a channel you're NOT in leaks member list
-#[tokio::test] async fn names_spy_on_channel() { run(|a| {
+/// CORRECT: NAMES on a public channel shows members to non-members (RFC 2812 3.2.5).
+/// Public channels (no +s/+p) MUST show NAMES to all. Only +s hides membership.
+#[tokio::test] async fn names_visible_on_public_channel() { run(|a| {
     let mut own = C::new(a, "namesown");
     own.reg(); own.drain();
-    own.tx("JOIN #secret_names"); own.num("366"); own.drain();
-    // Outsider requests NAMES for a channel they're NOT in
-    let mut spy = C::new(a, "spy");
-    spy.reg(); spy.drain();
-    spy.tx("NAMES #secret_names");
-    let r = spy.maybe(|l| l.split_whitespace().nth(1) == Some("353"), 1000);
-    if let Some(names) = r {
-        if names.contains("namesown") {
-            panic!("BUG: NAMES leaks member list to non-members: {names}");
-        }
-    }
-    // Either got 353 without members (OK) or no 353 (OK)
+    own.tx("JOIN #public_names"); own.num("366"); own.drain();
+    // Non-member requests NAMES — should see members (channel is public)
+    let mut viewer = C::new(a, "viewer");
+    viewer.reg(); viewer.drain();
+    viewer.tx("NAMES #public_names");
+    let r = viewer.maybe(|l| l.split_whitespace().nth(1) == Some("353"), 1000);
+    assert!(r.is_some(), "Public channel NAMES should be visible to non-members");
+    assert!(r.unwrap().contains("namesown"), "Should see channel members");
 }).await; }
 
 /// BUG: NAMES with no parameter — should list something or error
