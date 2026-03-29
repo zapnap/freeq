@@ -10,12 +10,24 @@ name = "freeq-bots"
 path = "src/main.rs"
 
 [[bin]]
+name = "context-bot"
+path = "src/bin/context_bot.rs"
+
+[[bin]]
 name = "chatroom"
 path = "src/bin/chatroom.rs"
 
 [[bin]]
 name = "loadtest"
 path = "src/bin/loadtest.rs"
+
+[[bin]]
+name = "stream-demo"
+path = "src/bin/stream_demo.rs"
+
+[[bin]]
+name = "stream-demo2"
+path = "src/bin/stream_demo2.rs"
 
 [dependencies]
 freeq-sdk = { path = "../freeq-sdk" }

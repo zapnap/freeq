@@ -131,7 +131,7 @@ enum class ConnectionState {
 class AppState(application: Application) : AndroidViewModel(application) {
     var connectionState = mutableStateOf(ConnectionState.Disconnected)
     var nick = mutableStateOf("")
-    var serverAddress = mutableStateOf("irc.freeq.at:6667")
+    var serverAddress = mutableStateOf(ServerConfig.ircServer)
     val channels = mutableStateListOf<ChannelState>()
     var activeChannel = mutableStateOf<String?>(null)
     var errorMessage = mutableStateOf<String?>(null)
@@ -139,15 +139,30 @@ class AppState(application: Application) : AndroidViewModel(application) {
     val dmBuffers = mutableStateListOf<ChannelState>()
     val autoJoinChannels = mutableStateListOf<String>()
     val unreadCounts = mutableStateMapOf<String, Int>()
+    val mutedChannels = mutableStateListOf<String>()
 
     var replyingTo = mutableStateOf<ChatMessage?>(null)
     var editingMessage = mutableStateOf<ChatMessage?>(null)
 
     var pendingWebToken: String? = null
     var pendingNavigation = mutableStateOf<String?>(null)
+    var pendingJoinChannel: String? = null  // Track user-initiated joins for navigation
     var brokerToken: String? = null
-    var authBrokerBase: String = "https://irc.freeq.at/auth/broker"
+    val authBrokerBase: String
+        get() = "${ServerConfig.apiBaseUrl}/auth/broker"
     private var brokerRetryCount = 0
+    private var consecutive401Count = 0  // Require 3 consecutive 401s before nuking token
+
+    // Keep users logged in for at least 14 days unless they explicitly log out
+    private val lastLoginTime: Long
+        get() = prefs.getLong("lastLoginTime", 0L)
+
+    private val canAutoClearBrokerCredentials: Boolean
+        get() {
+            if (lastLoginTime == 0L) return false
+            val fourteenDaysMs = 14L * 24 * 60 * 60 * 1000
+            return System.currentTimeMillis() - lastLoginTime >= fourteenDaysMs
+        }
     internal var intentionalDisconnect = false
     var loggedOut = mutableStateOf(false)
     private var cachedWebToken: String? = null
@@ -221,7 +236,7 @@ class AppState(application: Application) : AndroidViewModel(application) {
 
         // Restore persisted state
         nick.value = prefs.getString("nick", "") ?: ""
-        serverAddress.value = prefs.getString("server", "irc.freeq.at:6667") ?: "irc.freeq.at:6667"
+        serverAddress.value = prefs.getString("server", ServerConfig.ircServer) ?: ServerConfig.ircServer
         prefs.getStringSet("channels", setOf("#general"))?.forEach { ch ->
             if (ch !in autoJoinChannels) autoJoinChannels.add(ch)
         }
@@ -233,6 +248,11 @@ class AppState(application: Application) : AndroidViewModel(application) {
             prefs.getString("readPos_$key", null)?.let { lastReadMessageIds[key] = it }
             val ts = prefs.getLong("readPosTime_$key", 0L)
             if (ts > 0) lastReadTimestamps[key] = ts
+        }
+
+        // Restore muted channels
+        prefs.getStringSet("mutedChannels", emptySet())?.forEach { ch ->
+            if (ch !in mutedChannels) mutedChannels.add(ch)
         }
 
         // Prune stale typing indicators every 3 seconds
@@ -282,9 +302,11 @@ class AppState(application: Application) : AndroidViewModel(application) {
     fun disconnect() {
         intentionalDisconnect = true
         client?.disconnect()
+        client = null  // Clear reference so reconnect creates fresh client
         connectionState.value = ConnectionState.Disconnected
         channels.clear()
         dmBuffers.clear()
+        batches.clear()
         activeChannel.value = null
         replyingTo.value = null
         editingMessage.value = null
@@ -307,7 +329,7 @@ class AppState(application: Application) : AndroidViewModel(application) {
         cachedWebToken = null
         cachedWebTokenExpiry = 0L
         securePrefs.edit().remove("brokerToken").remove("did").remove("webToken").apply()
-        prefs.edit().remove("nick").remove("webTokenExpiry").apply()
+        prefs.edit().remove("nick").remove("webTokenExpiry").remove("lastLoginTime").apply()
         nick.value = ""
         disconnect()
     }
@@ -378,18 +400,27 @@ class AppState(application: Application) : AndroidViewModel(application) {
                 Thread.sleep(if (attempt == 0) 500 else 1000)
                 continue
             }
-            // 401 = broker token genuinely invalid — clear it
+            // 401 = broker token may be invalid — require 3 consecutive 401s before nuking
+            // But keep users logged in for at least 14 days unless they explicitly log out
             if (status == 401) {
-                this.brokerToken = null
-                cachedWebToken = null
-                cachedWebTokenExpiry = 0L
-                securePrefs.edit().remove("brokerToken").remove("webToken").apply()
-                prefs.edit().remove("webTokenExpiry").apply()
-                throw Exception("Session expired — please sign in again")
+                consecutive401Count++
+                if (consecutive401Count >= 3 && canAutoClearBrokerCredentials) {
+                    consecutive401Count = 0
+                    this.brokerToken = null
+                    cachedWebToken = null
+                    cachedWebTokenExpiry = 0L
+                    securePrefs.edit().remove("brokerToken").remove("webToken").apply()
+                    prefs.edit().remove("webTokenExpiry").remove("lastLoginTime").apply()
+                    throw Exception("Session expired — please sign in again")
+                } else {
+                    throw Exception("Auth failed (attempt $consecutive401Count/3)")
+                }
             }
             if (status != 200) {
                 throw Exception("Broker returned $status")
             }
+            // Success — reset 401 counter
+            consecutive401Count = 0
             val body = conn.inputStream.bufferedReader().readText()
             val json = org.json.JSONObject(body)
             return BrokerSessionResponse(
@@ -403,11 +434,14 @@ class AppState(application: Application) : AndroidViewModel(application) {
 
     // ── Channel operations ──
 
-    fun joinChannel(channel: String) {
+    fun joinChannel(channel: String, navigate: Boolean = true) {
         val ch = if (channel.startsWith("#")) channel else "#$channel"
+        // Track for navigation after JOIN confirmation (only for user-initiated joins)
+        if (navigate) pendingJoinChannel = ch
         try {
             client?.join(ch)
         } catch (_: Exception) {
+            if (navigate) pendingJoinChannel = null
             errorMessage.value = "Failed to join $ch"
         }
     }
@@ -457,6 +491,9 @@ class AppState(application: Application) : AndroidViewModel(application) {
     }
 
     fun sendRaw(line: String) {
+        if (client == null) {
+            return
+        }
         try {
             client?.sendRaw(line)
         } catch (_: Exception) {}
@@ -490,6 +527,16 @@ class AppState(application: Application) : AndroidViewModel(application) {
         sendRaw("CHATHISTORY LATEST $channel * 100")
     }
 
+    fun pinMessage(channel: String, msgId: String) {
+        sendRaw("PIN $channel $msgId")
+        PinCache.addPin(channel, msgId)
+    }
+
+    fun unpinMessage(channel: String, msgId: String) {
+        sendRaw("UNPIN $channel $msgId")
+        PinCache.removePin(channel, msgId)
+    }
+
     // ── Read tracking ──
 
     fun markRead(channel: String) {
@@ -508,7 +555,7 @@ class AppState(application: Application) : AndroidViewModel(application) {
     }
 
     fun incrementUnread(channel: String) {
-        if (activeChannel.value != channel) {
+        if (activeChannel.value != channel && !isMuted(channel)) {
             unreadCounts[channel] = (unreadCounts[channel] ?: 0) + 1
         }
     }
@@ -518,6 +565,21 @@ class AppState(application: Application) : AndroidViewModel(application) {
     fun toggleTheme() {
         isDarkTheme.value = !isDarkTheme.value
         prefs.edit().putBoolean("darkTheme", isDarkTheme.value).apply()
+    }
+
+    // ── Muted channels ──
+
+    fun isMuted(channel: String): Boolean =
+        mutedChannels.any { it.equals(channel, ignoreCase = true) }
+
+    fun toggleMute(channel: String) {
+        val existing = mutedChannels.indexOfFirst { it.equals(channel, ignoreCase = true) }
+        if (existing >= 0) {
+            mutedChannels.removeAt(existing)
+        } else {
+            mutedChannels.add(channel)
+        }
+        prefs.edit().putStringSet("mutedChannels", mutedChannels.toSet()).apply()
     }
 
     // ── Channel helpers ──
@@ -637,14 +699,9 @@ class AndroidEventHandler(private val state: AppState) : EventHandler {
                 }
                 state.connectionState.value = ConnectionState.Registered
                 state.nick.value = event.nick
-                // Server auto-joins saved channels for DID users.
-                // Only send JOIN for channels not already in our store to avoid
-                // duplicate CHATHISTORY requests.
-                state.autoJoinChannels.toList().forEach { ch ->
-                    val name = if (ch.startsWith("#")) ch else "#$ch"
-                    if (state.channels.none { it.name.equals(name, ignoreCase = true) }) {
-                        state.joinChannel(ch)
-                    }
+                // Auto-join saved channels (no navigation - don't override user's position)
+                for (channel in state.autoJoinChannels.toList()) {
+                    state.joinChannel(channel, navigate = false)
                 }
                 // Fetch DM conversation list if authenticated
                 if (state.authenticatedDID.value != null) {
@@ -664,14 +721,29 @@ class AndroidEventHandler(private val state: AppState) : EventHandler {
                 val ch = state.getOrCreateChannel(event.channel)
                 ch.lastActivityTime = System.currentTimeMillis()
                 if (event.nick.equals(state.nick.value, ignoreCase = true)) {
-                    if (state.activeChannel.value == null) {
+                    // We joined — clear stale members before NAMES arrives
+                    ch.members.clear()
+                }
+                // Add joiner to members if not already present
+                if (ch.members.none { it.nick.equals(event.nick, ignoreCase = true) }) {
+                    ch.members.add(MemberInfo(nick = event.nick, isOp = false, isVoiced = false))
+                }
+                if (event.nick.equals(state.nick.value, ignoreCase = true)) {
+                    // Navigate if this was a user-initiated join
+                    if (state.pendingJoinChannel?.equals(event.channel, ignoreCase = true) == true) {
+                        state.pendingJoinChannel = null
+                        state.pendingNavigation.value = event.channel
+                    } else if (state.activeChannel.value == null) {
                         state.activeChannel.value = event.channel
                     }
                     if (state.autoJoinChannels.none { it.equals(event.channel, ignoreCase = true) }) {
                         state.autoJoinChannels.add(event.channel)
                         state.persistChannels()
                     }
-                    state.requestHistory(event.channel)
+                    // Only request history if channel has no messages yet (avoid duplicate requests)
+                    if (ch.messages.isEmpty()) {
+                        state.requestHistory(event.channel)
+                    }
                 }
                 ch.appendIfNew(ChatMessage(
                     id = UUID.randomUUID().toString(),
@@ -706,6 +778,32 @@ class AndroidEventHandler(private val state: AppState) : EventHandler {
             is FreeqEvent.Message -> {
                 val ircMsg = event.msg
                 val isSelf = ircMsg.fromNick.equals(state.nick.value, ignoreCase = true)
+
+                // Handle pin/unpin sync broadcasts
+                if (ircMsg.pinMsgid != null && ircMsg.target.startsWith("#")) {
+                    PinCache.addPin(ircMsg.target, ircMsg.pinMsgid!!)
+                    val ch = state.getOrCreateChannel(ircMsg.target)
+                    ch.appendIfNew(ChatMessage(
+                        id = UUID.randomUUID().toString(),
+                        from = "",
+                        text = "${ircMsg.fromNick} pinned a message",
+                        isAction = false,
+                        timestamp = Date()
+                    ))
+                    return
+                }
+                if (ircMsg.unpinMsgid != null && ircMsg.target.startsWith("#")) {
+                    PinCache.removePin(ircMsg.target, ircMsg.unpinMsgid!!)
+                    val ch = state.getOrCreateChannel(ircMsg.target)
+                    ch.appendIfNew(ChatMessage(
+                        id = UUID.randomUUID().toString(),
+                        from = "",
+                        text = "${ircMsg.fromNick} unpinned a message",
+                        isAction = false,
+                        timestamp = Date()
+                    ))
+                    return
+                }
 
                 val msg = ChatMessage(
                     id = ircMsg.msgid ?: UUID.randomUUID().toString(),
@@ -755,7 +853,7 @@ class AndroidEventHandler(private val state: AppState) : EventHandler {
                     state.incrementUnread(ircMsg.target)
                     ch.typingUsers.remove(ircMsg.fromNick)
 
-                    if (!isSelf && ircMsg.text.contains(state.nick.value, ignoreCase = true)) {
+                    if (!isSelf && !state.isMuted(ircMsg.target) && ircMsg.text.contains(state.nick.value, ignoreCase = true)) {
                         state.notificationManager.sendMessageNotification(
                             from = ircMsg.fromNick, text = ircMsg.text, channel = ircMsg.target
                         )
@@ -775,12 +873,27 @@ class AndroidEventHandler(private val state: AppState) : EventHandler {
             }
 
             is FreeqEvent.Names -> {
+                // Add or update members from NAMES reply (may arrive in multiple 353 batches)
                 val ch = state.getOrCreateChannel(event.channel)
-                ch.members.clear()
-                ch.members.addAll(event.members.map {
-                    MemberInfo(nick = it.nick, isOp = it.isOp, isHalfop = it.isHalfop, isVoiced = it.isVoiced, awayMsg = it.awayMsg)
-                })
+                for (m in event.members) {
+                    val idx = ch.members.indexOfFirst { it.nick.equals(m.nick, ignoreCase = true) }
+                    if (idx >= 0) {
+                        // Update existing member with correct op/voice status from NAMES
+                        ch.members[idx] = ch.members[idx].copy(
+                            isOp = m.isOp,
+                            isHalfop = m.isHalfop,
+                            isVoiced = m.isVoiced,
+                            awayMsg = m.awayMsg ?: ch.members[idx].awayMsg
+                        )
+                    } else {
+                        ch.members.add(MemberInfo(nick = m.nick, isOp = m.isOp, isHalfop = m.isHalfop, isVoiced = m.isVoiced, awayMsg = m.awayMsg))
+                    }
+                }
                 AvatarCache.prefetchAll(event.members.map { it.nick })
+                // Prefetch pins for channels
+                if (event.channel.startsWith("#")) {
+                    PinCache.prefetch(event.channel)
+                }
             }
 
             is FreeqEvent.TopicChanged -> {

@@ -14,30 +14,37 @@ use crate::server::{BanEntry, ChannelState, TopicInfo};
 const EAR_PREFIX: &str = "EAR1:";
 
 /// Encrypt text with AES-256-GCM for storage at rest.
+/// Panics on encryption failure — this indicates a broken key or AES implementation
+/// and must not silently degrade to plaintext storage.
 fn encrypt_at_rest(key: &[u8; 32], plaintext: &str) -> String {
     use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead};
     let cipher = Aes256Gcm::new(key.into());
     let nonce_bytes: [u8; 12] = rand::random();
     let nonce = Nonce::from_slice(&nonce_bytes);
-    match cipher.encrypt(nonce, plaintext.as_bytes()) {
-        Ok(ct) => {
-            use base64::Engine;
-            let mut combined = Vec::with_capacity(12 + ct.len());
-            combined.extend_from_slice(&nonce_bytes);
-            combined.extend_from_slice(&ct);
-            format!(
-                "{EAR_PREFIX}{}",
-                base64::engine::general_purpose::STANDARD.encode(&combined)
-            )
-        }
-        Err(_) => plaintext.to_string(), // fallback: store plaintext
-    }
+    let ct = cipher
+        .encrypt(nonce, plaintext.as_bytes())
+        .expect("AES-256-GCM encryption failed — this should never happen with a valid key");
+    use base64::Engine;
+    let mut combined = Vec::with_capacity(12 + ct.len());
+    combined.extend_from_slice(&nonce_bytes);
+    combined.extend_from_slice(&ct);
+    format!(
+        "{EAR_PREFIX}{}",
+        base64::engine::general_purpose::STANDARD.encode(&combined)
+    )
 }
 
-/// Decrypt text from at-rest storage. Returns plaintext if not encrypted.
+/// Decrypt text from at-rest storage.
+/// Legacy unencrypted data (without EAR1: prefix) is returned as-is with a warning.
+/// Decryption failures on encrypted data return an error placeholder and log at ERROR.
 fn decrypt_at_rest(key: &[u8; 32], stored: &str) -> String {
     if !stored.starts_with(EAR_PREFIX) {
-        return stored.to_string(); // not encrypted — return as-is (legacy data)
+        // Legacy plaintext data — return as-is but log so operators can identify
+        // unencrypted records during migration.
+        if !stored.is_empty() {
+            tracing::debug!("Returning unencrypted legacy message — consider re-encrypting historical data");
+        }
+        return stored.to_string();
     }
     use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead};
     use base64::Engine;
@@ -49,10 +56,19 @@ fn decrypt_at_rest(key: &[u8; 32], stored: &str) -> String {
             let cipher = Aes256Gcm::new(key.into());
             match cipher.decrypt(nonce, ct) {
                 Ok(pt) => String::from_utf8_lossy(&pt).to_string(),
-                Err(_) => stored.to_string(), // can't decrypt — return raw
+                Err(e) => {
+                    tracing::error!(
+                        "Decryption failed (wrong key or corrupt data): {e} — \
+                         returning placeholder. Check db-encryption-key.secret."
+                    );
+                    "[decryption failed]".to_string()
+                }
             }
         }
-        _ => stored.to_string(),
+        _ => {
+            tracing::error!("Malformed encrypted message (bad base64 or too short)");
+            "[decryption failed]".to_string()
+        }
     }
 }
 
@@ -90,6 +106,8 @@ pub struct MessageRow {
     pub replaces_msgid: Option<String>,
     /// Unix timestamp when this message was deleted (soft delete).
     pub deleted_at: Option<u64>,
+    /// DID of the sender (if authenticated at send time).
+    pub sender_did: Option<String>,
 }
 
 /// A persisted identity (DID-nick binding).
@@ -213,11 +231,126 @@ impl Db {
             "ALTER TABLE messages ADD COLUMN msgid TEXT",
             "ALTER TABLE messages ADD COLUMN replaces_msgid TEXT",
             "ALTER TABLE messages ADD COLUMN deleted_at INTEGER",
+            "ALTER TABLE messages ADD COLUMN sender_did TEXT",
         ];
         for sql in &migrations {
             // Ignore "duplicate column name" errors — means column already exists
             let _ = self.conn.execute(sql, []);
         }
+
+        // Phase 2: agent governance tables
+        self.conn.execute_batch(
+            "
+            CREATE TABLE IF NOT EXISTS agent_capability_grants (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel TEXT NOT NULL,
+                agent_did TEXT NOT NULL,
+                capability TEXT NOT NULL,
+                scope TEXT,
+                ttl_seconds INTEGER DEFAULT 0,
+                requires_approval INTEGER DEFAULT 0,
+                rate_limit INTEGER DEFAULT 0,
+                granted_by TEXT NOT NULL,
+                granted_at INTEGER NOT NULL,
+                expires_at INTEGER,
+                revoked_at INTEGER,
+                UNIQUE(channel, agent_did, capability, scope)
+            );
+
+            CREATE TABLE IF NOT EXISTS governance_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel TEXT,
+                target_did TEXT NOT NULL,
+                action TEXT NOT NULL,
+                issued_by TEXT NOT NULL,
+                reason TEXT,
+                timestamp INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS pending_approvals (
+                id TEXT PRIMARY KEY,
+                channel TEXT NOT NULL,
+                agent_did TEXT NOT NULL,
+                capability TEXT NOT NULL,
+                resource TEXT,
+                requested_at INTEGER NOT NULL,
+                granted_by TEXT,
+                granted_at INTEGER,
+                denied_by TEXT,
+                denied_at INTEGER,
+                deny_reason TEXT,
+                expires_at INTEGER
+            );
+            ",
+        )?;
+
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS agent_manifests (
+                agent_did TEXT PRIMARY KEY,
+                manifest_json TEXT NOT NULL,
+                manifest_url TEXT,
+                registered_by TEXT NOT NULL,
+                registered_at INTEGER NOT NULL,
+                active INTEGER DEFAULT 1
+            );
+            CREATE TABLE IF NOT EXISTS spawned_agents (
+                child_did TEXT PRIMARY KEY,
+                parent_did TEXT NOT NULL,
+                parent_session TEXT NOT NULL,
+                nick TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                capabilities_json TEXT NOT NULL DEFAULT '[]',
+                ttl_seconds INTEGER,
+                task_ref TEXT,
+                spawned_at INTEGER NOT NULL,
+                despawned_at INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_spawn_parent ON spawned_agents(parent_did);
+            CREATE INDEX IF NOT EXISTS idx_spawn_channel ON spawned_agents(channel);
+            ",
+        )?;
+
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS agent_spend (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel TEXT NOT NULL,
+                agent_did TEXT NOT NULL,
+                amount REAL NOT NULL,
+                unit TEXT NOT NULL,
+                description TEXT,
+                task_ref TEXT,
+                timestamp INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_spend_channel_agent ON agent_spend(channel, agent_did, timestamp);
+            CREATE INDEX IF NOT EXISTS idx_spend_period ON agent_spend(channel, agent_did, unit, timestamp);
+
+            CREATE TABLE IF NOT EXISTS channel_budgets (
+                channel TEXT NOT NULL,
+                agent_did TEXT,
+                budget_json TEXT NOT NULL,
+                set_by TEXT NOT NULL,
+                set_at INTEGER NOT NULL,
+                PRIMARY KEY(channel, agent_did)
+            );
+            ",
+        )?;
+
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS coordination_events (
+                event_id TEXT PRIMARY KEY,
+                event_type TEXT NOT NULL,
+                actor_did TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                ref_id TEXT,
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                signature TEXT,
+                timestamp INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_coord_channel ON coordination_events(channel, timestamp);
+            CREATE INDEX IF NOT EXISTS idx_coord_ref ON coordination_events(ref_id);
+            CREATE INDEX IF NOT EXISTS idx_coord_actor ON coordination_events(actor_did, timestamp);
+            ",
+        )?;
 
         Ok(())
     }
@@ -383,6 +516,7 @@ impl Db {
         timestamp: u64,
         tags: &HashMap<String, String>,
         msgid: Option<&str>,
+        sender_did: Option<&str>,
     ) -> SqlResult<()> {
         let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "{}".to_string());
         let stored_text = if let Some(ref key) = self.encryption_key {
@@ -391,15 +525,16 @@ impl Db {
             text.to_string()
         };
         self.conn.execute(
-            "INSERT INTO messages (channel, sender, text, timestamp, tags_json, msgid)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO messages (channel, sender, text, timestamp, tags_json, msgid, sender_did)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 channel,
                 sender,
                 stored_text,
                 timestamp as i64,
                 tags_json,
-                msgid
+                msgid,
+                sender_did
             ],
         )?;
         Ok(())
@@ -416,7 +551,7 @@ impl Db {
     ) -> SqlResult<Vec<MessageRow>> {
         let mut rows_vec = if let Some(before_ts) = before {
             let mut stmt = self.conn.prepare(
-                "SELECT id, channel, sender, text, timestamp, tags_json, msgid, replaces_msgid, deleted_at
+                "SELECT id, channel, sender, text, timestamp, tags_json, msgid, replaces_msgid, deleted_at, sender_did
                  FROM messages
                  WHERE channel = ?1 AND deleted_at IS NULL AND timestamp < ?2
                  ORDER BY timestamp DESC, id DESC
@@ -429,7 +564,7 @@ impl Db {
             rows.collect::<SqlResult<Vec<_>>>()?
         } else {
             let mut stmt = self.conn.prepare(
-                "SELECT id, channel, sender, text, timestamp, tags_json, msgid, replaces_msgid, deleted_at
+                "SELECT id, channel, sender, text, timestamp, tags_json, msgid, replaces_msgid, deleted_at, sender_did
                  FROM messages
                  WHERE channel = ?1 AND deleted_at IS NULL
                  ORDER BY timestamp DESC, id DESC
@@ -457,7 +592,7 @@ impl Db {
         limit: usize,
     ) -> SqlResult<Vec<MessageRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, channel, sender, text, timestamp, tags_json, msgid, replaces_msgid, deleted_at
+            "SELECT id, channel, sender, text, timestamp, tags_json, msgid, replaces_msgid, deleted_at, sender_did
              FROM messages
              WHERE channel = ?1 AND deleted_at IS NULL AND timestamp > ?2
              ORDER BY timestamp ASC, id ASC
@@ -485,7 +620,7 @@ impl Db {
         limit: usize,
     ) -> SqlResult<Vec<MessageRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, channel, sender, text, timestamp, tags_json, msgid, replaces_msgid, deleted_at
+            "SELECT id, channel, sender, text, timestamp, tags_json, msgid, replaces_msgid, deleted_at, sender_did
              FROM messages
              WHERE channel = ?1 AND deleted_at IS NULL AND timestamp > ?2 AND timestamp < ?3
              ORDER BY timestamp ASC, id ASC
@@ -522,7 +657,7 @@ impl Db {
         msgid: &str,
     ) -> SqlResult<Option<MessageRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, channel, sender, text, timestamp, tags_json, msgid, replaces_msgid, deleted_at
+            "SELECT id, channel, sender, text, timestamp, tags_json, msgid, replaces_msgid, deleted_at, sender_did
              FROM messages
              WHERE channel = ?1 AND msgid = ?2
              LIMIT 1"
@@ -543,7 +678,7 @@ impl Db {
     /// Find a message by msgid across all channels.
     pub fn find_message_by_msgid(&self, msgid: &str) -> SqlResult<Option<MessageRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, channel, sender, text, timestamp, tags_json, msgid, replaces_msgid, deleted_at
+            "SELECT id, channel, sender, text, timestamp, tags_json, msgid, replaces_msgid, deleted_at, sender_did
              FROM messages
              WHERE msgid = ?1 AND deleted_at IS NULL
              LIMIT 1",
@@ -584,6 +719,7 @@ impl Db {
         tags: &HashMap<String, String>,
         msgid: &str,
         replaces_msgid: &str,
+        sender_did: Option<&str>,
     ) -> SqlResult<()> {
         let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "{}".to_string());
         let stored_text = if let Some(ref key) = self.encryption_key {
@@ -592,9 +728,9 @@ impl Db {
             text.to_string()
         };
         self.conn.execute(
-            "INSERT INTO messages (channel, sender, text, timestamp, tags_json, msgid, replaces_msgid)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![channel, sender, stored_text, timestamp as i64, tags_json, msgid, replaces_msgid],
+            "INSERT INTO messages (channel, sender, text, timestamp, tags_json, msgid, replaces_msgid, sender_did)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![channel, sender, stored_text, timestamp as i64, tags_json, msgid, replaces_msgid, sender_did],
         )?;
         Ok(())
     }
@@ -804,6 +940,7 @@ fn map_message_row(row: &rusqlite::Row) -> SqlResult<MessageRow> {
         .get::<_, Option<i64>>(8)
         .unwrap_or(None)
         .map(|v| v as u64);
+    let sender_did: Option<String> = row.get(9).unwrap_or(None);
     Ok(MessageRow {
         id: row.get(0)?,
         channel: row.get(1)?,
@@ -814,6 +951,7 @@ fn map_message_row(row: &rusqlite::Row) -> SqlResult<MessageRow> {
         msgid,
         replaces_msgid,
         deleted_at,
+        sender_did,
     })
 }
 
@@ -903,6 +1041,7 @@ mod tests {
             1000,
             &HashMap::new(),
             Some("01TEST00000000000000000001"),
+            None,
         )
         .unwrap();
         db.insert_message(
@@ -912,6 +1051,7 @@ mod tests {
             1001,
             &tags,
             Some("01TEST00000000000000000002"),
+            None,
         )
         .unwrap();
         db.insert_message(
@@ -921,6 +1061,7 @@ mod tests {
             1002,
             &HashMap::new(),
             Some("01TEST00000000000000000003"),
+            None,
         )
         .unwrap();
 
@@ -984,9 +1125,9 @@ mod tests {
     #[test]
     fn messages_different_channels() {
         let db = Db::open_memory().unwrap();
-        db.insert_message("#a", "u", "msg-a", 1000, &HashMap::new(), None)
+        db.insert_message("#a", "u", "msg-a", 1000, &HashMap::new(), None, None)
             .unwrap();
-        db.insert_message("#b", "u", "msg-b", 1001, &HashMap::new(), None)
+        db.insert_message("#b", "u", "msg-b", 1001, &HashMap::new(), None, None)
             .unwrap();
 
         let a = db.get_messages("#a", 100, None).unwrap();
@@ -1013,5 +1154,748 @@ mod tests {
 
         let loaded = db.load_channels().unwrap();
         assert_eq!(loaded.get("#test").unwrap().bans.len(), 1);
+    }
+}
+
+// ── Agent governance DB methods ────────────────────────────────────
+
+/// A capability grant row.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CapabilityGrantRow {
+    pub id: i64,
+    pub channel: String,
+    pub agent_did: String,
+    pub capability: String,
+    pub scope: Option<String>,
+    pub ttl_seconds: u64,
+    pub requires_approval: bool,
+    pub rate_limit: u32,
+    pub granted_by: String,
+    pub granted_at: i64,
+    pub expires_at: Option<i64>,
+    pub revoked_at: Option<i64>,
+}
+
+/// A governance log entry.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct GovernanceLogEntry {
+    pub id: i64,
+    pub channel: Option<String>,
+    pub target_did: String,
+    pub action: String,
+    pub issued_by: String,
+    pub reason: Option<String>,
+    pub timestamp: i64,
+}
+
+/// A pending approval row.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PendingApprovalRow {
+    pub id: String,
+    pub channel: String,
+    pub agent_did: String,
+    pub capability: String,
+    pub resource: Option<String>,
+    pub requested_at: i64,
+    pub granted_by: Option<String>,
+    pub granted_at: Option<i64>,
+    pub denied_by: Option<String>,
+    pub denied_at: Option<i64>,
+    pub deny_reason: Option<String>,
+    pub expires_at: Option<i64>,
+}
+
+impl Db {
+    // ── Capability grants ──────────────────────────────────────────
+
+    pub fn grant_capability(
+        &self,
+        channel: &str,
+        agent_did: &str,
+        capability: &str,
+        scope: Option<&str>,
+        ttl_seconds: u64,
+        requires_approval: bool,
+        rate_limit: u32,
+        granted_by: &str,
+    ) -> SqlResult<i64> {
+        let now = chrono::Utc::now().timestamp();
+        let expires_at = if ttl_seconds > 0 {
+            Some(now + ttl_seconds as i64)
+        } else {
+            None
+        };
+        self.conn.execute(
+            "INSERT INTO agent_capability_grants
+             (channel, agent_did, capability, scope, ttl_seconds, requires_approval, rate_limit, granted_by, granted_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT(channel, agent_did, capability, scope) DO UPDATE SET
+                ttl_seconds=excluded.ttl_seconds,
+                requires_approval=excluded.requires_approval,
+                rate_limit=excluded.rate_limit,
+                granted_by=excluded.granted_by,
+                granted_at=excluded.granted_at,
+                expires_at=excluded.expires_at,
+                revoked_at=NULL",
+            params![channel, agent_did, capability, scope, ttl_seconds as i64, requires_approval as i32, rate_limit as i32, granted_by, now, expires_at],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn get_capabilities(&self, channel: &str, agent_did: &str) -> Vec<CapabilityGrantRow> {
+        let mut stmt = self.conn
+            .prepare(
+                "SELECT id, channel, agent_did, capability, scope, ttl_seconds, requires_approval, rate_limit, granted_by, granted_at, expires_at, revoked_at
+                 FROM agent_capability_grants
+                 WHERE channel = ?1 AND agent_did = ?2 AND revoked_at IS NULL
+                   AND (expires_at IS NULL OR expires_at > ?3)"
+            )
+            .unwrap();
+        let now = chrono::Utc::now().timestamp();
+        stmt.query_map(params![channel, agent_did, now], |row| {
+            Ok(CapabilityGrantRow {
+                id: row.get(0)?,
+                channel: row.get(1)?,
+                agent_did: row.get(2)?,
+                capability: row.get(3)?,
+                scope: row.get(4)?,
+                ttl_seconds: row.get::<_, i64>(5)? as u64,
+                requires_approval: row.get::<_, i32>(6)? != 0,
+                rate_limit: row.get::<_, i32>(7)? as u32,
+                granted_by: row.get(8)?,
+                granted_at: row.get(9)?,
+                expires_at: row.get(10)?,
+                revoked_at: row.get(11)?,
+            })
+        })
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect()
+    }
+
+    pub fn revoke_capability(&self, grant_id: i64) -> SqlResult<()> {
+        let now = chrono::Utc::now().timestamp();
+        self.conn.execute(
+            "UPDATE agent_capability_grants SET revoked_at = ?1 WHERE id = ?2",
+            params![now, grant_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn revoke_all_capabilities(&self, channel: &str, agent_did: &str) -> SqlResult<usize> {
+        let now = chrono::Utc::now().timestamp();
+        let count = self.conn.execute(
+            "UPDATE agent_capability_grants SET revoked_at = ?1
+             WHERE channel = ?2 AND agent_did = ?3 AND revoked_at IS NULL",
+            params![now, channel, agent_did],
+        )?;
+        Ok(count)
+    }
+
+    pub fn expire_capabilities(&self) -> SqlResult<usize> {
+        let now = chrono::Utc::now().timestamp();
+        let count = self.conn.execute(
+            "UPDATE agent_capability_grants SET revoked_at = ?1
+             WHERE expires_at IS NOT NULL AND expires_at < ?1 AND revoked_at IS NULL",
+            params![now],
+        )?;
+        Ok(count)
+    }
+
+    // ── Governance log ─────────────────────────────────────────────
+
+    pub fn log_governance(
+        &self,
+        channel: Option<&str>,
+        target_did: &str,
+        action: &str,
+        issued_by: &str,
+        reason: Option<&str>,
+    ) -> SqlResult<()> {
+        let now = chrono::Utc::now().timestamp();
+        self.conn.execute(
+            "INSERT INTO governance_log (channel, target_did, action, issued_by, reason, timestamp)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![channel, target_did, action, issued_by, reason, now],
+        )?;
+        Ok(())
+    }
+
+    // ── Pending approvals ──────────────────────────────────────────
+
+    pub fn create_approval(
+        &self,
+        id: &str,
+        channel: &str,
+        agent_did: &str,
+        capability: &str,
+        resource: Option<&str>,
+    ) -> SqlResult<()> {
+        let now = chrono::Utc::now().timestamp();
+        let expires_at = now + 3600; // 1 hour
+        self.conn.execute(
+            "INSERT INTO pending_approvals (id, channel, agent_did, capability, resource, requested_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![id, channel, agent_did, capability, resource, now, expires_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn grant_approval(&self, id: &str, granted_by: &str) -> SqlResult<bool> {
+        let now = chrono::Utc::now().timestamp();
+        let count = self.conn.execute(
+            "UPDATE pending_approvals SET granted_by = ?1, granted_at = ?2
+             WHERE id = ?3 AND granted_by IS NULL AND denied_by IS NULL
+               AND (expires_at IS NULL OR expires_at > ?2)",
+            params![granted_by, now, id],
+        )?;
+        Ok(count > 0)
+    }
+
+    pub fn deny_approval(&self, id: &str, denied_by: &str, reason: Option<&str>) -> SqlResult<bool> {
+        let now = chrono::Utc::now().timestamp();
+        let count = self.conn.execute(
+            "UPDATE pending_approvals SET denied_by = ?1, denied_at = ?2, deny_reason = ?3
+             WHERE id = ?4 AND granted_by IS NULL AND denied_by IS NULL",
+            params![denied_by, now, reason, id],
+        )?;
+        Ok(count > 0)
+    }
+
+    pub fn get_pending_approvals(&self, channel: &str) -> Vec<PendingApprovalRow> {
+        let mut stmt = self.conn
+            .prepare(
+                "SELECT id, channel, agent_did, capability, resource, requested_at,
+                        granted_by, granted_at, denied_by, denied_at, deny_reason, expires_at
+                 FROM pending_approvals
+                 WHERE channel = ?1 AND granted_by IS NULL AND denied_by IS NULL
+                   AND (expires_at IS NULL OR expires_at > ?2)
+                 ORDER BY requested_at ASC"
+            )
+            .unwrap();
+        let now = chrono::Utc::now().timestamp();
+        stmt.query_map(params![channel, now], |row| {
+            Ok(PendingApprovalRow {
+                id: row.get(0)?,
+                channel: row.get(1)?,
+                agent_did: row.get(2)?,
+                capability: row.get(3)?,
+                resource: row.get(4)?,
+                requested_at: row.get(5)?,
+                granted_by: row.get(6)?,
+                granted_at: row.get(7)?,
+                denied_by: row.get(8)?,
+                denied_at: row.get(9)?,
+                deny_reason: row.get(10)?,
+                expires_at: row.get(11)?,
+            })
+        })
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect()
+    }
+
+    pub fn find_pending_approval_for_agent(
+        &self,
+        channel: &str,
+        agent_did: &str,
+        capability: &str,
+    ) -> Option<PendingApprovalRow> {
+        self.get_pending_approvals(channel)
+            .into_iter()
+            .find(|a| a.agent_did == agent_did && a.capability == capability)
+    }
+}
+
+/// A spend record.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SpendRecord {
+    pub id: i64,
+    pub channel: String,
+    pub agent_did: String,
+    pub amount: f64,
+    pub unit: String,
+    pub description: Option<String>,
+    pub task_ref: Option<String>,
+    pub timestamp: i64,
+}
+
+/// A spawned agent record.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SpawnedAgentRow {
+    pub child_did: String,
+    pub parent_did: String,
+    pub parent_session: String,
+    pub nick: String,
+    pub channel: String,
+    pub capabilities_json: String,
+    pub ttl_seconds: Option<u64>,
+    pub task_ref: Option<String>,
+    pub spawned_at: i64,
+}
+
+// ── Coordination events DB methods ─────────────────────────────────
+
+/// A coordination event row.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CoordinationEventRow {
+    pub event_id: String,
+    pub event_type: String,
+    pub actor_did: String,
+    pub channel: String,
+    pub ref_id: Option<String>,
+    pub payload_json: String,
+    pub signature: Option<String>,
+    pub timestamp: i64,
+}
+
+impl Db {
+    pub fn store_coordination_event(&self, event: &CoordinationEventRow) -> SqlResult<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO coordination_events
+             (event_id, event_type, actor_did, channel, ref_id, payload_json, signature, timestamp)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                event.event_id,
+                event.event_type,
+                event.actor_did,
+                event.channel,
+                event.ref_id,
+                event.payload_json,
+                event.signature,
+                event.timestamp,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Query coordination events with optional filters.
+    pub fn query_coordination_events(
+        &self,
+        channel: &str,
+        event_type: Option<&str>,
+        ref_id: Option<&str>,
+        actor_did: Option<&str>,
+        since: Option<i64>,
+        limit: usize,
+    ) -> Vec<CoordinationEventRow> {
+        let mut sql = String::from(
+            "SELECT event_id, event_type, actor_did, channel, ref_id, payload_json, signature, timestamp
+             FROM coordination_events WHERE channel = ?1"
+        );
+        let mut param_idx = 2;
+        let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(channel.to_string())];
+
+        if let Some(et) = event_type {
+            sql.push_str(&format!(" AND event_type = ?{param_idx}"));
+            params_vec.push(Box::new(et.to_string()));
+            param_idx += 1;
+        }
+        if let Some(ri) = ref_id {
+            sql.push_str(&format!(" AND ref_id = ?{param_idx}"));
+            params_vec.push(Box::new(ri.to_string()));
+            param_idx += 1;
+        }
+        if let Some(ad) = actor_did {
+            sql.push_str(&format!(" AND actor_did = ?{param_idx}"));
+            params_vec.push(Box::new(ad.to_string()));
+            param_idx += 1;
+        }
+        if let Some(s) = since {
+            sql.push_str(&format!(" AND timestamp >= ?{param_idx}"));
+            params_vec.push(Box::new(s));
+            param_idx += 1;
+        }
+        let _ = param_idx; // suppress unused warning
+        sql.push_str(&format!(" ORDER BY timestamp ASC LIMIT {limit}"));
+
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
+        let mut stmt = match self.conn.prepare(&sql) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("Failed to prepare coordination query: {e}");
+                return Vec::new();
+            }
+        };
+        match stmt.query_map(params_refs.as_slice(), |row| {
+            Ok(CoordinationEventRow {
+                event_id: row.get(0)?,
+                event_type: row.get(1)?,
+                actor_did: row.get(2)?,
+                channel: row.get(3)?,
+                ref_id: row.get(4)?,
+                payload_json: row.get(5)?,
+                signature: row.get(6)?,
+                timestamp: row.get(7)?,
+            })
+        }) {
+            Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// Get a task and all its related events.
+    pub fn get_task(&self, task_id: &str) -> Option<CoordinationEventRow> {
+        let mut stmt = self.conn.prepare(
+            "SELECT event_id, event_type, actor_did, channel, ref_id, payload_json, signature, timestamp
+             FROM coordination_events WHERE event_id = ?1 AND event_type = 'task_request'"
+        ).ok()?;
+        stmt.query_row(params![task_id], |row| {
+            Ok(CoordinationEventRow {
+                event_id: row.get(0)?,
+                event_type: row.get(1)?,
+                actor_did: row.get(2)?,
+                channel: row.get(3)?,
+                ref_id: row.get(4)?,
+                payload_json: row.get(5)?,
+                signature: row.get(6)?,
+                timestamp: row.get(7)?,
+            })
+        }).ok()
+    }
+
+    /// Get all events referencing a task ID.
+    pub fn get_task_events(&self, task_id: &str) -> Vec<CoordinationEventRow> {
+        self.query_coordination_events("", None, Some(task_id), None, None, 1000)
+            .into_iter()
+            .collect()
+    }
+
+    /// Get task events regardless of channel (by ref_id).
+    pub fn get_task_events_all_channels(&self, task_id: &str) -> Vec<CoordinationEventRow> {
+        let mut stmt = match self.conn.prepare(
+            "SELECT event_id, event_type, actor_did, channel, ref_id, payload_json, signature, timestamp
+             FROM coordination_events WHERE ref_id = ?1 ORDER BY timestamp ASC"
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        match stmt.query_map(params![task_id], |row| {
+            Ok(CoordinationEventRow {
+                event_id: row.get(0)?,
+                event_type: row.get(1)?,
+                actor_did: row.get(2)?,
+                channel: row.get(3)?,
+                ref_id: row.get(4)?,
+                payload_json: row.get(5)?,
+                signature: row.get(6)?,
+                timestamp: row.get(7)?,
+            })
+        }) {
+            Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    // ── Agent manifests ──────────────────────────────────────────────
+
+    pub fn save_manifest(
+        &self,
+        agent_did: &str,
+        manifest_json: &str,
+        manifest_url: Option<&str>,
+        registered_by: &str,
+    ) -> SqlResult<()> {
+        let now = chrono::Utc::now().timestamp();
+        self.conn.execute(
+            "INSERT OR REPLACE INTO agent_manifests
+             (agent_did, manifest_json, manifest_url, registered_by, registered_at, active)
+             VALUES (?1, ?2, ?3, ?4, ?5, 1)",
+            params![agent_did, manifest_json, manifest_url, registered_by, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_manifest(&self, agent_did: &str) -> Option<String> {
+        self.conn
+            .query_row(
+                "SELECT manifest_json FROM agent_manifests WHERE agent_did = ?1 AND active = 1",
+                params![agent_did],
+                |row| row.get(0),
+            )
+            .ok()
+    }
+
+    pub fn deactivate_manifest(&self, agent_did: &str) -> SqlResult<()> {
+        self.conn.execute(
+            "UPDATE agent_manifests SET active = 0 WHERE agent_did = ?1",
+            params![agent_did],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_manifests(&self) -> Vec<(String, String, i64)> {
+        let mut stmt = match self.conn.prepare(
+            "SELECT agent_did, manifest_json, registered_at FROM agent_manifests WHERE active = 1 ORDER BY registered_at DESC",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        match stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        }) {
+            Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    // ── Spawned agents ─────────────────────────────────────────────
+
+    pub fn record_spawn(
+        &self,
+        child_did: &str,
+        parent_did: &str,
+        parent_session: &str,
+        nick: &str,
+        channel: &str,
+        capabilities: &[String],
+        ttl_seconds: Option<u64>,
+        task_ref: Option<&str>,
+    ) -> SqlResult<()> {
+        let now = chrono::Utc::now().timestamp();
+        let caps_json = serde_json::to_string(capabilities).unwrap_or_else(|_| "[]".to_string());
+        self.conn.execute(
+            "INSERT OR REPLACE INTO spawned_agents
+             (child_did, parent_did, parent_session, nick, channel, capabilities_json, ttl_seconds, task_ref, spawned_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![child_did, parent_did, parent_session, nick, channel, caps_json, ttl_seconds.map(|t| t as i64), task_ref, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn record_despawn(&self, child_did: &str) -> SqlResult<()> {
+        let now = chrono::Utc::now().timestamp();
+        self.conn.execute(
+            "UPDATE spawned_agents SET despawned_at = ?1 WHERE child_did = ?2",
+            params![now, child_did],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_active_spawns(&self, parent_did: &str) -> Vec<SpawnedAgentRow> {
+        let mut stmt = match self.conn.prepare(
+            "SELECT child_did, parent_did, parent_session, nick, channel, capabilities_json, ttl_seconds, task_ref, spawned_at
+             FROM spawned_agents WHERE parent_did = ?1 AND despawned_at IS NULL",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        match stmt.query_map(params![parent_did], |row| {
+            Ok(SpawnedAgentRow {
+                child_did: row.get(0)?,
+                parent_did: row.get(1)?,
+                parent_session: row.get(2)?,
+                nick: row.get(3)?,
+                channel: row.get(4)?,
+                capabilities_json: row.get(5)?,
+                ttl_seconds: row.get::<_, Option<i64>>(6)?.map(|t| t as u64),
+                task_ref: row.get(7)?,
+                spawned_at: row.get(8)?,
+            })
+        }) {
+            Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    pub fn get_spawn_by_nick(&self, channel: &str, nick: &str) -> Option<SpawnedAgentRow> {
+        self.conn.query_row(
+            "SELECT child_did, parent_did, parent_session, nick, channel, capabilities_json, ttl_seconds, task_ref, spawned_at
+             FROM spawned_agents WHERE channel = ?1 AND nick = ?2 AND despawned_at IS NULL",
+            params![channel, nick],
+            |row| Ok(SpawnedAgentRow {
+                child_did: row.get(0)?,
+                parent_did: row.get(1)?,
+                parent_session: row.get(2)?,
+                nick: row.get(3)?,
+                channel: row.get(4)?,
+                capabilities_json: row.get(5)?,
+                ttl_seconds: row.get::<_, Option<i64>>(6)?.map(|t| t as u64),
+                task_ref: row.get(7)?,
+                spawned_at: row.get(8)?,
+            }),
+        ).ok()
+    }
+
+    // ── Agent spend tracking ──────────────────────────────────────────
+
+    pub fn record_spend(
+        &self,
+        channel: &str,
+        agent_did: &str,
+        amount: f64,
+        unit: &str,
+        description: Option<&str>,
+        task_ref: Option<&str>,
+    ) -> SqlResult<()> {
+        let now = chrono::Utc::now().timestamp();
+        self.conn.execute(
+            "INSERT INTO agent_spend (channel, agent_did, amount, unit, description, task_ref, timestamp)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![channel, agent_did, amount, unit, description, task_ref, now],
+        )?;
+        Ok(())
+    }
+
+    /// Sum spend for a channel/agent/unit since a given timestamp.
+    pub fn sum_spend(&self, channel: &str, agent_did: Option<&str>, unit: &str, since: i64) -> f64 {
+        let (sql, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = match agent_did {
+            Some(did) => (
+                "SELECT COALESCE(SUM(amount), 0.0) FROM agent_spend
+                 WHERE channel = ?1 AND agent_did = ?2 AND unit = ?3 AND timestamp >= ?4".to_string(),
+                vec![Box::new(channel.to_string()), Box::new(did.to_string()), Box::new(unit.to_string()), Box::new(since)],
+            ),
+            None => (
+                "SELECT COALESCE(SUM(amount), 0.0) FROM agent_spend
+                 WHERE channel = ?1 AND unit = ?2 AND timestamp >= ?3".to_string(),
+                vec![Box::new(channel.to_string()), Box::new(unit.to_string()), Box::new(since)],
+            ),
+        };
+        let refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
+        self.conn.query_row(&sql, refs.as_slice(), |row| row.get(0)).unwrap_or(0.0)
+    }
+
+    /// Query spend records with optional filters.
+    pub fn query_spend(
+        &self,
+        channel: &str,
+        agent_did: Option<&str>,
+        since: Option<i64>,
+        limit: usize,
+    ) -> Vec<SpendRecord> {
+        let mut sql = String::from(
+            "SELECT id, channel, agent_did, amount, unit, description, task_ref, timestamp
+             FROM agent_spend WHERE channel = ?1"
+        );
+        let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(channel.to_string())];
+        let mut idx = 2;
+        if let Some(did) = agent_did {
+            sql.push_str(&format!(" AND agent_did = ?{idx}"));
+            params_vec.push(Box::new(did.to_string()));
+            idx += 1;
+        }
+        if let Some(s) = since {
+            sql.push_str(&format!(" AND timestamp >= ?{idx}"));
+            params_vec.push(Box::new(s));
+            idx += 1;
+        }
+        let _ = idx;
+        sql.push_str(&format!(" ORDER BY timestamp DESC LIMIT {limit}"));
+        let refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
+        let mut stmt = match self.conn.prepare(&sql) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        match stmt.query_map(refs.as_slice(), |row| {
+            Ok(SpendRecord {
+                id: row.get(0)?,
+                channel: row.get(1)?,
+                agent_did: row.get(2)?,
+                amount: row.get(3)?,
+                unit: row.get(4)?,
+                description: row.get(5)?,
+                task_ref: row.get(6)?,
+                timestamp: row.get(7)?,
+            })
+        }) {
+            Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// Spend by agent for a channel/unit/period.
+    pub fn spend_by_agent(&self, channel: &str, unit: &str, since: i64) -> Vec<(String, f64, i64)> {
+        let mut stmt = match self.conn.prepare(
+            "SELECT agent_did, SUM(amount), COUNT(*) FROM agent_spend
+             WHERE channel = ?1 AND unit = ?2 AND timestamp >= ?3
+             GROUP BY agent_did ORDER BY SUM(amount) DESC"
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        match stmt.query_map(params![channel, unit, since], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?, row.get::<_, i64>(2)?))
+        }) {
+            Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    // ── Channel budgets ──────────────────────────────────────────────
+
+    pub fn set_budget(
+        &self,
+        channel: &str,
+        agent_did: Option<&str>,
+        budget_json: &str,
+        set_by: &str,
+    ) -> SqlResult<()> {
+        let now = chrono::Utc::now().timestamp();
+        let did_key = agent_did.unwrap_or("*");
+        self.conn.execute(
+            "INSERT OR REPLACE INTO channel_budgets (channel, agent_did, budget_json, set_by, set_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![channel, did_key, budget_json, set_by, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_budget(&self, channel: &str, agent_did: Option<&str>) -> Option<String> {
+        let did_key = agent_did.unwrap_or("*");
+        // Try agent-specific first, then channel default
+        self.conn.query_row(
+            "SELECT budget_json FROM channel_budgets WHERE channel = ?1 AND agent_did = ?2",
+            params![channel, did_key],
+            |row| row.get(0),
+        ).ok().or_else(|| {
+            if agent_did.is_some() {
+                self.conn.query_row(
+                    "SELECT budget_json FROM channel_budgets WHERE channel = ?1 AND agent_did = '*'",
+                    params![channel],
+                    |row| row.get(0),
+                ).ok()
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Query governance log entries for a channel.
+    pub fn query_governance_log(&self, channel: Option<&str>, limit: usize) -> Vec<GovernanceLogEntry> {
+        let (sql, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = match channel {
+            Some(ch) => (
+                "SELECT id, channel, target_did, action, issued_by, reason, timestamp
+                 FROM governance_log WHERE channel = ?1 ORDER BY timestamp ASC LIMIT ?2".to_string(),
+                vec![Box::new(ch.to_string()), Box::new(limit as i64)],
+            ),
+            None => (
+                "SELECT id, channel, target_did, action, issued_by, reason, timestamp
+                 FROM governance_log ORDER BY timestamp ASC LIMIT ?1".to_string(),
+                vec![Box::new(limit as i64)],
+            ),
+        };
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
+        let mut stmt = match self.conn.prepare(&sql) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        match stmt.query_map(params_refs.as_slice(), |row| {
+            Ok(GovernanceLogEntry {
+                id: row.get(0)?,
+                channel: row.get(1)?,
+                target_did: row.get(2)?,
+                action: row.get(3)?,
+                issued_by: row.get(4)?,
+                reason: row.get(5)?,
+                timestamp: row.get(6)?,
+            })
+        }) {
+            Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+            Err(_) => Vec::new(),
+        }
     }
 }

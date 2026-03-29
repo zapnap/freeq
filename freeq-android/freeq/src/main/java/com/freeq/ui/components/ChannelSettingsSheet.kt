@@ -5,8 +5,12 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.NotificationsOff
+import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Tag
 import androidx.compose.material.icons.filled.CheckCircle
@@ -28,7 +32,8 @@ fun ChannelSettingsSheet(
     channelState: ChannelState,
     appState: AppState,
     onDismiss: () -> Unit,
-    onLeave: () -> Unit
+    onLeave: () -> Unit,
+    onShowPinnedMessages: () -> Unit
 ) {
     val topic by channelState.topic
     var editingTopic by remember { mutableStateOf(false) }
@@ -223,6 +228,89 @@ fun ChannelSettingsSheet(
                             }
                         }
                     }
+                }
+            }
+
+            // ── Notifications ──
+            Spacer(modifier = Modifier.height(12.dp))
+            Card(
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        val isMuted = appState.isMuted(channelState.name)
+                        Icon(
+                            if (isMuted) Icons.Default.NotificationsOff else Icons.Default.Notifications,
+                            contentDescription = null,
+                            tint = if (isMuted) MaterialTheme.colorScheme.onSurfaceVariant else FreeqColors.accent,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Text(
+                            "Mute Notifications",
+                            fontSize = 15.sp,
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+                    }
+                    Switch(
+                        checked = appState.isMuted(channelState.name),
+                        onCheckedChange = { appState.toggleMute(channelState.name) },
+                        colors = SwitchDefaults.colors(checkedTrackColor = FreeqColors.accent)
+                    )
+                }
+            }
+
+            // ── Pinned Messages ──
+            Spacer(modifier = Modifier.height(12.dp))
+            Card(
+                onClick = onShowPinnedMessages,
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.PushPin,
+                            contentDescription = null,
+                            tint = FreeqColors.warning,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Text(
+                            "Pinned Messages",
+                            fontSize = 15.sp,
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+                    }
+                    Icon(
+                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp)
+                    )
                 }
             }
 

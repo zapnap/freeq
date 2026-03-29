@@ -12,6 +12,7 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
   const nick = useStore((s) => s.nick);
   const authDid = useStore((s) => s.authDid);
   const connectionState = useStore((s) => s.connectionState);
+  const connectedServer = useStore((s) => s.connectedServer);
   const theme = useStore((s) => s.theme);
   const setTheme = useStore((s) => s.setTheme);
   const density = useStore((s) => s.messageDensity);
@@ -49,6 +50,13 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
           <Section title="Account">
             <InfoRow label="Nickname" value={nick} />
             <InfoRow label="Connection" value={connectionState} />
+            {connectedServer && (() => {
+              const stripped = connectedServer.replace(/^wss?:\/\//, '').replace(/\/.*$/, '');
+              const isProxy = /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(stripped);
+              // @ts-expect-error injected by vite define
+              const target = typeof __FREEQ_TARGET__ === 'string' ? __FREEQ_TARGET__.replace(/^https?:\/\//, '') : null;
+              return <InfoRow label="Server" value={isProxy && target ? `${target} (via proxy)` : stripped} />;
+            })()}
             {authDid && <InfoRow label="DID" value={authDid} mono />}
           </Section>
 

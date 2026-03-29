@@ -193,6 +193,17 @@ pub fn router(state: Arc<SharedState>) -> Router {
         .route("/api/v1/signing-key", get(api_signing_key))
         .route("/api/v1/signing-keys/{did}", get(api_did_signing_key))
         .route("/api/v1/verify/{msgid}", get(api_verify_message))
+        .route("/api/v1/actors/{did}", get(api_actor_identity))
+        .route("/api/v1/channels/{name}/agent-capabilities", get(api_agent_capabilities))
+        .route("/api/v1/channels/{name}/approvals", get(api_pending_approvals))
+        .route("/api/v1/channels/{name}/events", get(api_channel_events))
+        .route("/api/v1/channels/{name}/audit", get(api_channel_audit))
+        .route("/api/v1/tasks/{task_id}", get(api_task))
+        .route("/api/v1/agents/manifests", get(api_list_manifests))
+        .route("/api/v1/agents/manifests/{did}", get(api_get_manifest))
+        .route("/api/v1/agents/spawned", get(api_spawned_agents))
+        .route("/api/v1/channels/{name}/budget", get(api_channel_budget))
+        .route("/api/v1/channels/{name}/spend", get(api_channel_spend))
         .route("/auth/mobile", get(auth_mobile_redirect))
         .route("/join/{channel}", get(channel_invite_page))
         .layer(axum::extract::DefaultBodyLimit::max(12 * 1024 * 1024)) // 12MB
@@ -420,6 +431,485 @@ async fn api_did_signing_key(
 
 /// Verify a message's cryptographic signature by msgid.
 /// Returns the message, signature, verification result, and the math to prove it.
+/// GET /api/v1/channels/{name}/agent-capabilities — list active capability grants.
+async fn api_agent_capabilities(
+    State(state): State<Arc<SharedState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> Json<serde_json::Value> {
+    let channel = format!("#{name}");
+    let grants: Vec<serde_json::Value> = state
+        .with_db(|db| {
+            // Get all agents in the channel
+            let members: Vec<String> = {
+                let channels = state.channels.lock();
+                channels.get(&channel.to_lowercase())
+                    .map(|ch| ch.members.iter().cloned().collect())
+                    .unwrap_or_default()
+            };
+            let dids: Vec<String> = {
+                let sd = state.session_dids.lock();
+                members.iter().filter_map(|sid| sd.get(sid).cloned()).collect()
+            };
+            let mut all = Vec::new();
+            for did in &dids {
+                for g in db.get_capabilities(&channel.to_lowercase(), did) {
+                    all.push(serde_json::json!({
+                        "id": g.id,
+                        "agent_did": g.agent_did,
+                        "capability": g.capability,
+                        "scope": g.scope,
+                        "ttl_seconds": g.ttl_seconds,
+                        "requires_approval": g.requires_approval,
+                        "rate_limit": g.rate_limit,
+                        "granted_by": g.granted_by,
+                        "granted_at": g.granted_at,
+                        "expires_at": g.expires_at,
+                    }));
+                }
+            }
+            Ok(all)
+        })
+        .unwrap_or_default();
+    Json(serde_json::json!({ "channel": channel, "capabilities": grants }))
+}
+
+/// GET /api/v1/channels/{name}/approvals — list pending approvals.
+async fn api_pending_approvals(
+    State(state): State<Arc<SharedState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> Json<serde_json::Value> {
+    let channel = format!("#{name}");
+    let approvals: Vec<serde_json::Value> = state
+        .with_db(|db| {
+            Ok(db.get_pending_approvals(&channel.to_lowercase())
+                .into_iter()
+                .map(|a| {
+                    serde_json::json!({
+                        "id": a.id,
+                        "agent_did": a.agent_did,
+                        "capability": a.capability,
+                        "resource": a.resource,
+                        "requested_at": a.requested_at,
+                        "expires_at": a.expires_at,
+                    })
+                })
+                .collect::<Vec<_>>())
+        })
+        .unwrap_or_default();
+    Json(serde_json::json!({ "channel": channel, "approvals": approvals }))
+}
+
+/// GET /api/v1/channels/{name}/events — query coordination events.
+async fn api_channel_events(
+    State(state): State<Arc<SharedState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let channel = format!("#{name}");
+    let event_type = params.get("type").map(|s| s.as_str());
+    let ref_id = params.get("ref_id").map(|s| s.as_str());
+    let actor = params.get("actor").map(|s| s.as_str());
+    let since = params.get("since").and_then(|s| {
+        chrono::DateTime::parse_from_rfc3339(s).ok().map(|dt| dt.timestamp())
+            .or_else(|| s.parse::<i64>().ok())
+    });
+    let limit = params.get("limit").and_then(|s| s.parse().ok()).unwrap_or(100usize);
+
+    let events: Vec<serde_json::Value> = state
+        .with_db(|db| {
+            Ok(db.query_coordination_events(&channel.to_lowercase(), event_type, ref_id, actor, since, limit)
+                .into_iter()
+                .map(|e| serde_json::json!({
+                    "event_id": e.event_id,
+                    "event_type": e.event_type,
+                    "actor_did": e.actor_did,
+                    "channel": e.channel,
+                    "ref_id": e.ref_id,
+                    "payload": serde_json::from_str::<serde_json::Value>(&e.payload_json).unwrap_or(serde_json::json!({})),
+                    "signature": e.signature,
+                    "timestamp": e.timestamp,
+                }))
+                .collect::<Vec<_>>())
+        })
+        .unwrap_or_default();
+    Json(serde_json::json!({ "channel": channel, "events": events }))
+}
+
+/// GET /api/v1/tasks/{task_id} — task detail with all related events.
+async fn api_task(
+    State(state): State<Arc<SharedState>>,
+    axum::extract::Path(task_id): axum::extract::Path<String>,
+) -> Json<serde_json::Value> {
+    let result = state.with_db(|db| {
+        let task = db.get_task(&task_id);
+        let events = db.get_task_events_all_channels(&task_id);
+        Ok((task, events))
+    });
+
+    match result {
+        Some((Some(task), events)) => {
+            let status = events.iter().rev()
+                .find(|e| e.event_type == "task_complete" || e.event_type == "task_failed")
+                .map(|e| e.event_type.clone())
+                .unwrap_or_else(|| "in_progress".to_string());
+            let evidence: Vec<serde_json::Value> = events.iter()
+                .filter(|e| e.event_type == "evidence_attach")
+                .map(|e| serde_json::json!({
+                    "event_id": e.event_id,
+                    "payload": serde_json::from_str::<serde_json::Value>(&e.payload_json).unwrap_or(serde_json::json!({})),
+                    "timestamp": e.timestamp,
+                }))
+                .collect();
+            let all_events: Vec<serde_json::Value> = events.iter()
+                .map(|e| serde_json::json!({
+                    "event_id": e.event_id,
+                    "event_type": e.event_type,
+                    "actor_did": e.actor_did,
+                    "payload": serde_json::from_str::<serde_json::Value>(&e.payload_json).unwrap_or(serde_json::json!({})),
+                    "signature": e.signature,
+                    "timestamp": e.timestamp,
+                }))
+                .collect();
+            Json(serde_json::json!({
+                "task_id": task.event_id,
+                "description": serde_json::from_str::<serde_json::Value>(&task.payload_json)
+                    .ok().and_then(|v| v.get("description").cloned())
+                    .unwrap_or(serde_json::json!(null)),
+                "status": status,
+                "actor_did": task.actor_did,
+                "channel": task.channel,
+                "created_at": task.timestamp,
+                "events": all_events,
+                "evidence": evidence,
+            }))
+        }
+        _ => Json(serde_json::json!({ "error": "Task not found" })),
+    }
+}
+
+/// GET /api/v1/channels/{name}/audit — unified audit timeline.
+async fn api_channel_audit(
+    State(state): State<Arc<SharedState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let channel = format!("#{name}");
+    let actor = params.get("actor").map(|s| s.as_str());
+    let since = params.get("since").and_then(|s| {
+        chrono::DateTime::parse_from_rfc3339(s).ok().map(|dt| dt.timestamp())
+            .or_else(|| s.parse::<i64>().ok())
+    });
+    let limit = params.get("limit").and_then(|s| s.parse().ok()).unwrap_or(200usize);
+
+    let mut timeline: Vec<serde_json::Value> = Vec::new();
+
+    // 1. Coordination events
+    if let Some(events) = state.with_db(|db| {
+        Ok(db.query_coordination_events(&channel.to_lowercase(), None, None, actor, since, limit))
+    }) {
+        for e in events {
+            timeline.push(serde_json::json!({
+                "timestamp": e.timestamp,
+                "category": "coordination",
+                "event": e.event_type,
+                "actor_did": e.actor_did,
+                "details": serde_json::from_str::<serde_json::Value>(&e.payload_json).unwrap_or(serde_json::json!({})),
+                "signature": e.signature,
+                "event_id": e.event_id,
+            }));
+        }
+    }
+
+    // 2. Governance log
+    if let Some(entries) = state.with_db(|db| {
+        Ok(db.query_governance_log(Some(&channel), limit)
+            .into_iter()
+            .map(|e| serde_json::json!({
+                "timestamp": e.timestamp,
+                "category": "governance",
+                "event": e.action,
+                "actor_did": e.target_did,
+                "details": {
+                    "issued_by": e.issued_by,
+                    "reason": e.reason,
+                },
+            }))
+            .collect::<Vec<_>>())
+    }) {
+        timeline.extend(entries);
+    }
+
+    // Sort by timestamp
+    timeline.sort_by(|a, b| {
+        let ta = a.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
+        let tb = b.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
+        ta.cmp(&tb)
+    });
+    if timeline.len() > limit {
+        timeline.truncate(limit);
+    }
+
+    Json(serde_json::json!({ "channel": channel, "timeline": timeline }))
+}
+
+/// GET /api/v1/agents/manifests — list all registered manifests.
+async fn api_list_manifests(
+    State(state): State<Arc<SharedState>>,
+) -> Json<serde_json::Value> {
+    let manifests: Vec<serde_json::Value> = state
+        .with_db(|db| {
+            Ok(db.list_manifests().into_iter().map(|(did, json, ts)| {
+                let parsed = serde_json::from_str::<serde_json::Value>(&json)
+                    .unwrap_or(serde_json::json!({}));
+                serde_json::json!({
+                    "agent_did": did,
+                    "manifest": parsed,
+                    "registered_at": ts,
+                })
+            }).collect::<Vec<_>>())
+        })
+        .unwrap_or_default();
+    Json(serde_json::json!({ "manifests": manifests }))
+}
+
+/// GET /api/v1/agents/manifests/{did} — get a specific manifest.
+async fn api_get_manifest(
+    State(state): State<Arc<SharedState>>,
+    axum::extract::Path(did): axum::extract::Path<String>,
+) -> Json<serde_json::Value> {
+    let did_decoded = did.replace("%3A", ":").replace("%3a", ":");
+    match state.with_db(|db| Ok(db.get_manifest(&did_decoded))) {
+        Some(Some(json)) => {
+            let parsed = serde_json::from_str::<serde_json::Value>(&json)
+                .unwrap_or(serde_json::json!({}));
+            Json(serde_json::json!({ "agent_did": did_decoded, "manifest": parsed }))
+        }
+        _ => Json(serde_json::json!({ "error": "Manifest not found" })),
+    }
+}
+
+/// GET /api/v1/agents/spawned — list all active spawned agents.
+async fn api_spawned_agents(
+    State(state): State<Arc<SharedState>>,
+) -> Json<serde_json::Value> {
+    let agents: Vec<serde_json::Value> = state.spawned_agents.lock()
+        .values()
+        .map(|sa| serde_json::json!({
+            "child_did": sa.child_did,
+            "parent_did": sa.parent_did,
+            "nick": sa.nick,
+            "channel": sa.channel,
+            "capabilities": sa.capabilities,
+            "ttl": sa.ttl,
+            "task_ref": sa.task_ref,
+            "spawned_at": sa.spawned_at,
+        }))
+        .collect();
+    Json(serde_json::json!({ "spawned_agents": agents }))
+}
+
+/// GET /api/v1/channels/{name}/budget — budget status.
+async fn api_channel_budget(
+    State(state): State<Arc<SharedState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> Json<serde_json::Value> {
+    let channel = format!("#{name}");
+    let budget_json = state.with_db(|db| Ok(db.get_budget(&channel.to_lowercase(), None))).flatten();
+    match budget_json {
+        Some(bj) => {
+            if let Ok(budget) = serde_json::from_str::<crate::policy::types::BudgetPolicy>(&bj) {
+                let period_start = crate::connection::budget_period_start(&budget.period);
+                let total_spent = state.with_db(|db| Ok(db.sum_spend(&channel.to_lowercase(), None, &budget.unit, period_start)))
+                    .unwrap_or(0.0);
+                let by_agent: Vec<serde_json::Value> = state.with_db(|db| {
+                    Ok(db.spend_by_agent(&channel.to_lowercase(), &budget.unit, period_start)
+                        .into_iter()
+                        .map(|(did, spent, count)| serde_json::json!({
+                            "agent_did": did,
+                            "spent": spent,
+                            "items": count,
+                        }))
+                        .collect::<Vec<_>>())
+                }).unwrap_or_default();
+                let remaining = budget.max_amount - total_spent;
+                let pct = if budget.max_amount > 0.0 { total_spent / budget.max_amount * 100.0 } else { 0.0 };
+                Json(serde_json::json!({
+                    "channel": channel,
+                    "policy": serde_json::from_str::<serde_json::Value>(&bj).unwrap_or_default(),
+                    "current_period": {
+                        "total_spent": total_spent,
+                        "remaining": remaining,
+                        "percent_used": pct,
+                        "by_agent": by_agent,
+                    },
+                }))
+            } else {
+                Json(serde_json::json!({ "channel": channel, "error": "Invalid budget policy" }))
+            }
+        }
+        None => Json(serde_json::json!({ "channel": channel, "budget": null })),
+    }
+}
+
+/// GET /api/v1/channels/{name}/spend — spend records.
+async fn api_channel_spend(
+    State(state): State<Arc<SharedState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let channel = format!("#{name}");
+    let agent = params.get("agent").map(|s| s.as_str());
+    let since = params.get("since").and_then(|s| {
+        chrono::DateTime::parse_from_rfc3339(s).ok().map(|dt| dt.timestamp())
+            .or_else(|| s.parse::<i64>().ok())
+    });
+    let limit = params.get("limit").and_then(|s| s.parse().ok()).unwrap_or(100usize);
+
+    let records: Vec<serde_json::Value> = state.with_db(|db| {
+        Ok(db.query_spend(&channel.to_lowercase(), agent, since, limit)
+            .into_iter()
+            .map(|r| serde_json::json!({
+                "id": r.id,
+                "agent_did": r.agent_did,
+                "amount": r.amount,
+                "unit": r.unit,
+                "description": r.description,
+                "task_ref": r.task_ref,
+                "timestamp": r.timestamp,
+            }))
+            .collect::<Vec<_>>())
+    }).unwrap_or_default();
+    Json(serde_json::json!({ "channel": channel, "spend": records }))
+}
+
+/// GET /api/v1/actors/{did} — identity card for any actor (human or agent).
+async fn api_actor_identity(
+    State(state): State<Arc<SharedState>>,
+    axum::extract::Path(did): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    // URL-decode the DID (colons may be encoded)
+    let did = urlencoding::decode(&did).unwrap_or(std::borrow::Cow::Borrowed(&did)).to_string();
+
+    // Find session(s) for this DID
+    let sessions: Vec<String> = state
+        .session_dids
+        .lock()
+        .iter()
+        .filter(|(_, d)| d.as_str() == did)
+        .map(|(sid, _)| sid.clone())
+        .collect();
+
+    let online = !sessions.is_empty();
+
+    // Actor class (from first active session, or default to human)
+    let actor_class = sessions
+        .iter()
+        .find_map(|sid| state.session_actor_class.lock().get(sid).copied())
+        .unwrap_or(crate::connection::ActorClass::Human);
+
+    // Nick
+    let nick = {
+        let nts = state.nick_to_session.lock();
+        sessions
+            .iter()
+            .find_map(|sid| nts.get_nick(sid).map(|n| n.to_string()))
+    };
+
+    // Handle
+    let handle = sessions
+        .iter()
+        .find_map(|sid| state.session_handles.lock().get(sid).cloned());
+
+    // Channels
+    let channels: Vec<String> = {
+        let chs = state.channels.lock();
+        chs.iter()
+            .filter(|(_, ch)| sessions.iter().any(|sid| ch.members.contains(sid)))
+            .map(|(name, _)| name.clone())
+            .collect()
+    };
+
+    // Provenance
+    let provenance = state.provenance_declarations.lock().get(&did).cloned();
+
+    // Presence (from first session with presence)
+    let presence = sessions
+        .iter()
+        .find_map(|sid| state.agent_presence.lock().get(sid).cloned());
+
+    // Heartbeat
+    let heartbeat = sessions.iter().find_map(|sid| {
+        state.agent_heartbeats.lock().get(sid).map(|(last, ttl)| {
+            let now = chrono::Utc::now().timestamp();
+            let elapsed = now - last;
+            serde_json::json!({
+                "last_seen": last,
+                "ttl_seconds": ttl,
+                "healthy": elapsed <= (*ttl as i64),
+                "elapsed_seconds": elapsed,
+            })
+        })
+    });
+
+    // Check if this is a spawned agent (by DID or nick)
+    let spawned = state.spawned_agents.lock().values()
+        .find(|sa| sa.child_did == did || sa.nick.eq_ignore_ascii_case(&did))
+        .cloned();
+
+    if let Some(sa) = spawned {
+        // Return spawned agent identity card
+        let parent_nick = {
+            let nts = state.nick_to_session.lock();
+            nts.get_nick(&sa.parent_session).map(|n| n.to_string())
+        };
+        let parent_provenance = state.provenance_declarations.lock().get(&sa.parent_did).cloned();
+        let result = serde_json::json!({
+            "did": sa.child_did,
+            "actor_class": "agent",
+            "online": true,
+            "nick": sa.nick,
+            "spawned": true,
+            "parent_did": sa.parent_did,
+            "parent_nick": parent_nick,
+            "channel": sa.channel,
+            "capabilities": sa.capabilities,
+            "ttl": sa.ttl,
+            "task": sa.task_ref,
+            "spawned_at": sa.spawned_at,
+            "provenance": parent_provenance,
+        });
+        return Ok(Json(result));
+    }
+
+    let mut result = serde_json::json!({
+        "did": did,
+        "actor_class": actor_class.to_string(),
+        "online": online,
+    });
+    let obj = result.as_object_mut().unwrap();
+
+    if let Some(nick) = nick {
+        obj.insert("nick".into(), serde_json::json!(nick));
+    }
+    if let Some(handle) = handle {
+        obj.insert("handle".into(), serde_json::json!(handle));
+    }
+    if !channels.is_empty() {
+        obj.insert("channels".into(), serde_json::json!(channels));
+    }
+    if let Some(prov) = provenance {
+        obj.insert("provenance".into(), prov);
+    }
+    if let Some(pres) = presence {
+        obj.insert("presence".into(), serde_json::to_value(&pres).unwrap_or_default());
+    }
+    if let Some(hb) = heartbeat {
+        obj.insert("heartbeat".into(), hb);
+    }
+
+    Ok(Json(result))
+}
+
 async fn api_verify_message(
     State(state): State<Arc<SharedState>>,
     axum::extract::Path(msgid): axum::extract::Path<String>,
@@ -614,6 +1104,17 @@ async fn api_channel_history(
         format!("#{name}")
     };
 
+    // Restrict history for channels with access controls (+i, +k).
+    // These channels require membership to read history — use IRC CHATHISTORY instead.
+    {
+        let channels = state.channels.lock();
+        if let Some(ch) = channels.get(&channel.to_lowercase()) {
+            if ch.invite_only || ch.key.is_some() {
+                return Err(StatusCode::FORBIDDEN);
+            }
+        }
+    }
+
     let limit = params.limit.unwrap_or(50).min(200);
 
     // Try database first for full history
@@ -703,12 +1204,19 @@ async fn api_channel_pins(
             let pins: Vec<serde_json::Value> = ch
                 .pins
                 .iter()
-                .map(|p| {
-                    serde_json::json!({
+                .filter_map(|p| {
+                    // Look up current message content from history
+                    let msg = ch.history.iter().find(|m| m.msgid.as_deref() == Some(&p.msgid))?;
+                    Some(serde_json::json!({
                         "msgid": p.msgid,
+                        "from": msg.from,
+                        "text": msg.text,
+                        "timestamp": chrono::DateTime::from_timestamp(msg.timestamp as i64, 0)
+                            .map(|dt| dt.to_rfc3339())
+                            .unwrap_or_default(),
                         "pinned_by": p.pinned_by,
                         "pinned_at": p.pinned_at,
-                    })
+                    }))
                 })
                 .collect();
             Ok(Json(
@@ -912,30 +1420,39 @@ fn verify_broker_signature_raw(
             "Missing broker signature".to_string(),
         ))?;
 
-    // Replay protection: check timestamp freshness (optional for backward compat)
-    if let Some(ts_str) = headers
+    // Replay protection: require timestamp and enforce ≤60s skew.
+    let ts_str = headers
         .get("x-broker-timestamp")
         .and_then(|v| v.to_str().ok())
-        && let Ok(ts) = ts_str.parse::<u64>()
-    {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        if now.abs_diff(ts) > 60 {
-            return Err((
-                StatusCode::UNAUTHORIZED,
-                "Broker request expired (timestamp > 60s)".to_string(),
-            ));
-        }
+        .ok_or((
+            StatusCode::UNAUTHORIZED,
+            "Missing X-Broker-Timestamp header".to_string(),
+        ))?;
+    let ts: u64 = ts_str.parse().map_err(|_| {
+        (
+            StatusCode::UNAUTHORIZED,
+            "Invalid X-Broker-Timestamp".to_string(),
+        )
+    })?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    if now.abs_diff(ts) > 60 {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "Broker request expired (timestamp > 60s)".to_string(),
+        ));
     }
 
+    // MAC covers ts={timestamp}\n || body to bind the timestamp to the signature.
     let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).map_err(|_| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             "HMAC init failed".to_string(),
         )
     })?;
+    mac.update(format!("ts={ts_str}\n").as_bytes());
     mac.update(body_bytes);
     let expected =
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
@@ -1488,6 +2005,10 @@ async fn auth_callback(
         access_jwt: access_token.to_string(),
         pds_url: pending.pds_url.clone(),
         web_token: Some(web_token),
+        created_at: SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
     };
 
     // Store web session for server-proxied operations (media upload)
@@ -1619,7 +2140,7 @@ fn oauth_result_html(message: &str, result: Option<&crate::server::OAuthResult>)
             }} catch(e) {{}}
             // Try postMessage to opener as secondary channel
             if (window.opener) {{
-                try {{ window.opener.postMessage({{ type: 'freeq-oauth', result: {json} }}, '*'); }} catch(e) {{}}
+                try {{ window.opener.postMessage({{ type: 'freeq-oauth', result: {json} }}, window.location.origin); }} catch(e) {{}}
             }}
             // Try to close this window after a delay (gives BroadcastChannel time to deliver).
             // The main window will also try popup.close() when it receives the result.
@@ -1707,10 +2228,14 @@ fn mobile_nick_from_handle(handle: &str) -> String {
 /// Server proxies the upload to the user's PDS using their stored OAuth credentials.
 /// Returns JSON: `{ "url": "...", "content_type": "...", "size": N }`.
 async fn api_upload(
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
     State(state): State<Arc<SharedState>>,
     headers: axum::http::HeaderMap,
     mut multipart: axum::extract::Multipart,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if !state.rest_rate_limiter.check(addr.ip()) {
+        return Err((StatusCode::TOO_MANY_REQUESTS, "Rate limit exceeded".to_string()));
+    }
     let mut file_data: Option<Vec<u8>> = None;
     let mut content_type = String::from("application/octet-stream");
     let mut did = String::new();
@@ -1872,6 +2397,15 @@ async fn api_upload(
 
 // ── Channel invite page ────────────────────────────────────────────────
 
+/// Escape user-controlled strings for safe embedding in HTML.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#x27;")
+}
+
 async fn channel_invite_page(
     Path(channel): Path<String>,
     State(state): State<Arc<SharedState>>,
@@ -1893,8 +2427,9 @@ async fn channel_invite_page(
     };
 
     let server = &state.config.server_name;
-    let topic_html = topic_text.as_deref().unwrap_or("No topic set");
-    let channel_display = channel.trim_start_matches('#');
+    let topic_html = html_escape(topic_text.as_deref().unwrap_or("No topic set"));
+    let channel_display = html_escape(channel.trim_start_matches('#'));
+    let channel_escaped = html_escape(&channel);
     let member_word = if member_count == 1 {
         "member"
     } else {
@@ -1906,14 +2441,14 @@ async fn channel_invite_page(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{channel} — freeq</title>
-<meta property="og:title" content="{channel} on freeq">
+<title>{channel_escaped} — freeq</title>
+<meta property="og:title" content="{channel_escaped} on freeq">
 <meta property="og:description" content="{topic_html} — {member_count} {member_word} online">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://{server}/join/{channel_display}">
 <meta property="og:image" content="https://{server}/freeq.png">
 <meta name="twitter:card" content="summary">
-<meta name="twitter:title" content="{channel} on freeq">
+<meta name="twitter:title" content="{channel_escaped} on freeq">
 <meta name="twitter:description" content="{topic_html} — {member_count} {member_word} online">
 <meta name="twitter:image" content="https://{server}/freeq.png">
 <style>
@@ -1943,7 +2478,7 @@ h1 .accent{{color:#00d4aa}}
   <div class="channel">#{channel_display}</div>
   <div class="topic">{topic_html}</div>
   <div class="stats"><span>{member_count}</span> {member_word} online on <span>{server}</span></div>
-  <a href="https://{server}/#auto-join={channel}" class="btn">Join Channel</a>
+  <a href="https://{server}/#auto-join={channel_escaped}" class="btn">Join Channel</a>
   <div class="alt">
     Or connect with any IRC client: <code>{server}:6667</code><br>
     <a href="https://freeq.at" target="_blank">Learn more about freeq</a>
@@ -1967,9 +2502,14 @@ struct OgQuery {
 /// and sandbox CSP headers that prevent browser/AVPlayer playback.
 /// Supports Range requests for video seeking / AVPlayer compatibility.
 async fn api_blob_proxy(
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    State(state): State<Arc<SharedState>>,
     headers: axum::http::HeaderMap,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
+    if !state.rest_rate_limiter.check(addr.ip()) {
+        return (StatusCode::TOO_MANY_REQUESTS, "Rate limit exceeded").into_response();
+    }
     let Some(url) = q.get("url") else {
         return (StatusCode::BAD_REQUEST, "missing url parameter").into_response();
     };
@@ -2074,7 +2614,18 @@ async fn api_blob_proxy(
 
 /// Fetch OpenGraph metadata from a URL and return as JSON.
 /// Avoids clients leaking browsing data to third-party proxy services.
-async fn api_og_preview(Query(q): Query<OgQuery>) -> impl IntoResponse {
+async fn api_og_preview(
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    State(state): State<Arc<SharedState>>,
+    Query(q): Query<OgQuery>,
+) -> impl IntoResponse {
+    if !state.rest_rate_limiter.check(addr.ip()) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({"error": "Rate limit exceeded"})),
+        )
+            .into_response();
+    }
     // Validate URL
     let url = match url::Url::parse(&q.url) {
         Ok(u) if u.scheme() == "http" || u.scheme() == "https" => u,
@@ -2087,45 +2638,38 @@ async fn api_og_preview(Query(q): Query<OgQuery>) -> impl IntoResponse {
         }
     };
 
-    // Block SSRF: reject private/loopback IPs and hostnames
-    if let Some(host) = url.host_str() {
-        // Block obvious private hostnames
-        let host_lower = host.to_lowercase();
-        if host_lower == "localhost"
-            || host_lower.ends_with(".local")
-            || host_lower.ends_with(".internal")
-        {
+    // Block SSRF: resolve hostname, reject private IPs, and pin DNS to
+    // prevent TOCTOU / DNS-rebinding between validation and fetch.
+    let host = match url.host_str() {
+        Some(h) => h.to_string(),
+        None => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "Private host"})),
+                Json(serde_json::json!({"error": "No host in URL"})),
             )
                 .into_response();
         }
-        // Resolve and check for private IPs
-        if let Ok(addrs) = tokio::net::lookup_host(format!("{host}:80")).await {
-            for addr in addrs {
-                let ip = addr.ip();
-                if ip.is_loopback()
-                    || ip.is_unspecified()
-                    || matches!(ip, std::net::IpAddr::V4(v4) if v4.is_private() || v4.is_link_local())
-                    || matches!(ip, std::net::IpAddr::V6(v6) if v6.is_loopback())
-                {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(serde_json::json!({"error": "Private IP"})),
-                    )
-                        .into_response();
-                }
-            }
+    };
+    let port = url.port().unwrap_or(if url.scheme() == "https" { 443 } else { 80 });
+    let addrs = match freeq_sdk::ssrf::resolve_and_check(&host, port).await {
+        Ok(a) => a,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("Blocked: {e}")})),
+            )
+                .into_response();
         }
-    }
+    };
 
-    // Fetch with timeout
-    let client = reqwest::Client::builder()
+    // Build a DNS-pinned client so reqwest uses the validated IPs
+    let mut builder = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
-        .redirect(reqwest::redirect::Policy::limited(3))
-        .build()
-        .unwrap();
+        .redirect(reqwest::redirect::Policy::limited(3));
+    for addr in &addrs {
+        builder = builder.resolve(&host, *addr);
+    }
+    let client = builder.build().unwrap();
 
     let resp = match client
         .get(url.as_str())
@@ -2255,6 +2799,17 @@ async fn api_upload_keys(
 
     match (did, bundle) {
         (Some(did), Some(bundle)) => {
+            // Verify the requester is authenticated as this DID
+            let did_is_authenticated = {
+                let session_dids = state.session_dids.lock();
+                session_dids.values().any(|d| d == did)
+            };
+            if !did_is_authenticated {
+                return (
+                    axum::http::StatusCode::FORBIDDEN,
+                    axum::Json(serde_json::json!({ "error": "DID not authenticated" })),
+                );
+            }
             state
                 .prekey_bundles
                 .lock()
@@ -2272,6 +2827,47 @@ async fn api_upload_keys(
             axum::http::StatusCode::BAD_REQUEST,
             axum::Json(serde_json::json!({ "error": "Missing 'did' or 'bundle'" })),
         ),
+    }
+}
+
+// ── Per-IP rate limiting ──────────────────────────────────────────────
+
+/// Simple per-IP sliding-window rate limiter.
+/// Tracks (window_start_secs, request_count) per IP. Resets each window.
+pub struct IpRateLimiter {
+    max_requests: u32,
+    window_secs: u64,
+    state: parking_lot::Mutex<std::collections::HashMap<std::net::IpAddr, (u64, u32)>>,
+}
+
+impl IpRateLimiter {
+    pub fn new(max_requests: u32, window_secs: u64) -> Self {
+        Self {
+            max_requests,
+            window_secs,
+            state: parking_lot::Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+
+    /// Returns true if the request is allowed, false if rate-limited.
+    pub fn check(&self, ip: std::net::IpAddr) -> bool {
+        let now = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let mut map = self.state.lock();
+        let entry = map.entry(ip).or_insert((now, 0));
+        if now - entry.0 >= self.window_secs {
+            *entry = (now, 1);
+            true
+        } else {
+            entry.1 += 1;
+            entry.1 <= self.max_requests
+        }
+    }
+
+    pub fn window_secs(&self) -> u64 {
+        self.window_secs
     }
 }
 

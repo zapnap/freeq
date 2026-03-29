@@ -7,7 +7,7 @@
 
 import { parse, prefixNick, format, type IRCMessage } from './parser';
 import { Transport, type TransportState } from './transport';
-import { useStore, type Message } from '../store';
+import { useStore, type Message, type Member } from '../store';
 import { notify } from '../lib/notifications';
 import { prefetchProfiles } from '../lib/profiles';
 import * as e2ee from '../lib/e2ee';
@@ -383,6 +383,9 @@ export function sendReaction(target: string, emoji: string, msgId?: string) {
 
 export function joinChannel(channel: string) {
   raw(`JOIN ${channel}`);
+  // Optimistic switch — user expects to land on the channel they just joined
+  useStore.getState().addChannel(channel);
+  useStore.getState().setActiveChannel(channel);
 }
 
 export function partChannel(channel: string) {
@@ -552,25 +555,32 @@ async function handleLine(rawLine: string) {
       nick = serverNick;
       store.setNick(nick);
       store.setRegistered(true);
+      store.setConnectedServer(lastUrl);
       // Auto-join channels:
-      // 1. Explicit channels from connect() call (e.g. invite link)
-      // 2. Channels from current session (reconnect)
-      // 3. Saved channels from localStorage (fresh page load)
-      // For DID-authenticated users, the server also auto-joins saved channels,
-      // but sending JOIN for already-joined channels is harmless (server ignores).
-      let toJoin = autoJoinChannels.length > 0
-        ? autoJoinChannels
-        : joinedChannels.size > 0
-          ? [...joinedChannels]
-          : loadSavedChannels();
-      // Always include #freeq for new users (no saved channels)
-      if (toJoin.length === 0) toJoin = ['#freeq'];
-      // Ensure #freeq is always in the list
-      if (!toJoin.some(ch => ch.toLowerCase().replace(/^#/, '') === 'freeq' || ch.toLowerCase() === '#freeq')) {
-        toJoin.unshift('#freeq');
+      // - Explicit channels from connect() call (e.g. invite link) always apply.
+      // - For DID-authenticated users, the server auto-joins from the DB
+      //   (user_channels table, maintained on JOIN/PART). Don't duplicate.
+      // - For guests, join from in-memory session set or #freeq default.
+      let toJoin: string[];
+      if (autoJoinChannels.length > 0) {
+        // Explicit channels (invite link, connect screen)
+        toJoin = autoJoinChannels;
+      } else if (saslDid) {
+        // Authenticated: server handles auto-rejoin from DB.
+        // Only join #freeq if the server doesn't auto-join anything
+        // (the server will send JOINs which populate the channel list).
+        toJoin = [];
+      } else if (joinedChannels.size > 0) {
+        // Guest reconnect: rejoin channels from current session
+        toJoin = [...joinedChannels];
+      } else {
+        // Fresh guest: join #freeq
+        toJoin = ['#freeq'];
       }
-      // The server auto-joins saved channels for DID users (registration.rs).
-      // Only send JOIN for channels not already joined to avoid duplicate 366/CHATHISTORY.
+      // Ensure #freeq for guests with no channels
+      if (!saslDid && toJoin.length === 0) {
+        toJoin = ['#freeq'];
+      }
       for (const ch of toJoin) {
         const name = ch.trim();
         if (name && !store.channels.has(name.toLowerCase())) {
@@ -624,12 +634,13 @@ async function handleLine(rawLine: string) {
         fetchPins(channel);
       }
       const joinDid = account && account !== '*' ? account : undefined;
+      const actorClass = (msg.tags?.['freeq.at/actor-class'] || msg.tags?.['+freeq.at/actor-class']) as Member['actorClass'] | undefined;
       store.addMember(channel, {
         nick: from,
         did: joinDid,
-        isOp: false,
-        isHalfop: false,
-        isVoiced: false,
+        // Don't override op/voice status — JOIN doesn't carry prefix info.
+        // NAMES (353) or MODE will set these correctly.
+        actorClass,
       });
       if (joinDid) prefetchProfiles([joinDid]);
       store.addSystemMessage(channel, `${from} joined`);
@@ -684,7 +695,12 @@ async function handleLine(rawLine: string) {
       // Handle edits
       const editOf = msg.tags['+draft/edit'];
       if (editOf) {
-        store.editMessage(bufName, editOf, text, msg.tags['msgid']);
+        const isStreaming = msg.tags['+freeq.at/streaming'] === '1';
+        // Ensure DM buffer exists before editing (streaming edits can race with initial message)
+        if (!isChannel && !useStore.getState().channels.has(bufName.toLowerCase())) {
+          useStore.getState().addChannel(bufName);
+        }
+        store.editMessage(bufName, editOf, text, msg.tags['msgid'], isStreaming);
         break;
       }
 
@@ -745,11 +761,12 @@ async function handleLine(rawLine: string) {
         isSelf: isSelf,
         replyTo: msg.tags['+reply'],
         encrypted: isEncryptedMsg,
+        isStreaming: msg.tags['+freeq.at/streaming'] === '1',
       };
 
       // Ensure DM buffer exists
-      if (!isChannel && !store.channels.has(bufName.toLowerCase())) {
-        store.addChannel(bufName);
+      if (!isChannel && !useStore.getState().channels.has(bufName.toLowerCase())) {
+        useStore.getState().addChannel(bufName);
       }
 
       // Background WHOIS for DM partners to learn their DID (enables E2EE)
@@ -790,17 +807,42 @@ async function handleLine(rawLine: string) {
       const target = msg.params[0];
       const text = msg.params[1] || '';
       const buf = target === '*' || target === nick ? 'server' : target;
-      store.addSystemMessage(buf, `[${from || 'server'}] ${text}`);
+      // Update actor class from agent registration broadcast
+      const noticeActorClass = (msg.tags?.['freeq.at/actor-class'] || msg.tags?.['+freeq.at/actor-class']) as Member['actorClass'] | undefined;
+      if (noticeActorClass && from && (target.startsWith('#') || target.startsWith('&'))) {
+        store.addMember(target, { nick: from, actorClass: noticeActorClass });
+      }
+      // Handle pin/unpin sync broadcasts (update local state, then show server's message)
+      const pinMsgid = msg.tags?.['+freeq.at/pin'];
+      const unpinMsgid = msg.tags?.['+freeq.at/unpin'];
+      if (pinMsgid && (target.startsWith('#') || target.startsWith('&'))) {
+        store.addPin(target, pinMsgid, from);
+      }
+      if (unpinMsgid && (target.startsWith('#') || target.startsWith('&'))) {
+        store.removePin(target, unpinMsgid);
+      }
+      // Strip CTCP ACTION wrapper for display (e.g., pin/unpin notifications)
+      const isAction = text.startsWith('\x01ACTION ') && text.endsWith('\x01');
+      if (isAction) {
+        store.addSystemMessage(buf, `${from} ${text.slice(8, -1)}`);
+      } else {
+        store.addSystemMessage(buf, `[${from || 'server'}] ${text}`);
+      }
       break;
     }
 
     // ── TAGMSG ──
     case 'TAGMSG': {
       const target = msg.params[0];
+      // For DMs, buffer = the other person's nick (not our own)
+      const isChannel = target.startsWith('#') || target.startsWith('&');
+      const isSelf = from.toLowerCase() === nick.toLowerCase();
+      const bufName = isChannel ? target : (isSelf ? target : from);
+
       // Handle deletes
       const deleteOf = msg.tags['+draft/delete'];
       if (deleteOf) {
-        store.deleteMessage(target, deleteOf);
+        store.deleteMessage(bufName, deleteOf);
         break;
       }
       // Handle reactions — +reply tag references the target message
@@ -808,15 +850,15 @@ async function handleLine(rawLine: string) {
       if (reaction) {
         const reactTarget = msg.tags['+reply'];
         if (reactTarget) {
-          store.addReaction(target, reactTarget, reaction, from);
+          store.addReaction(bufName, reactTarget, reaction, from);
         } else {
           // No +reply — reaction to the channel generally.
           // Attach to the most recent non-system message.
-          const ch = store.channels.get(target.toLowerCase());
+          const ch = store.channels.get(bufName.toLowerCase());
           if (ch) {
             const lastMsg = [...ch.messages].reverse().find((m) => !m.isSystem && !m.deleted);
             if (lastMsg) {
-              store.addReaction(target, lastMsg.id, reaction, from);
+              store.addReaction(bufName, lastMsg.id, reaction, from);
             }
           }
         }
@@ -824,7 +866,7 @@ async function handleLine(rawLine: string) {
       // Handle typing
       const typing = msg.tags['+typing'];
       if (typing) {
-        store.setTyping(target, from, typing === 'active');
+        store.setTyping(bufName, from, typing === 'active');
       }
       break;
     }
@@ -848,10 +890,14 @@ async function handleLine(rawLine: string) {
       const channel = msg.params[2];
       const nicks = (msg.params[3] || '').split(' ').filter(Boolean);
       for (const n of nicks) {
-        const isOp = n.startsWith('@');
-        const isHalfop = n.startsWith('%');
-        const isVoiced = n.startsWith('+');
-        const bare = n.replace(/^[@%+]/, '');
+        // With multi-prefix, nicks can have multiple prefixes: @+nick, @%+nick, etc.
+        // Strip all leading prefix chars to get bare nick.
+        const prefixMatch = n.match(/^([@%+]+)/);
+        const prefixes = prefixMatch ? prefixMatch[1] : '';
+        const bare = n.slice(prefixes.length);
+        const isOp = prefixes.includes('@');
+        const isHalfop = prefixes.includes('%');
+        const isVoiced = prefixes.includes('+');
         store.addMember(channel, { nick: bare, isOp, isHalfop, isVoiced });
       }
       break;
@@ -864,7 +910,8 @@ async function handleLine(rawLine: string) {
       if (ch) {
         const toWhois: string[] = [];
         for (const m of ch.members.values()) {
-          if (!m.did && m.nick.toLowerCase() !== nick.toLowerCase()) {
+          const ml = m.nick.toLowerCase();
+          if (ml !== nick.toLowerCase() && !backgroundWhois.has(ml)) {
             toWhois.push(m.nick);
           }
         }
@@ -930,6 +977,7 @@ async function handleLine(rawLine: string) {
       if (sub === 'TARGETS' && msg.params[1]) {
         const targetNick = msg.params[1];
         store.addDmTarget(targetNick);
+        requestHistory(targetNick);
       }
       break;
     }
@@ -990,10 +1038,14 @@ async function handleLine(rawLine: string) {
     // ── WHOIS ──
     case '311': { // RPL_WHOISUSER: nick user host * :realname
       const whoisNick = msg.params[1] || '';
+      // Reset identity fields — they'll only be re-set if server sends 330/671.
+      // This prevents stale DID/handle from a previous user with the same nick.
       store.updateWhois(whoisNick, {
         user: msg.params[2],
         host: msg.params[3],
         realname: msg.params[5] || msg.params[4],
+        did: undefined,
+        handle: undefined,
       });
       if (!backgroundWhois.has(whoisNick.toLowerCase())) {
         store.addSystemMessage('server', `WHOIS ${whoisNick}: ${msg.params[2]}@${msg.params[3]} (${msg.params[5] || msg.params[4]})`);
@@ -1033,6 +1085,24 @@ async function handleLine(rawLine: string) {
       }
       if (did) {
         prefetchProfiles([did]);
+      }
+      break;
+    }
+    case '673': { // RPL_ACTORCLASS — actor_class=agent
+      const whoisNick = msg.params[1] || '';
+      const classStr = msg.params[2] || '';
+      const match = classStr.match(/actor_class=(\w+)/);
+      if (match && whoisNick) {
+        const actorClass = match[1] as Member['actorClass'];
+        // Update member in all channels this nick is in
+        for (const [, ch] of store.channels) {
+          if (ch.members.has(whoisNick.toLowerCase())) {
+            store.addMember(ch.name, { nick: whoisNick, actorClass });
+          }
+        }
+      }
+      if (!backgroundWhois.has(whoisNick.toLowerCase())) {
+        store.addSystemMessage('server', `  Actor class: ${classStr}`);
       }
       break;
     }
@@ -1118,12 +1188,24 @@ function handleAuthenticate(msg: IRCMessage) {
   const param = msg.params[0] || '';
   if (param === '+' || !param) return;
 
-  // Server sent the challenge — respond with our credentials
+  // Server sent the challenge — decode it to extract the nonce, then respond.
+  // The challenge_nonce binds our PDS-verified session to this specific
+  // challenge, preventing token replay across different servers/sessions.
+  let challengeNonce: string | undefined;
+  try {
+    const challengeJson = atob(param.replace(/-/g, '+').replace(/_/g, '/'));
+    const challenge = JSON.parse(challengeJson);
+    challengeNonce = challenge.nonce;
+  } catch {
+    // If we can't decode the challenge, proceed without the nonce.
+    // The server will reject PDS methods that lack it.
+  }
   const response = JSON.stringify({
     did: saslDid,
     method: saslMethod || 'pds-session',
     signature: saslToken,
     pds_url: saslPdsUrl,
+    challenge_nonce: challengeNonce,
   });
   const encoded = btoa(response)
     .replace(/\+/g, '-')

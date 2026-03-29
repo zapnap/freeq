@@ -28,6 +28,8 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use base64::Engine;
+use std::collections::HashMap;
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
@@ -37,6 +39,11 @@ use tokio_rustls::rustls;
 use crate::auth::{self, ChallengeSigner};
 use crate::event::Event;
 use crate::irc::Message;
+
+/// Registry for pending echo-message callbacks.
+/// When a client sends a PRIVMSG with a `+freeq.at/echo-nonce` tag, the nonce
+/// is registered here. When the echo comes back, the msgid is sent via the oneshot.
+type EchoRegistry = std::sync::Arc<parking_lot::Mutex<HashMap<String, tokio::sync::oneshot::Sender<String>>>>;
 
 /// Configuration for connecting to an IRC server.
 #[derive(Debug, Clone)]
@@ -84,6 +91,7 @@ pub enum Command {
 #[derive(Clone)]
 pub struct ClientHandle {
     cmd_tx: mpsc::Sender<Command>,
+    echo_registry: EchoRegistry,
 }
 
 impl ClientHandle {
@@ -112,6 +120,33 @@ impl ClientHandle {
     pub async fn raw(&self, line: &str) -> Result<()> {
         self.cmd_tx.send(Command::Raw(line.to_string())).await?;
         Ok(())
+    }
+
+    /// Send a tagged message and await the server-assigned msgid via echo-message.
+    ///
+    /// This inserts a unique nonce tag (`+freeq.at/echo-nonce`) that the client
+    /// loop matches against incoming echo-messages. Requires `echo-message` cap.
+    ///
+    /// Returns the server-assigned `msgid`.
+    pub async fn send_and_await_echo(
+        &self,
+        target: &str,
+        text: &str,
+        mut tags: std::collections::HashMap<String, String>,
+    ) -> Result<String> {
+        let nonce = format!("echo-{:016x}", rand::random::<u64>());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.echo_registry.lock().insert(nonce.clone(), tx);
+        tags.insert("+freeq.at/echo-nonce".to_string(), nonce.clone());
+        self.send_tagged(target, text, tags).await?;
+        match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
+            Ok(Ok(msgid)) => Ok(msgid),
+            Ok(Err(_)) => anyhow::bail!("Echo channel dropped"),
+            Err(_) => {
+                self.echo_registry.lock().remove(&nonce);
+                anyhow::bail!("Timed out waiting for echo-message msgid")
+            }
+        }
     }
 
     /// Send a message with IRCv3 tags (for rich media).
@@ -297,6 +332,315 @@ impl ClientHandle {
     /// Set the channel topic.
     pub async fn topic(&self, channel: &str, topic: &str) -> Result<()> {
         self.raw(&format!("TOPIC {channel} :{topic}")).await
+    }
+
+    // ── Agent-native methods ─────────────────────────────────────────
+
+    /// Register this connection as an agent (or external_agent).
+    pub async fn register_agent(&self, class: &str) -> Result<()> {
+        self.raw(&format!("AGENT REGISTER :class={class}")).await
+    }
+
+    /// Submit a provenance declaration (JSON value, will be base64url-encoded).
+    pub async fn submit_provenance(&self, provenance: &serde_json::Value) -> Result<()> {
+        let json = serde_json::to_vec(provenance)?;
+        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&json);
+        self.raw(&format!("PROVENANCE :{encoded}")).await
+    }
+
+    /// Update structured agent presence.
+    pub async fn set_presence(
+        &self,
+        state: &str,
+        status: Option<&str>,
+        task: Option<&str>,
+    ) -> Result<()> {
+        let mut parts = vec![format!("state={state}")];
+        if let Some(s) = status {
+            parts.push(format!("status={s}"));
+        }
+        if let Some(t) = task {
+            parts.push(format!("task={t}"));
+        }
+        self.raw(&format!("PRESENCE :{}", parts.join(";"))).await
+    }
+
+    /// Send a heartbeat with the given state and TTL (seconds).
+    pub async fn send_heartbeat(&self, state: &str, ttl: u64) -> Result<()> {
+        self.raw(&format!("HEARTBEAT :state={state};ttl={ttl}"))
+            .await
+    }
+
+    /// Request approval for a capability in a channel.
+    pub async fn request_approval(
+        &self,
+        channel: &str,
+        capability: &str,
+        resource: Option<&str>,
+    ) -> Result<()> {
+        let resource_part = resource.map(|r| format!(";resource={r}")).unwrap_or_default();
+        self.raw(&format!("APPROVAL_REQUEST {channel} :{capability}{resource_part}"))
+            .await
+    }
+
+    /// Pause an agent (must be op in shared channel).
+    pub async fn pause_agent(&self, nick: &str, reason: Option<&str>) -> Result<()> {
+        match reason {
+            Some(r) => self.raw(&format!("AGENT PAUSE {nick} :{r}")).await,
+            None => self.raw(&format!("AGENT PAUSE {nick}")).await,
+        }
+    }
+
+    /// Resume an agent (must be op in shared channel).
+    pub async fn resume_agent(&self, nick: &str) -> Result<()> {
+        self.raw(&format!("AGENT RESUME {nick}")).await
+    }
+
+    /// Revoke an agent (must be op in shared channel).
+    pub async fn revoke_agent(&self, nick: &str, reason: Option<&str>) -> Result<()> {
+        match reason {
+            Some(r) => self.raw(&format!("AGENT REVOKE {nick} :{r}")).await,
+            None => self.raw(&format!("AGENT REVOKE {nick}")).await,
+        }
+    }
+
+    /// Approve an agent's pending capability request.
+    pub async fn approve_agent(&self, nick: &str, capability: &str) -> Result<()> {
+        self.raw(&format!("AGENT APPROVE {nick} {capability}")).await
+    }
+
+    /// Deny an agent's pending capability request.
+    pub async fn deny_agent(&self, nick: &str, capability: &str, reason: Option<&str>) -> Result<()> {
+        match reason {
+            Some(r) => self.raw(&format!("AGENT DENY {nick} {capability} :{r}")).await,
+            None => self.raw(&format!("AGENT DENY {nick} {capability}")).await,
+        }
+    }
+
+    // ── Phase 3: Coordination events ────────────────────────────────
+
+    /// Emit a typed coordination event to a channel.
+    /// Sends both a TAGMSG (structured, for rich clients) and PRIVMSG (human-readable).
+    pub async fn emit_event(
+        &self,
+        channel: &str,
+        event_type: &str,
+        payload_json: &str,
+        ref_id: Option<&str>,
+        human_text: &str,
+    ) -> Result<String> {
+        let event_id = format!("{:016x}{:016x}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64,
+            rand::random::<u64>(),
+        );
+        let mut tags = format!(
+            "+freeq.at/event={event_type};msgid={event_id};+freeq.at/payload={}",
+            payload_json.replace(';', "%3B").replace(' ', "%20")
+        );
+        if let Some(rid) = ref_id {
+            tags.push_str(&format!(";+freeq.at/ref={rid}"));
+        }
+        // Send structured TAGMSG
+        self.raw(&format!("@{tags} TAGMSG {channel}")).await?;
+        // Send human-readable PRIVMSG with the same event tags (for rich client rendering)
+        self.raw(&format!("@{tags} PRIVMSG {channel} :{human_text}")).await?;
+        Ok(event_id)
+    }
+
+    /// Create a new task and return its ID.
+    pub async fn create_task(&self, channel: &str, description: &str) -> Result<String> {
+        let payload = serde_json::json!({"description": description}).to_string();
+        self.emit_event(
+            channel,
+            "task_request",
+            &payload,
+            None,
+            &format!("📋 New task: {description}"),
+        ).await
+    }
+
+    /// Update a task's status.
+    pub async fn update_task(
+        &self,
+        channel: &str,
+        task_id: &str,
+        phase: &str,
+        summary: &str,
+    ) -> Result<()> {
+        let payload = serde_json::json!({"phase": phase, "summary": summary}).to_string();
+        self.emit_event(
+            channel,
+            "task_update",
+            &payload,
+            Some(task_id),
+            &format!("🔄 [{phase}] {summary}"),
+        ).await?;
+        Ok(())
+    }
+
+    /// Complete a task.
+    pub async fn complete_task(
+        &self,
+        channel: &str,
+        task_id: &str,
+        summary: &str,
+        url: Option<&str>,
+    ) -> Result<()> {
+        let mut payload = serde_json::json!({"summary": summary});
+        if let Some(u) = url {
+            payload["url"] = serde_json::json!(u);
+        }
+        let url_str = url.map(|u| format!(" — {u}")).unwrap_or_default();
+        self.emit_event(
+            channel,
+            "task_complete",
+            &payload.to_string(),
+            Some(task_id),
+            &format!("🎉 Task complete: {summary}{url_str}"),
+        ).await?;
+        Ok(())
+    }
+
+    /// Fail a task.
+    pub async fn fail_task(
+        &self,
+        channel: &str,
+        task_id: &str,
+        error: &str,
+    ) -> Result<()> {
+        let payload = serde_json::json!({"error": error}).to_string();
+        self.emit_event(
+            channel,
+            "task_failed",
+            &payload,
+            Some(task_id),
+            &format!("❌ Task failed: {error}"),
+        ).await?;
+        Ok(())
+    }
+
+    /// Attach evidence to a task.
+    pub async fn attach_evidence(
+        &self,
+        channel: &str,
+        task_id: &str,
+        evidence_type: &str,
+        summary: &str,
+        url: Option<&str>,
+    ) -> Result<()> {
+        let mut payload = serde_json::json!({
+            "type": evidence_type,
+            "summary": summary,
+        });
+        if let Some(u) = url {
+            payload["url"] = serde_json::json!(u);
+        }
+        let url_str = url.map(|u| format!(" — {u}")).unwrap_or_default();
+        self.emit_event(
+            channel,
+            "evidence_attach",
+            &payload.to_string(),
+            Some(task_id),
+            &format!("📎 Evidence ({evidence_type}): {summary}{url_str}"),
+        ).await?;
+        Ok(())
+    }
+
+    // ── Phase 4: Manifests and Spawning ────────────────────────────
+
+    /// Submit an agent manifest (base64-encoded TOML).
+    pub async fn submit_manifest(&self, toml_content: &str) -> Result<()> {
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(toml_content.as_bytes());
+        self.raw(&format!("AGENT MANIFEST {encoded}")).await
+    }
+
+    /// Spawn a child agent in a channel.
+    pub async fn spawn_agent(
+        &self,
+        channel: &str,
+        nick: &str,
+        capabilities: &[&str],
+        ttl_seconds: Option<u64>,
+        task_ref: Option<&str>,
+    ) -> Result<()> {
+        let mut params = format!("nick={nick}");
+        if !capabilities.is_empty() {
+            params.push_str(&format!(";capabilities={}", capabilities.join(",")));
+        }
+        if let Some(ttl) = ttl_seconds {
+            params.push_str(&format!(";ttl={ttl}"));
+        }
+        if let Some(task) = task_ref {
+            params.push_str(&format!(";task={task}"));
+        }
+        self.raw(&format!("AGENT SPAWN {channel} :{params}")).await
+    }
+
+    /// Despawn a child agent.
+    pub async fn despawn_agent(&self, nick: &str) -> Result<()> {
+        self.raw(&format!("AGENT DESPAWN {nick}")).await
+    }
+
+    /// Send a message as a spawned child agent.
+    pub async fn send_as_child(&self, child_nick: &str, channel: &str, text: &str) -> Result<()> {
+        self.raw(&format!("AGENT MSG {child_nick} {channel} :{text}")).await
+    }
+
+    // ── Phase 5: Economic Controls ─────────────────────────────────
+
+    /// Report spend for the current action.
+    pub async fn report_spend(
+        &self,
+        channel: &str,
+        amount: f64,
+        unit: &str,
+        description: &str,
+        task_ref: Option<&str>,
+    ) -> Result<()> {
+        let mut params = format!("amount={amount:.6};unit={unit};desc={description}");
+        if let Some(task) = task_ref {
+            params.push_str(&format!(";task={task}"));
+        }
+        self.raw(&format!("SPEND {channel} :{params}")).await
+    }
+
+    /// Set a channel budget (must be channel op).
+    pub async fn set_budget(
+        &self,
+        channel: &str,
+        max_amount: f64,
+        unit: &str,
+        period: &str,
+        sponsor_did: &str,
+    ) -> Result<()> {
+        self.raw(&format!(
+            "BUDGET {channel} :max={max_amount};unit={unit};period={period};sponsor={sponsor_did}"
+        )).await
+    }
+
+    /// Query channel budget status.
+    pub async fn query_budget(&self, channel: &str) -> Result<()> {
+        self.raw(&format!("BUDGET {channel}")).await
+    }
+
+    /// Start automatic heartbeat in a background task.
+    /// Returns a handle that stops the heartbeat when dropped.
+    pub fn start_heartbeat(
+        &self,
+        interval: std::time::Duration,
+    ) -> tokio::task::JoinHandle<()> {
+        let handle = self.clone();
+        let ttl = interval.as_secs() * 2;
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            loop {
+                ticker.tick().await;
+                if handle.send_heartbeat("active", ttl).await.is_err() {
+                    break; // Connection closed
+                }
+            }
+        })
     }
 }
 
@@ -520,11 +864,14 @@ pub fn connect_with_stream(
 ) -> (ClientHandle, mpsc::Receiver<Event>) {
     let (event_tx, event_rx) = mpsc::channel(4096);
     let (cmd_tx, cmd_rx) = mpsc::channel(256);
+    let echo_registry: EchoRegistry = std::sync::Arc::new(parking_lot::Mutex::new(HashMap::new()));
 
     let handle = ClientHandle {
         cmd_tx: cmd_tx.clone(),
+        echo_registry: echo_registry.clone(),
     };
 
+    let echo_reg = echo_registry.clone();
     tokio::spawn(async move {
         let _ = event_tx.send(Event::Connected).await;
         let result = match conn {
@@ -537,6 +884,7 @@ pub fn connect_with_stream(
                     signer,
                     event_tx.clone(),
                     cmd_rx,
+                    echo_reg,
                 )
                 .await
             }
@@ -549,6 +897,7 @@ pub fn connect_with_stream(
                     signer,
                     event_tx.clone(),
                     cmd_rx,
+                    echo_reg,
                 )
                 .await
             }
@@ -562,6 +911,7 @@ pub fn connect_with_stream(
                     signer,
                     event_tx.clone(),
                     cmd_rx,
+                    echo_reg,
                 )
                 .await
             }
@@ -591,13 +941,16 @@ pub fn connect(
 ) -> (ClientHandle, mpsc::Receiver<Event>) {
     let (event_tx, event_rx) = mpsc::channel(4096);
     let (cmd_tx, cmd_rx) = mpsc::channel(256);
+    let echo_registry: EchoRegistry = std::sync::Arc::new(parking_lot::Mutex::new(HashMap::new()));
 
     let handle = ClientHandle {
         cmd_tx: cmd_tx.clone(),
+        echo_registry: echo_registry.clone(),
     };
 
+    let echo_reg = echo_registry.clone();
     tokio::spawn(async move {
-        if let Err(e) = run_client(config, signer, event_tx.clone(), cmd_rx).await {
+        if let Err(e) = run_client(config, signer, event_tx.clone(), cmd_rx, echo_reg).await {
             let _ = event_tx
                 .send(Event::Disconnected {
                     reason: e.to_string(),
@@ -614,6 +967,7 @@ async fn run_client(
     signer: Option<Arc<dyn ChallengeSigner>>,
     event_tx: mpsc::Sender<Event>,
     cmd_rx: mpsc::Receiver<Command>,
+    echo_registry: EchoRegistry,
 ) -> Result<()> {
     let conn = establish_connection(&config).await?;
     let _ = event_tx.send(Event::Connected).await;
@@ -627,6 +981,7 @@ async fn run_client(
                 signer,
                 event_tx,
                 cmd_rx,
+                echo_registry,
             )
             .await
         }
@@ -639,6 +994,7 @@ async fn run_client(
                 signer,
                 event_tx,
                 cmd_rx,
+                echo_registry,
             )
             .await
         }
@@ -652,6 +1008,7 @@ async fn run_client(
                 signer,
                 event_tx,
                 cmd_rx,
+                echo_registry,
             )
             .await
         }
@@ -752,6 +1109,7 @@ async fn run_irc<R, W>(
     signer: Option<Arc<dyn ChallengeSigner>>,
     event_tx: mpsc::Sender<Event>,
     mut cmd_rx: mpsc::Receiver<Command>,
+    echo_registry: EchoRegistry,
 ) -> Result<()>
 where
     R: tokio::io::AsyncBufRead + Unpin,
@@ -1127,6 +1485,16 @@ where
                                     let target = msg.params[0].clone();
                                     let text = msg.params[1].clone();
                                     let tags = msg.tags.clone();
+
+                                    // Check for echo-nonce match (for send_and_await_echo)
+                                    if let Some(nonce) = tags.get("+freeq.at/echo-nonce") {
+                                        if let Some(tx) = echo_registry.lock().remove(nonce) {
+                                            if let Some(msgid) = tags.get("msgid") {
+                                                let _ = tx.send(msgid.clone());
+                                            }
+                                        }
+                                    }
+
                                     let _ = event_tx.send(Event::Message { from, target, text, tags }).await;
                                 }
                             }
@@ -1261,7 +1629,9 @@ async fn execute_command<W: AsyncWrite + Unpin>(
             }
         }
         Command::Raw(line) => {
+            tracing::debug!("[SDK] Raw command: {}", line);
             writer.write_all(format!("{line}\r\n").as_bytes()).await?;
+            tracing::debug!("[SDK] Raw command sent OK");
         }
         Command::Quit(msg) => {
             let quit_line = match msg {

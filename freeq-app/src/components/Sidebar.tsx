@@ -20,12 +20,16 @@ export function Sidebar({ onOpenSettings }: SidebarProps) {
 
   const favorites = useStore((s) => s.favorites);
   useStore((s) => s.mutedChannels); // subscribe for re-render
+  const hiddenDMs = useStore((s) => s.hiddenDMs);
 
   const allJoined = [...channels.values()].filter((ch) => ch.isJoined);
   const allChans = allJoined.filter((ch) => ch.name.startsWith('#') || ch.name.startsWith('&')).sort((a, b) => a.name.localeCompare(b.name));
   const favList = allChans.filter((ch) => favorites.has(ch.name.toLowerCase()));
   const chanList = allChans.filter((ch) => !favorites.has(ch.name.toLowerCase()));
-  const dmList = allJoined.filter((ch) => !ch.name.startsWith('#') && !ch.name.startsWith('&') && ch.name !== 'server').sort((a, b) => a.name.localeCompare(b.name));
+  const dmList = allJoined
+    .filter((ch) => !ch.name.startsWith('#') && !ch.name.startsWith('&') && ch.name !== 'server')
+    .filter((ch) => !hiddenDMs.has(ch.name.toLowerCase()))
+    .sort((a, b) => a.name.localeCompare(b.name));
 
   const handleJoin = () => {
     const ch = joinInput.trim();
@@ -37,7 +41,7 @@ export function Sidebar({ onOpenSettings }: SidebarProps) {
   };
 
   return (
-    <aside data-testid="sidebar" role="navigation" aria-label="Channels and direct messages" className="w-64 bg-bg-secondary flex flex-col shrink-0 overflow-hidden">
+    <aside data-testid="sidebar" role="navigation" aria-label="Channels and direct messages" className="w-64 h-full bg-bg-secondary flex flex-col shrink-0 overflow-hidden">
       {/* Brand */}
       <div className="h-14 flex items-center px-4 border-b border-border shrink-0 gap-2.5">
         <img src="/freeq.png" alt="" className="w-7 h-7" />
@@ -139,7 +143,7 @@ export function Sidebar({ onOpenSettings }: SidebarProps) {
       </nav>
 
       {/* User footer */}
-      <div className="border-t border-border px-3 py-3 shrink-0">
+      <div className="border-t border-border px-3 py-4 shrink-0">
         <div className="flex items-center gap-2.5">
           <SelfAvatar nick={nick} did={authDid} />
           <div className="min-w-0 flex-1">
@@ -347,11 +351,17 @@ function SidebarContextMenu({ channel, isFav, isMuted, isChannel, position, onCl
         Copy invite link
       </button>
       <div className="h-px bg-border mx-2 my-1" />
-      {isChannel && (
+      {isChannel ? (
         <button onClick={() => { partChannel(channel); onClose(); }}
           className="w-full text-left px-3 py-1.5 text-sm flex items-center gap-2 hover:bg-danger/10 text-danger">
           <span className="w-5 text-center">🚪</span>
           Leave channel
+        </button>
+      ) : (
+        <button onClick={() => { useStore.getState().hideDM(channel); onClose(); }}
+          className="w-full text-left px-3 py-1.5 text-sm flex items-center gap-2 hover:bg-danger/10 text-danger">
+          <span className="w-5 text-center">✕</span>
+          Close conversation
         </button>
       )}
     </div>

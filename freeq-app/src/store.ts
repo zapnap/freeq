@@ -15,6 +15,7 @@ export interface Message {
   isSystem?: boolean;
   replyTo?: string;
   editOf?: string;
+  isStreaming?: boolean;
   deleted?: boolean;
   reactions?: Map<string, Set<string>>; // emoji → nicks
   encrypted?: boolean; // true if this message was E2EE encrypted
@@ -31,6 +32,7 @@ export interface Member {
   isVoiced: boolean;
   away?: string | null;
   typing?: boolean;
+  actorClass?: 'human' | 'agent' | 'external_agent';
 }
 
 export interface PinnedMessage {
@@ -101,6 +103,7 @@ export interface Store {
   authError: string | null;
   motd: string[];
   motdDismissed: boolean;
+  connectedServer: string | null;
 
   // Channels & DMs
   channels: Map<string, Channel>;
@@ -124,6 +127,7 @@ export interface Store {
   mutedChannels: Set<string>; // lowercase channel names
   bookmarks: { channel: string; msgId: string; from: string; text: string; timestamp: Date }[];
   bookmarksPanelOpen: boolean;
+  hiddenDMs: Set<string>; // lowercase nicks — hidden from sidebar but messages preserved
   searchOpen: boolean;
   scrollToMsgId: string | null;
   searchQuery: string;
@@ -141,6 +145,7 @@ export interface Store {
   setAuthError: (error: string) => void;
   appendMotd: (line: string) => void;
   dismissMotd: () => void;
+  setConnectedServer: (url: string | null) => void;
   reset: () => void;
   fullReset: () => void;
 
@@ -164,7 +169,7 @@ export interface Store {
   // Actions — messages
   addMessage: (channel: string, msg: Message) => void;
   addSystemMessage: (channel: string, text: string) => void;
-  editMessage: (channel: string, originalMsgId: string, newText: string, newMsgId?: string) => void;
+  editMessage: (channel: string, originalMsgId: string, newText: string, newMsgId?: string, isStreaming?: boolean) => void;
   deleteMessage: (channel: string, msgId: string) => void;
   addReaction: (channel: string, msgId: string, emoji: string, fromNick: string) => void;
   incrementMentions: (channel: string) => void;
@@ -190,6 +195,8 @@ export interface Store {
   setLoadExternalMedia: (v: boolean) => void;
   toggleFavorite: (channel: string) => void;
   toggleMuted: (channel: string) => void;
+  hideDM: (nick: string) => void;
+  unhideDM: (nick: string) => void;
   isFavorite: (channel: string) => boolean;
   isMuted: (channel: string) => boolean;
   addBookmark: (channel: string, msgId: string, from: string, text: string, timestamp: Date) => void;
@@ -198,6 +205,8 @@ export interface Store {
   setSearchOpen: (open: boolean) => void;
   setScrollToMsgId: (id: string | null) => void;
   setPins: (channel: string, pins: PinnedMessage[]) => void;
+  addPin: (channel: string, msgid: string, pinnedBy: string) => void;
+  removePin: (channel: string, msgid: string) => void;
   setSearchQuery: (query: string) => void;
   setChannelListOpen: (open: boolean) => void;
   setChannelList: (list: ChannelListEntry[]) => void;
@@ -213,6 +222,16 @@ export interface Store {
   // Channel settings
   channelSettingsOpen: string | null;
   setChannelSettingsOpen: (channel: string | null) => void;
+}
+
+/** Safely parse JSON from localStorage, returning fallback on any error. */
+function safeJsonParse<T>(value: string | null, fallback: T): T {
+  if (!value) return fallback;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
 }
 
 function getOrCreateChannel(channels: Map<string, Channel>, name: string): Channel {
@@ -246,6 +265,7 @@ export const useStore = create<Store>((set, get) => ({
   authError: null,
   motd: [],
   motdDismissed: false,
+  connectedServer: null,
   channels: new Map(),
   activeChannel: 'server',
   serverMessages: [],
@@ -257,10 +277,11 @@ export const useStore = create<Store>((set, get) => ({
   messageDensity: (localStorage.getItem('freeq-density') as 'default' | 'compact' | 'cozy') || 'default',
   showJoinPart: localStorage.getItem('freeq-show-join-part') === 'true',
   loadExternalMedia: localStorage.getItem('freeq-load-media') !== 'false',
-  favorites: new Set(JSON.parse(localStorage.getItem('freeq-favorites') || '[]')),
-  mutedChannels: new Set(JSON.parse(localStorage.getItem('freeq-muted') || '[]')),
-  bookmarks: JSON.parse(localStorage.getItem('freeq-bookmarks') || '[]').map((b: any) => ({ ...b, timestamp: new Date(b.timestamp) })),
+  favorites: new Set(safeJsonParse(localStorage.getItem('freeq-favorites'), [])),
+  mutedChannels: new Set(safeJsonParse(localStorage.getItem('freeq-muted'), [])),
+  bookmarks: safeJsonParse(localStorage.getItem('freeq-bookmarks'), []).map((b: any) => ({ ...b, timestamp: new Date(b.timestamp) })),
   bookmarksPanelOpen: false,
+  hiddenDMs: new Set(safeJsonParse(localStorage.getItem('freeq-hidden-dms'), [])),
   searchOpen: false,
   scrollToMsgId: null,
   searchQuery: '',
@@ -279,10 +300,12 @@ export const useStore = create<Store>((set, get) => ({
   setAuth: (did, message) => set({ authDid: did, authMessage: message, authError: null }),
   appendMotd: (line) => set((s) => ({ motd: [...s.motd, line] })),
   dismissMotd: () => set({ motdDismissed: true }),
+  setConnectedServer: (url) => set({ connectedServer: url }),
   setAuthError: (error) => set({ authError: error }),
   reset: () => set({
     connectionState: 'disconnected',
     registered: false,
+    connectedServer: null,
     channels: new Map(),
     activeChannel: 'server',
     serverMessages: [],
@@ -294,6 +317,7 @@ export const useStore = create<Store>((set, get) => ({
     connectionState: 'disconnected',
     nick: '',
     registered: false,
+    connectedServer: null,
     authDid: null,
     authMessage: null,
     authError: null,
@@ -396,6 +420,7 @@ export const useStore = create<Store>((set, get) => ({
       isHalfop: member.isHalfop ?? existing?.isHalfop ?? false,
       isVoiced: member.isVoiced ?? existing?.isVoiced ?? false,
       away: existing?.away,
+      actorClass: member.actorClass ?? existing?.actorClass,
     });
     channels.set(channel.toLowerCase(), ch);
     return { channels };
@@ -490,13 +515,13 @@ export const useStore = create<Store>((set, get) => ({
 
     // User modes (+o, +h, +v)
     if ((modeChar === 'o' || modeChar === 'h' || modeChar === 'v') && arg) {
-      const member = ch.members.get(arg.toLowerCase());
-      if (member) {
-        if (modeChar === 'o') member.isOp = adding;
-        if (modeChar === 'h') member.isHalfop = adding;
-        if (modeChar === 'v') member.isVoiced = adding;
-        ch.members.set(arg.toLowerCase(), { ...member });
-      }
+      const member = ch.members.get(arg.toLowerCase()) ?? {
+        nick: arg, isOp: false, isHalfop: false, isVoiced: false,
+      };
+      if (modeChar === 'o') member.isOp = adding;
+      if (modeChar === 'h') member.isHalfop = adding;
+      if (modeChar === 'v') member.isVoiced = adding;
+      ch.members.set(arg.toLowerCase(), { ...member });
     } else {
       // Channel modes
       if (adding) ch.modes.add(modeChar);
@@ -517,6 +542,12 @@ export const useStore = create<Store>((set, get) => ({
     const channels = new Map(s.channels);
     const ch = getOrCreateChannel(channels, channel);
 
+    // Auto-join DM buffers so they appear in the sidebar
+    const isDMBuf = !channel.startsWith('#') && !channel.startsWith('&') && channel !== 'server';
+    if (isDMBuf && !ch.isJoined) {
+      ch.isJoined = true;
+    }
+
     // Dedup by msgid — CHATHISTORY can return messages already shown live
     if (msg.id && !msg.isSystem && ch.messages.some((m) => m.id === msg.id)) {
       return {};
@@ -527,6 +558,16 @@ export const useStore = create<Store>((set, get) => ({
       ch.unreadCount++;
     }
     channels.set(channel.toLowerCase(), ch);
+
+    // Auto-unhide DM conversations when a new live message arrives
+    const isDM = !channel.startsWith('#') && !channel.startsWith('&') && channel !== 'server';
+    if (isDM && !msg.isSystem && s.hiddenDMs.has(channel.toLowerCase())) {
+      const hidden = new Set(s.hiddenDMs);
+      hidden.delete(channel.toLowerCase());
+      localStorage.setItem('freeq-hidden-dms', JSON.stringify([...hidden]));
+      return { channels, hiddenDMs: hidden };
+    }
+
     return { channels };
   }),
 
@@ -542,13 +583,15 @@ export const useStore = create<Store>((set, get) => ({
     get().addMessage(channel, msg);
   },
 
-  editMessage: (channel, originalMsgId, newText, newMsgId) => set((s) => {
+  editMessage: (channel, originalMsgId, newText, newMsgId, isStreaming) => set((s) => {
     const channels = new Map(s.channels);
     const ch = channels.get(channel.toLowerCase());
     if (ch) {
+      // Match on id OR editOf — handles chained edits (e.g., streaming)
+      // where the first edit changes id but subsequent edits still reference the original
       ch.messages = ch.messages.map((m) =>
-        m.id === originalMsgId
-          ? { ...m, text: newText, id: newMsgId || m.id, editOf: originalMsgId }
+        (m.id === originalMsgId || m.editOf === originalMsgId)
+          ? { ...m, text: newText, id: newMsgId || m.id, editOf: originalMsgId, isStreaming: !!isStreaming }
           : m
       );
       channels.set(channel.toLowerCase(), { ...ch });
@@ -559,8 +602,8 @@ export const useStore = create<Store>((set, get) => ({
     for (const [id, batch] of batches) {
       if (batch.target.toLowerCase() !== channel.toLowerCase()) continue;
       batch.messages = batch.messages.map((m) =>
-        m.id === originalMsgId
-          ? { ...m, text: newText, id: newMsgId || m.id, editOf: originalMsgId }
+        (m.id === originalMsgId || m.editOf === originalMsgId)
+          ? { ...m, text: newText, id: newMsgId || m.id, editOf: originalMsgId, isStreaming: !!isStreaming }
           : m
       );
       batches.set(id, batch);
@@ -708,6 +751,20 @@ export const useStore = create<Store>((set, get) => ({
     localStorage.setItem('freeq-muted', JSON.stringify([...muted]));
     return { mutedChannels: muted };
   }),
+  hideDM: (nick) => set((s) => {
+    const hidden = new Set(s.hiddenDMs);
+    hidden.add(nick.toLowerCase());
+    localStorage.setItem('freeq-hidden-dms', JSON.stringify([...hidden]));
+    // If we're viewing this DM, switch away
+    const activeChannel = s.activeChannel.toLowerCase() === nick.toLowerCase() ? 'server' : s.activeChannel;
+    return { hiddenDMs: hidden, activeChannel };
+  }),
+  unhideDM: (nick) => set((s) => {
+    const hidden = new Set(s.hiddenDMs);
+    hidden.delete(nick.toLowerCase());
+    localStorage.setItem('freeq-hidden-dms', JSON.stringify([...hidden]));
+    return { hiddenDMs: hidden };
+  }),
   isFavorite: (channel) => get().favorites.has(channel.toLowerCase()),
   isMuted: (channel) => get().mutedChannels.has(channel.toLowerCase()),
   addBookmark: (channel, msgId, from, text, timestamp) => set((s) => {
@@ -728,6 +785,24 @@ export const useStore = create<Store>((set, get) => ({
     const channels = new Map(state.channels);
     const ch = channels.get(channel.toLowerCase());
     if (ch) { ch.pins = pins; channels.set(channel.toLowerCase(), { ...ch }); }
+    return { channels };
+  }),
+  addPin: (channel, msgid, pinnedBy) => set((state) => {
+    const channels = new Map(state.channels);
+    const ch = channels.get(channel.toLowerCase());
+    if (ch && !ch.pins.some(p => p.msgid === msgid)) {
+      ch.pins = [...ch.pins, { msgid, pinned_by: pinnedBy, pinned_at: Date.now() }];
+      channels.set(channel.toLowerCase(), { ...ch });
+    }
+    return { channels };
+  }),
+  removePin: (channel, msgid) => set((state) => {
+    const channels = new Map(state.channels);
+    const ch = channels.get(channel.toLowerCase());
+    if (ch) {
+      ch.pins = ch.pins.filter(p => p.msgid !== msgid);
+      channels.set(channel.toLowerCase(), { ...ch });
+    }
     return { channels };
   }),
   setSearchQuery: (query) => set({ searchQuery: query }),

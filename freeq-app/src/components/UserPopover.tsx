@@ -4,6 +4,37 @@ import { useStore } from '../store';
 import { sendWhois } from '../irc/client';
 import * as e2ee from '../lib/e2ee';
 
+interface ActorInfo {
+  actor_class?: string;
+  did?: string;
+  online?: boolean;
+  spawned?: boolean;
+  parent_did?: string;
+  parent_nick?: string;
+  channel?: string;
+  capabilities?: string[];
+  ttl?: number;
+  task?: string;
+  provenance?: {
+    creator_did?: string;
+    source_repo?: string;
+    implementation_ref?: string;
+    revocation_authority?: string;
+    origin_type?: string;
+    authority_basis?: string;
+  };
+  presence?: {
+    state?: string;
+    status?: string;
+    task?: string;
+  };
+  heartbeat?: {
+    last_seen?: string;
+    ttl?: number;
+    healthy?: boolean;
+  };
+}
+
 interface UserPopoverProps {
   nick: string;
   did?: string;
@@ -18,6 +49,7 @@ export function UserPopover({ nick, did, position, onClose }: UserPopoverProps) 
   const addChannel = useStore((s) => s.addChannel);
   const whois = useStore((s) => s.whoisCache.get(nick.toLowerCase()));
   const [safetyNumber, setSafetyNumber] = useState<string | null>(null);
+  const [actorInfo, setActorInfo] = useState<ActorInfo | null>(null);
 
   useEffect(() => {
     // Always trigger WHOIS to get latest info
@@ -25,6 +57,7 @@ export function UserPopover({ nick, did, position, onClose }: UserPopoverProps) 
   }, [nick]);
 
   const effectiveDid = did || whois?.did;
+  const isDidKey = effectiveDid?.startsWith('did:key:');
 
   // Fetch safety number for E2EE verification
   useEffect(() => {
@@ -33,16 +66,33 @@ export function UserPopover({ nick, did, position, onClose }: UserPopoverProps) 
     }
   }, [effectiveDid]);
 
-  // Fetch AT profile when we have a DID (from prop or whois)
+  // Fetch AT profile when we have a DID (skip did:key — they have no Bluesky profile)
   useEffect(() => {
-    if (effectiveDid && !profile) {
+    if (effectiveDid && !isDidKey && !profile) {
       setLoading(true);
       fetchProfile(effectiveDid).then((p) => {
         setProfile(p);
         setLoading(false);
       });
+    } else if (isDidKey) {
+      setLoading(false);
     }
   }, [effectiveDid]);
+
+  // Fetch actor info from REST API (agent class, provenance, presence)
+  // Try by DID first, fall back to nick (for spawned agents before WHOIS completes)
+  useEffect(() => {
+    const fetchActor = async () => {
+      if (effectiveDid) {
+        const r = await fetch(`/api/v1/actors/${encodeURIComponent(effectiveDid)}`);
+        if (r.ok) { setActorInfo(await r.json()); return; }
+      }
+      // Fallback: try by nick (spawned agents may not have DID yet)
+      const r2 = await fetch(`/api/v1/actors/${encodeURIComponent(nick)}`);
+      if (r2.ok) { setActorInfo(await r2.json()); }
+    };
+    fetchActor().catch(() => {});
+  }, [effectiveDid, nick]);
 
   const startDM = () => {
     addChannel(nick);
@@ -88,11 +138,46 @@ export function UserPopover({ nick, did, position, onClose }: UserPopoverProps) 
             <div className="text-sm text-fg-muted">{nick}</div>
           )}
 
-          {/* AT Handle */}
-          {handle && (
+          {/* AT Handle — only for AT Protocol users (not did:key) */}
+          {handle && !isDidKey && (
             <div className="text-xs text-accent mt-1 flex items-center gap-1">
               <span>@{handle}</span>
               <span className="text-success text-[10px]" title="AT Protocol identity">✓</span>
+            </div>
+          )}
+
+          {/* Agent badge */}
+          {actorInfo && (actorInfo.actor_class === 'agent' || actorInfo.actor_class === 'external_agent') && (
+            <div className="inline-flex items-center gap-1 mt-1 px-2 py-0.5 bg-accent/10 rounded-full text-xs text-accent">
+              🤖 {actorInfo.spawned ? 'Spawned Agent' : actorInfo.actor_class === 'external_agent' ? 'External Agent' : 'Agent'}
+            </div>
+          )}
+
+          {/* Spawned agent info */}
+          {actorInfo?.spawned && (
+            <div className="mt-2 p-2 bg-bg-tertiary rounded-lg text-left">
+              <div className="text-[10px] text-fg-dim font-semibold mb-1">Spawned Agent</div>
+              {actorInfo.parent_nick && (
+                <div className="text-[10px] text-fg-dim">
+                  <span className="text-fg-dim/60">Parent:</span>{' '}
+                  <span className="font-semibold text-fg-muted">{actorInfo.parent_nick}</span>
+                </div>
+              )}
+              {actorInfo.task && (
+                <div className="text-[10px] text-fg-dim">
+                  <span className="text-fg-dim/60">Task:</span> {actorInfo.task}
+                </div>
+              )}
+              {actorInfo.capabilities && actorInfo.capabilities.length > 0 && (
+                <div className="text-[10px] text-fg-dim">
+                  <span className="text-fg-dim/60">Caps:</span> {actorInfo.capabilities.join(', ')}
+                </div>
+              )}
+              {actorInfo.ttl && (
+                <div className="text-[10px] text-fg-dim">
+                  <span className="text-fg-dim/60">TTL:</span> {actorInfo.ttl}s
+                </div>
+              )}
             </div>
           )}
 
@@ -104,6 +189,68 @@ export function UserPopover({ nick, did, position, onClose }: UserPopoverProps) 
               title="Click to copy DID"
             >
               {effectiveDid}
+            </div>
+          )}
+
+          {/* Agent presence */}
+          {actorInfo?.presence && actorInfo.presence.state && (
+            <div className="mt-2 p-2 bg-bg-tertiary rounded-lg text-left">
+              <div className="text-[10px] text-fg-dim font-semibold mb-1">Presence</div>
+              <div className="text-xs text-fg-muted flex items-center gap-1">
+                <span>{
+                  { online: '🟢', idle: '💤', active: '⚡', executing: '🔨',
+                    waiting_for_input: '⏳', blocked_on_permission: '🔒',
+                    blocked_on_budget: '💰', degraded: '🟡', paused: '⏸️',
+                    sandboxed: '📦', rate_limited: '🚦', revoked: '🚫', offline: '⚫',
+                  }[actorInfo.presence.state] || '•'
+                }</span>
+                <span>{actorInfo.presence.state}</span>
+              </div>
+              {actorInfo.presence.status && (
+                <div className="text-[10px] text-fg-dim mt-0.5">{actorInfo.presence.status}</div>
+              )}
+            </div>
+          )}
+
+          {/* Provenance */}
+          {actorInfo?.provenance && (
+            <div className="mt-2 p-2 bg-bg-tertiary rounded-lg text-left">
+              <div className="text-[10px] text-fg-dim font-semibold mb-1">Provenance</div>
+              {actorInfo.provenance.creator_did && (
+                <div className="text-[10px] text-fg-dim">
+                  <span className="text-fg-dim/60">Creator:</span>{' '}
+                  <span className="font-mono">{actorInfo.provenance.creator_did.slice(0, 40)}…</span>
+                </div>
+              )}
+              {actorInfo.provenance.source_repo && (
+                <div className="text-[10px] text-fg-dim">
+                  <span className="text-fg-dim/60">Source:</span>{' '}
+                  <a href={actorInfo.provenance.source_repo} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline">
+                    {actorInfo.provenance.source_repo.replace('https://', '')}
+                  </a>
+                </div>
+              )}
+              {actorInfo.provenance.implementation_ref && (
+                <div className="text-[10px] text-fg-dim">
+                  <span className="text-fg-dim/60">Impl:</span>{' '}
+                  <span className="font-mono">{actorInfo.provenance.implementation_ref}</span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Heartbeat */}
+          {actorInfo?.heartbeat && (
+            <div className="mt-2 p-2 bg-bg-tertiary rounded-lg text-left">
+              <div className="text-[10px] text-fg-dim font-semibold mb-1">Heartbeat</div>
+              <div className="text-[10px] text-fg-dim flex items-center gap-1">
+                {actorInfo.heartbeat.healthy ? (
+                  <span className="text-success">💓 healthy</span>
+                ) : (
+                  <span className="text-error">💔 unhealthy</span>
+                )}
+                {actorInfo.heartbeat.ttl && <span>· TTL {actorInfo.heartbeat.ttl}s</span>}
+              </div>
             </div>
           )}
 
@@ -175,7 +322,7 @@ export function UserPopover({ nick, did, position, onClose }: UserPopoverProps) 
             >
               Message
             </button>
-            {handle && (
+            {handle && !isDidKey && (
               <a
                 href={`https://bsky.app/profile/${handle}`}
                 target="_blank"

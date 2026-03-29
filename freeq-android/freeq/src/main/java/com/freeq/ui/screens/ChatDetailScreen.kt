@@ -1,8 +1,5 @@
 package com.freeq.ui.screens
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -19,8 +16,9 @@ import androidx.compose.ui.unit.sp
 import com.freeq.model.AppState
 import com.freeq.ui.components.ChannelSettingsSheet
 import com.freeq.ui.components.ComposeBar
-import com.freeq.ui.components.MemberList
+import com.freeq.ui.components.MemberListSheet
 import com.freeq.ui.components.MessageList
+import com.freeq.ui.components.PinnedMessagesSheet
 import com.freeq.ui.components.SearchSheet
 import com.freeq.ui.components.UserProfileSheet
 
@@ -32,14 +30,14 @@ fun ChatDetailScreen(
     onBack: () -> Unit,
     onNavigateToChat: ((String) -> Unit)? = null
 ) {
-    val channelState = remember(channelName) {
-        appState.channels.firstOrNull { it.name.equals(channelName, ignoreCase = true) }
-            ?: appState.dmBuffers.firstOrNull { it.name.equals(channelName, ignoreCase = true) }
-    }
+    // Don't cache channelState - it changes on reconnect when channels are recreated
+    val channelState = appState.channels.firstOrNull { it.name.equals(channelName, ignoreCase = true) }
+        ?: appState.dmBuffers.firstOrNull { it.name.equals(channelName, ignoreCase = true) }
 
     var showMembers by remember { mutableStateOf(false) }
     var showSearch by remember { mutableStateOf(false) }
     var showChannelSettings by remember { mutableStateOf(false) }
+    var showPinnedMessages by remember { mutableStateOf(false) }
     var profileSheetNick by remember { mutableStateOf<String?>(null) }
     var scrollToMessageId by remember { mutableStateOf<String?>(null) }
     val isChannel = channelName.startsWith("#")
@@ -180,24 +178,18 @@ fun ChatDetailScreen(
                 // Compose bar
                 ComposeBar(appState = appState)
             }
+        }
 
-            // Member list (side panel)
-            AnimatedVisibility(
-                visible = showMembers,
-                enter = slideInHorizontally { it },
-                exit = slideOutHorizontally { it }
-            ) {
-                Surface(
-                    modifier = Modifier.width(240.dp),
-                    color = MaterialTheme.colorScheme.surface,
-                    shadowElevation = 4.dp
-                ) {
-                    MemberList(
-                        members = channelState.members,
-                        onMemberClick = { nick -> profileSheetNick = nick }
-                    )
+        // Member list sheet
+        if (showMembers && isChannel) {
+            MemberListSheet(
+                members = channelState.members,
+                onDismiss = { showMembers = false },
+                onMemberClick = { nick ->
+                    showMembers = false
+                    profileSheetNick = nick
                 }
-            }
+            )
         }
 
         // Search sheet
@@ -224,6 +216,22 @@ fun ChatDetailScreen(
                 onLeave = {
                     appState.activeChannel.value = null
                     onBack()
+                },
+                onShowPinnedMessages = {
+                    showChannelSettings = false
+                    showPinnedMessages = true
+                }
+            )
+        }
+
+        // Pinned messages sheet
+        if (showPinnedMessages && isChannel) {
+            PinnedMessagesSheet(
+                channelName = channelName,
+                onDismiss = { showPinnedMessages = false },
+                onNavigateToMessage = { msgId ->
+                    showPinnedMessages = false
+                    scrollToMessageId = msgId
                 }
             )
         }

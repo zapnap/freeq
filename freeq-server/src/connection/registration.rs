@@ -56,10 +56,18 @@ pub(super) fn attach_same_did(
         // Point the nick at the new session
         state.nick_to_session.lock().insert(&ghost.nick, session_id);
 
-        // Re-join all channels the ghost was in (silently — no broadcast)
+        // Re-join all channels the ghost was in (silently — no broadcast).
+        // Remove the stale ghost session_id and replace with the new one.
         let mut channels = state.channels.lock();
         for (ch_name, was_op, was_voiced, was_halfop) in &ghost.channels {
             if let Some(ch) = channels.get_mut(&ch_name.to_lowercase()) {
+                // Remove the ghost's stale session_id from all membership sets
+                ch.members.remove(&ghost.session_id);
+                ch.ops.remove(&ghost.session_id);
+                ch.voiced.remove(&ghost.session_id);
+                ch.halfops.remove(&ghost.session_id);
+
+                // Insert the new session_id
                 ch.members.insert(session_id.to_string());
                 // Restore ops from ghost state, OR grant via DID authority
                 let should_op = *was_op
@@ -77,6 +85,12 @@ pub(super) fn attach_same_did(
             }
         }
         drop(channels);
+
+        // Also clean up the ghost's stale sid_to_nick entry
+        state
+            .nick_to_session
+            .lock()
+            .remove_by_session(&ghost.session_id);
 
         // Store reclaimed channel names so try_complete_registration can send
         // synthetic state AFTER the client is fully registered (needed for CHATHISTORY).
@@ -145,15 +159,18 @@ pub(super) fn attach_same_did(
             .map(|(nick, _)| nick.to_string())
     };
 
-    // Adopt the canonical nick
-    if let Some(ref canon) = canonical_nick
-        && conn.nick.as_ref().map(|n| n.to_lowercase()) != Some(canon.to_lowercase())
-    {
-        // Remove any nick mapping we created during CAP/SASL
-        if let Some(ref old_nick) = conn.nick {
-            state.nick_to_session.lock().remove_by_nick(old_nick);
+    // Adopt the canonical nick and ensure this session is in nick_to_session
+    if let Some(ref canon) = canonical_nick {
+        let mut nts = state.nick_to_session.lock();
+        if conn.nick.as_ref().map(|n| n.to_lowercase()) != Some(canon.to_lowercase()) {
+            // Remove this session's old nick mapping (not all sessions with that nick)
+            nts.remove_by_session(session_id);
+            conn.nick = Some(canon.clone());
         }
-        conn.nick = Some(canon.clone());
+        // Ensure this session_id → nick mapping exists so NAMES can resolve it.
+        // For multi-device, multiple sessions share the same nick. NickMap.insert()
+        // now supports this: it adds sid→nick without evicting other sessions.
+        nts.insert(canon, session_id);
     }
 
     // Find all channels the DID is in via existing sessions

@@ -9,6 +9,8 @@ dictionary IrcMessage {
     string? replaces_msgid;
     string? edit_of;
     string? batch_id;
+    string? pin_msgid;
+    string? unpin_msgid;
     boolean is_action;
     boolean is_signed;
     i64 timestamp_ms;

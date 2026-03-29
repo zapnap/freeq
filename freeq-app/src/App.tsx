@@ -29,6 +29,13 @@ import { MotdBanner } from './components/MotdBanner';
 export default function App() {
   const registered = useStore((s) => s.registered);
   const theme = useStore((s) => s.theme);
+  // Once we've been registered in this session, don't flash back to ConnectScreen
+  // on brief state transitions (e.g. reconnect). The ReconnectBanner handles that.
+  const [wasRegistered, setWasRegistered] = useState(false);
+  useEffect(() => {
+    if (registered) setWasRegistered(true);
+  }, [registered]);
+  const showApp = registered || wasRegistered;
   const [quickSwitcher, setQuickSwitcher] = useState(false);
   const [settings, setSettings] = useState(false);
   const [shortcuts, setShortcuts] = useState(false);
@@ -179,7 +186,7 @@ export default function App() {
     },
   } : {}, [channels, switchToNth, registered]);
 
-  if (!registered) {
+  if (!showApp) {
     return (
       <div className="h-dvh flex flex-col bg-bg">
         <ConnectScreen />
@@ -188,7 +195,7 @@ export default function App() {
   }
 
   return (
-    <div className="flex flex-col bg-bg" style={{ height: 'calc(100dvh - var(--vk-offset, 0px))' }}>
+    <div className="fixed inset-0 flex flex-col bg-bg overflow-hidden" style={{ bottom: 'var(--vk-offset, 0px)' }}>
       <ReconnectBanner />
       <GuestUpgradeBanner />
       <div className="flex flex-1 min-h-0">
@@ -201,11 +208,11 @@ export default function App() {
         )}
         <div className={`${
           sidebarOpen ? 'translate-x-0' : '-translate-x-full'
-        } fixed md:relative md:translate-x-0 z-30 h-full transition-transform duration-200`}>
+        } fixed inset-y-0 left-0 md:relative md:inset-auto md:h-full md:translate-x-0 z-30 transition-transform duration-200`}>
           <Sidebar onOpenSettings={() => setSettings(true)} />
         </div>
 
-        <main className="flex-1 flex flex-col min-w-0">
+        <main className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
           <MotdBanner />
           <TopBar
             onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}

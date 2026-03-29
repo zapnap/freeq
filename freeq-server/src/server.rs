@@ -151,6 +151,9 @@ pub struct OAuthResult {
     /// One-time token for SASL web-token auth (consumed on first use).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub web_token: Option<String>,
+    /// When this result was created (Unix timestamp seconds).
+    #[serde(skip)]
+    pub created_at: u64,
 }
 
 /// A linked external identity attached to an AT Protocol DID.
@@ -298,9 +301,9 @@ impl TopicInfo {
 /// O(1) lookup by nick or session_id — no more linear scans.
 #[derive(Debug, Default)]
 pub struct NickMap {
-    /// lowercase_nick → session_id
+    /// lowercase_nick → primary session_id (first session to register this nick)
     nick_to_sid: HashMap<String, String>,
-    /// session_id → display_nick (original case)
+    /// session_id → display_nick (original case) — supports multi-device (N sessions per nick)
     sid_to_nick: HashMap<String, String>,
 }
 
@@ -310,22 +313,30 @@ impl NickMap {
     }
 
     /// Insert a nick→session mapping. Nick is stored case-insensitively.
+    /// For multi-device: multiple sessions can share the same nick.
+    /// The nick→sid mapping points to the most recent session, but all
+    /// sessions are tracked in sid→nick for NAMES resolution.
     pub fn insert(&mut self, display_nick: &str, session_id: &str) {
         let lower = display_nick.to_lowercase();
         // Remove old mapping for this session if it had a different nick
         if let Some(old_nick) = self.sid_to_nick.remove(session_id) {
-            self.nick_to_sid.remove(&old_nick.to_lowercase());
+            let old_lower = old_nick.to_lowercase();
+            if old_lower != lower {
+                // Only remove nick→sid if this session was the primary for that old nick
+                if self.nick_to_sid.get(&old_lower).map(|s| s.as_str()) == Some(session_id) {
+                    self.nick_to_sid.remove(&old_lower);
+                }
+            }
         }
-        // Remove old mapping for this nick if a different session held it
-        if let Some(old_sid) = self.nick_to_sid.remove(&lower) {
-            self.sid_to_nick.remove(&old_sid);
-        }
+        // Set/update the primary session for this nick
+        // (Don't evict other sessions' sid_to_nick entries — they share the nick)
         self.nick_to_sid.insert(lower, session_id.to_string());
         self.sid_to_nick
             .insert(session_id.to_string(), display_nick.to_string());
     }
 
     /// Look up session_id by nick (case-insensitive). O(1).
+    /// Returns the primary (most recently inserted) session for this nick.
     pub fn get_session(&self, nick: &str) -> Option<&str> {
         self.nick_to_sid
             .get(&nick.to_lowercase())
@@ -342,11 +353,13 @@ impl NickMap {
         self.nick_to_sid.contains_key(&nick.to_lowercase())
     }
 
-    /// Remove by nick (case-insensitive). Returns the session_id if found.
+    /// Remove by nick (case-insensitive). Returns the primary session_id if found.
+    /// Also removes ALL sid→nick entries for sessions that had this nick.
     pub fn remove_by_nick(&mut self, nick: &str) -> Option<String> {
         let lower = nick.to_lowercase();
+        // Remove all sid→nick entries pointing to this nick
+        self.sid_to_nick.retain(|_, n| n.to_lowercase() != lower);
         if let Some(sid) = self.nick_to_sid.remove(&lower) {
-            self.sid_to_nick.remove(&sid);
             Some(sid)
         } else {
             None
@@ -356,7 +369,20 @@ impl NickMap {
     /// Remove by session_id. Returns the display nick if found.
     pub fn remove_by_session(&mut self, session_id: &str) -> Option<String> {
         if let Some(nick) = self.sid_to_nick.remove(session_id) {
-            self.nick_to_sid.remove(&nick.to_lowercase());
+            let lower = nick.to_lowercase();
+            // Only remove nick→sid if this session was the primary
+            if self.nick_to_sid.get(&lower).map(|s| s.as_str()) == Some(session_id) {
+                self.nick_to_sid.remove(&lower);
+                // Promote another session with the same nick (multi-device)
+                if let Some((other_sid, _)) = self
+                    .sid_to_nick
+                    .iter()
+                    .find(|(_, n)| n.to_lowercase() == lower)
+                {
+                    self.nick_to_sid
+                        .insert(lower, other_sid.clone());
+                }
+            }
             Some(nick)
         } else {
             None
@@ -425,6 +451,14 @@ pub struct SharedState {
     pub cap_away_notify: Mutex<HashSet<String>>,
     /// Sessions that have OPER (server operator) status.
     pub server_opers: Mutex<HashSet<String>>,
+    /// Actor class per session (default: Human, omitted from map).
+    pub session_actor_class: Mutex<HashMap<String, crate::connection::ActorClass>>,
+    /// Provenance declarations: DID → provenance JSON.
+    pub provenance_declarations: Mutex<HashMap<String, serde_json::Value>>,
+    /// Agent presence state: session_id → AgentPresence.
+    pub agent_presence: Mutex<HashMap<String, crate::connection::AgentPresence>>,
+    /// Agent heartbeat tracking: session_id → (last_heartbeat_unix, ttl_seconds).
+    pub agent_heartbeats: Mutex<HashMap<String, (i64, u64)>>,
     /// Pending OAuth sessions: state → OAuthPending.
     pub oauth_pending: Mutex<HashMap<String, OAuthPending>>,
     /// Completed OAuth sessions: state → OAuthResult.
@@ -492,6 +526,24 @@ pub struct SharedState {
     /// If they reconnect within the grace period, suppress QUIT/JOIN churn.
     /// Key: DID, Value: (nick, hostmask, channels_with_modes, disconnect_time, cancel_sender)
     pub ghost_sessions: Mutex<HashMap<String, GhostSession>>,
+    /// Spawned (virtual) agents: child_did → SpawnedAgent.
+    pub spawned_agents: Mutex<HashMap<String, SpawnedAgent>>,
+    /// Per-IP rate limiter for expensive REST endpoints (OG preview, blob proxy, upload).
+    pub rest_rate_limiter: crate::web::IpRateLimiter,
+}
+
+/// A spawned virtual agent (child of a real agent session).
+#[derive(Debug, Clone)]
+pub struct SpawnedAgent {
+    pub child_did: String,
+    pub parent_did: String,
+    pub parent_session: String,
+    pub nick: String,
+    pub channel: String,
+    pub capabilities: Vec<String>,
+    pub ttl: Option<u64>,
+    pub task_ref: Option<String>,
+    pub spawned_at: i64,
 }
 
 /// A ghost session represents a recently-disconnected DID user.
@@ -499,6 +551,9 @@ pub struct SharedState {
 pub struct GhostSession {
     pub nick: String,
     pub hostmask: String,
+    /// The session ID of the disconnected session. Used to evict the stale
+    /// session from ch.members when the grace period expires without reconnect.
+    pub session_id: String,
     /// Channels they were in, with (is_op, is_voiced, is_halfop).
     pub channels: Vec<(String, bool, bool, bool)>,
     pub disconnect_time: std::time::Instant,
@@ -682,6 +737,7 @@ fn derive_key_from_signing(signing_key: &ed25519_dalek::SigningKey) -> [u8; 32] 
 fn load_msg_signing_key(data_dir: &str) -> ed25519_dalek::SigningKey {
     let key_path = std::path::Path::new(data_dir).join("msg-signing-key.secret");
     if key_path.exists() {
+        crate::secrets::tighten_permissions(&key_path);
         if let Ok(data) = std::fs::read(&key_path)
             && let Ok(bytes) = <[u8; 32]>::try_from(data.as_slice())
         {
@@ -694,7 +750,7 @@ fn load_msg_signing_key(data_dir: &str) -> ed25519_dalek::SigningKey {
         );
     }
     let key = ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng);
-    if let Err(e) = std::fs::write(&key_path, key.to_bytes()) {
+    if let Err(e) = crate::secrets::write_secret(&key_path, &key.to_bytes()) {
         tracing::error!("Failed to persist msg signing key: {e}");
     } else {
         tracing::info!("Generated message signing key at {}", key_path.display());
@@ -731,6 +787,7 @@ impl Server {
             let key_path = std::path::Path::new(self.config.data_dir.as_deref().unwrap_or("."))
                 .join("db-encryption-key.secret");
             if key_path.exists() {
+                crate::secrets::tighten_permissions(&key_path);
                 if let Ok(data) = std::fs::read(&key_path) {
                     if let Ok(bytes) = <[u8; 32]>::try_from(data.as_slice()) {
                         tracing::info!("Loaded DB encryption key from {}", key_path.display());
@@ -747,7 +804,7 @@ impl Server {
                 // First run with separate key: derive from signing key for backward compat
                 // with existing encrypted messages, then persist for future independence.
                 let key = derive_key_from_signing(&msg_signing_key);
-                if let Err(e) = std::fs::write(&key_path, key) {
+                if let Err(e) = crate::secrets::write_secret(&key_path, &key) {
                     tracing::error!("Failed to persist DB encryption key: {e}");
                 } else {
                     tracing::info!("Generated DB encryption key at {}", key_path.display());
@@ -874,6 +931,10 @@ impl Server {
             cap_extended_join: Mutex::new(HashSet::new()),
             cap_away_notify: Mutex::new(HashSet::new()),
             server_opers: Mutex::new(HashSet::new()),
+            session_actor_class: Mutex::new(HashMap::new()),
+            provenance_declarations: Mutex::new(HashMap::new()),
+            agent_presence: Mutex::new(HashMap::new()),
+            agent_heartbeats: Mutex::new(HashMap::new()),
             oauth_pending: Mutex::new(HashMap::new()),
             oauth_complete: Mutex::new(HashMap::new()),
             web_auth_tokens: Mutex::new(HashMap::new()),
@@ -923,6 +984,9 @@ impl Server {
             session_client_info: Mutex::new(HashMap::new()),
             upload_tokens: Mutex::new(HashMap::new()),
             ghost_sessions: Mutex::new(HashMap::new()),
+            spawned_agents: Mutex::new(HashMap::new()),
+            // 30 requests per 60-second window per IP for expensive REST endpoints
+            rest_rate_limiter: crate::web::IpRateLimiter::new(30, 60),
         }))
     }
 
@@ -1153,6 +1217,62 @@ impl Server {
             });
         }
 
+        // Heartbeat expiry: check agent liveness every 15 seconds.
+        // Agents that miss their TTL transition to degraded, then offline, then disconnect.
+        {
+            let hb_state = Arc::clone(&state);
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+                interval.tick().await; // skip first tick
+                loop {
+                    interval.tick().await;
+                    let now = chrono::Utc::now().timestamp();
+                    let heartbeats: Vec<(String, i64, u64)> = hb_state
+                        .agent_heartbeats
+                        .lock()
+                        .iter()
+                        .map(|(sid, (last, ttl))| (sid.clone(), *last, *ttl))
+                        .collect();
+
+                    for (session_id, last_hb, ttl) in heartbeats {
+                        let elapsed = (now - last_hb) as u64;
+                        if elapsed > ttl * 5 {
+                            // Force disconnect
+                            tracing::warn!(session = %session_id, elapsed, ttl, "Heartbeat timeout — disconnecting agent");
+                            hb_state.agent_heartbeats.lock().remove(&session_id);
+                            hb_state.agent_presence.lock().remove(&session_id);
+                            // Send ERROR to the connection
+                            if let Some(tx) = hb_state.connections.lock().get(&session_id) {
+                                let _ = tx.try_send("ERROR :Heartbeat timeout\r\n".to_string());
+                            }
+                        } else if elapsed > ttl * 2 {
+                            // Transition to offline
+                            let mut presences = hb_state.agent_presence.lock();
+                            if let Some(p) = presences.get_mut(&session_id) {
+                                if p.state != crate::connection::PresenceState::Offline {
+                                    tracing::debug!(session = %session_id, "Heartbeat missed 2x TTL — offline");
+                                    p.state = crate::connection::PresenceState::Offline;
+                                    p.updated_at = now;
+                                }
+                            }
+                        } else if elapsed > ttl {
+                            // Transition to degraded
+                            let mut presences = hb_state.agent_presence.lock();
+                            if let Some(p) = presences.get_mut(&session_id) {
+                                if p.state != crate::connection::PresenceState::Degraded
+                                    && p.state != crate::connection::PresenceState::Offline
+                                {
+                                    tracing::debug!(session = %session_id, "Heartbeat missed TTL — degraded");
+                                    p.state = crate::connection::PresenceState::Degraded;
+                                    p.updated_at = now;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
         // Start HTTP/WebSocket listener if configured
         if let Some(ref addr) = web_addr {
             let web_state = Arc::clone(&state);
@@ -1212,6 +1332,28 @@ impl Server {
                         let pruned = before - completions.len();
                         if pruned > 0 {
                             tracing::info!("Pruned {pruned} stale login completions");
+                        }
+                    }
+                    // Prune stale OAuth pending/complete maps (10 min TTL)
+                    {
+                        let now = SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        let mut pending = cleanup_state.oauth_pending.lock();
+                        let before = pending.len();
+                        pending.retain(|_, p| now.saturating_sub(p.created_at) < 600);
+                        let pruned = before - pending.len();
+                        if pruned > 0 {
+                            tracing::info!("Pruned {pruned} stale OAuth pending entries");
+                        }
+                        drop(pending);
+                        let mut complete = cleanup_state.oauth_complete.lock();
+                        let before = complete.len();
+                        complete.retain(|_, r| now.saturating_sub(r.created_at) < 600);
+                        let pruned = before - complete.len();
+                        if pruned > 0 {
+                            tracing::info!("Pruned {pruned} stale OAuth complete entries");
                         }
                     }
                     // Prune stale web sessions (24h TTL — PDS tokens expire anyway)
@@ -1456,6 +1598,15 @@ static S2S_RATE_LIMITS: std::sync::LazyLock<parking_lot::Mutex<HashMap<String, (
     std::sync::LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
 const S2S_MAX_EVENTS_PER_SEC: u32 = 100;
 
+/// Strip characters that could enable IRC protocol injection (\r, \n, \0) from
+/// S2S-provided strings. Truncates to `max_len` to prevent memory abuse.
+fn sanitize_s2s_str(s: &str, max_len: usize) -> String {
+    s.chars()
+        .filter(|c| *c != '\r' && *c != '\n' && *c != '\0')
+        .take(max_len)
+        .collect()
+}
+
 async fn process_s2s_message(
     state: &Arc<SharedState>,
     manager: &Arc<crate::s2s::S2sManager>,
@@ -1463,6 +1614,18 @@ async fn process_s2s_message(
     msg: crate::s2s::S2sMessage,
 ) {
     use crate::s2s::S2sMessage;
+
+    // ── C-1 fix: Reject messages from unauthenticated peers ──
+    // Hello and HelloAck are the handshake itself, so they must pass through.
+    if !matches!(&msg, S2sMessage::Hello { .. } | S2sMessage::HelloAck { .. }) {
+        if !manager.authenticated_peers.lock().await.contains(authenticated_peer_id) {
+            tracing::warn!(
+                peer = %authenticated_peer_id,
+                "S2S: dropping message from unauthenticated peer"
+            );
+            return;
+        }
+    }
 
     // ── S2S rate limiting ──
     {
@@ -1600,6 +1763,9 @@ async fn process_s2s_message(
         S2sMessage::Ban {
             event_id, origin, ..
         } => (event_id.clone(), origin.clone()),
+        S2sMessage::Invite {
+            event_id, origin, ..
+        } => (event_id.clone(), origin.clone()),
         S2sMessage::PolicySync {
             event_id, origin, ..
         } => (event_id.clone(), origin.clone()),
@@ -1639,6 +1805,7 @@ async fn process_s2s_message(
         | S2sMessage::Mode { .. }
         | S2sMessage::Kick { .. }
         | S2sMessage::Ban { .. }
+        | S2sMessage::Invite { .. }
         | S2sMessage::ChannelCreated { .. }, crate::s2s::TrustLevel::Readonly) => {
             tracing::warn!(
                 peer = %authenticated_peer_id,
@@ -1777,6 +1944,11 @@ async fn process_s2s_message(
             sig,
             ..
         } => {
+            // Sanitize all peer-provided strings to prevent IRC protocol injection.
+            let from = sanitize_s2s_str(&from, 512);
+            let target = sanitize_s2s_str(&target, 200);
+            let text = sanitize_s2s_str(&text, 4096);
+
             // Generate a local msgid if the remote didn't send one
             let msgid = msgid.unwrap_or_else(crate::msgid::generate);
 
@@ -1852,6 +2024,9 @@ async fn process_s2s_message(
                     }
                     drop(channels);
                     let empty_tags = HashMap::new();
+                    // S2S messages: look up sender DID from nick_owners if available
+                    let sender_nick = from.split('!').next().unwrap_or(&from);
+                    let s2s_sender_did = state.nick_owners.lock().get(sender_nick).cloned();
                     state.with_db(|db| {
                         db.insert_message(
                             &target,
@@ -1860,6 +2035,7 @@ async fn process_s2s_message(
                             timestamp,
                             &empty_tags,
                             Some(&msgid),
+                            s2s_sender_did.as_deref(),
                         )
                     });
                 }
@@ -1915,7 +2091,7 @@ async fn process_s2s_message(
                         tags.insert("+freeq.at/sig".to_string(), sig.clone());
                     }
                     state.with_db(|db| {
-                        db.insert_message(&dm_key, &from, &text, timestamp, &tags, Some(&msgid))
+                        db.insert_message(&dm_key, &from, &text, timestamp, &tags, Some(&msgid), sender_did.as_deref())
                     });
                 }
             }
@@ -1926,24 +2102,29 @@ async fn process_s2s_message(
             channel,
             did,
             handle,
-            is_op,
+            is_op: _, // Intentionally ignored — op status derived locally (C-2)
             origin,
             ..
         } => {
-            // Normalize channel name — IRC channels are case-insensitive
-            let channel = channel.to_lowercase();
+            // Sanitize peer-provided strings to prevent IRC protocol injection.
+            let nick = sanitize_s2s_str(&nick, 64);
+            let channel = sanitize_s2s_str(&channel, 200).to_lowercase();
 
             // ── S2S authorization: enforce bans and +i ──
             {
                 let channels = state.channels.lock();
                 if let Some(ch) = channels.get(&channel) {
-                    // Check +i (invite only)
+                    // Check +i (invite only) — but allow if user has an invite
                     if ch.invite_only {
-                        tracing::info!(
-                            channel = %channel, nick = %nick,
-                            "S2S Join rejected: channel is +i (invite only)"
-                        );
-                        return;
+                        let has_invite = did.as_ref().is_some_and(|d| ch.invites.contains(d))
+                            || ch.invites.contains(&format!("nick:{nick}"));
+                        if !has_invite {
+                            tracing::info!(
+                                channel = %channel, nick = %nick,
+                                "S2S Join rejected: channel is +i (invite only)"
+                            );
+                            return;
+                        }
                     }
                     // Check bans
                     let hostmask = format!("{nick}!{nick}@s2s");
@@ -1957,18 +2138,44 @@ async fn process_s2s_message(
                 }
             }
 
+            // Validate DID format if provided — reject obviously bogus values
+            // without making outbound HTTP calls.
+            if let Some(ref d) = did {
+                let valid = (d.starts_with("did:plc:") || d.starts_with("did:web:"))
+                    && d.len() >= 12
+                    && d.len() <= 256;
+                if !valid {
+                    tracing::warn!(
+                        channel = %channel, nick = %nick, did = %d,
+                        "S2S Join rejected: malformed DID"
+                    );
+                    return;
+                }
+            }
+
             // Presence is S2S-event-only (NOT in CRDT — avoids ghost users)
             // Idempotent: set-based, don't assume not present
             {
                 let mut channels = state.channels.lock();
                 let ch = channels.entry(channel.clone()).or_default();
+                // Consume invite (all forms: DID, nick)
+                if let Some(ref d) = did {
+                    ch.invites.remove(d);
+                }
+                ch.invites.remove(&format!("nick:{nick}"));
+                // Never trust is_op from the peer — determine op status from
+                // local channel state (founder_did / did_ops) to prevent
+                // forged operator claims (C-2 mitigation).
+                let actual_is_op = did.as_deref().is_some_and(|d| {
+                    ch.founder_did.as_deref() == Some(d) || ch.did_ops.contains(d)
+                });
                 ch.remote_members.insert(
                     nick.clone(),
                     RemoteMember {
                         origin: origin.clone(),
                         did: did.clone(),
                         handle: handle.clone(),
-                        is_op,
+                        is_op: actual_is_op,
                     },
                 );
             }
@@ -2018,7 +2225,9 @@ async fn process_s2s_message(
             set_by,
             ..
         } => {
-            let channel = channel.to_lowercase();
+            let channel = sanitize_s2s_str(&channel, 200).to_lowercase();
+            let topic = sanitize_s2s_str(&topic, 512);
+            let set_by = sanitize_s2s_str(&set_by, 200);
             // CRDT is the single source of truth for topic convergence.
             // The S2S Topic event is a notification for immediate display —
             // we apply it locally for UX responsiveness, then write to CRDT
@@ -2216,6 +2425,7 @@ async fn process_s2s_message(
                             moderated: ch.moderated,
                             key: ch.key.clone(),
                             bans: ch.bans.iter().map(|b| b.mask.clone()).collect(),
+                            invites: ch.invites.iter().cloned().collect(),
                         }
                     })
                     .collect();
@@ -2319,15 +2529,20 @@ async fn process_s2s_message(
                     }
 
                     // Presence: S2S-event-based (idempotent set-based merge)
+                    // Never trust is_op from the peer — derive from local
+                    // channel state to prevent forged op claims (C-2).
                     if !info.nick_info.is_empty() {
                         for ni in &info.nick_info {
+                            let actual_is_op = ni.did.as_deref().is_some_and(|d| {
+                                ch.founder_did.as_deref() == Some(d) || ch.did_ops.contains(d)
+                            });
                             ch.remote_members.insert(
                                 ni.nick.clone(),
                                 RemoteMember {
                                     origin: peer_id.clone(),
                                     did: ni.did.clone(),
                                     handle: None,
-                                    is_op: ni.is_op,
+                                    is_op: actual_is_op,
                                 },
                             );
                         }
@@ -2399,6 +2614,11 @@ async fn process_s2s_message(
                                     .as_secs(),
                             });
                         }
+                    }
+
+                    // Merge invites from remote (additive — don't remove local invites)
+                    for invite in &info.invites {
+                        ch.invites.insert(invite.clone());
                     }
 
                     let dids = state.session_dids.lock();
@@ -2719,6 +2939,59 @@ async fn process_s2s_message(
             }
 
             deliver_to_channel(state, &channel_key, &mode_line);
+        }
+
+        S2sMessage::Invite {
+            channel,
+            invitee,
+            invited_by,
+            ..
+        } => {
+            let channel_key = channel.to_lowercase();
+
+            // Authorization: verify invited_by is a member (and op if +i)
+            {
+                let channels = state.channels.lock();
+                if let Some(ch) = channels.get(&channel_key) {
+                    let rm = ch.remote_member(&invited_by);
+                    let is_member = rm.is_some();
+                    if !is_member {
+                        tracing::warn!(
+                            channel = %channel_key, invited_by = %invited_by,
+                            "S2S Invite rejected: inviter is not a member"
+                        );
+                        return;
+                    }
+                    if ch.invite_only {
+                        let is_op = rm.is_some_and(|rm| {
+                            rm.is_op
+                                || rm.did.as_ref().is_some_and(|d| {
+                                    ch.founder_did.as_deref() == Some(d) || ch.did_ops.contains(d)
+                                })
+                        });
+                        if !is_op {
+                            tracing::warn!(
+                                channel = %channel_key, invited_by = %invited_by,
+                                "S2S Invite rejected: channel is +i and inviter is not an op"
+                            );
+                            return;
+                        }
+                    }
+                }
+            }
+
+            // Add the invite
+            {
+                let mut channels = state.channels.lock();
+                if let Some(ch) = channels.get_mut(&channel_key) {
+                    ch.invites.insert(invitee.clone());
+                    tracing::debug!(
+                        channel = %channel_key, invitee = %invitee,
+                        invited_by = %invited_by,
+                        "S2S Invite: added invite"
+                    );
+                }
+            }
         }
 
         S2sMessage::NickChange { old, new, .. } => {

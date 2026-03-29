@@ -136,6 +136,11 @@ pub(super) async fn handle_authenticate(
 ) {
     let param = msg.params.first().map(|s| s.as_str()).unwrap_or("");
 
+    if conn.sasl_failures >= 3 {
+        // Already sent ERROR for too many failures; ignore further AUTHENTICATE attempts.
+        return;
+    }
+
     if param == "*" {
         // SASL abort — client is cancelling the authentication attempt
         conn.sasl_in_progress = false;
@@ -150,6 +155,7 @@ pub(super) async fn handle_authenticate(
 
     if param.eq_ignore_ascii_case("ATPROTO-CHALLENGE") {
         conn.sasl_in_progress = true;
+        conn.dpop_retries = 0; // Reset DPoP retry counter on new SASL attempt
         let encoded = state.challenge_store.create(session_id);
         let reply = Message::new("AUTHENTICATE", vec![&encoded]);
         send(state, session_id, format!("{reply}\r\n"));
@@ -157,12 +163,12 @@ pub(super) async fn handle_authenticate(
         if let Some(response) = sasl::decode_response(param) {
             // Check for web-token method first (server-side OAuth pre-verified)
             let web_token_result = if response.method.as_deref() == Some("web-token") {
-                let tokens = state.web_auth_tokens.lock();
-                if let Some((did, _handle, created)) = tokens.get(&response.signature) {
-                    // Reusable within TTL — allows reconnect with same token.
-                    // Broker issues fresh tokens on each /session call anyway.
-                    // 30-minute TTL gives ample headroom for reconnects and page reloads.
-                    if created.elapsed() < std::time::Duration::from_secs(1800) {
+                let mut tokens = state.web_auth_tokens.lock();
+                if let Some((did, _handle, created)) = tokens.remove(&response.signature) {
+                    // Single-use: token consumed on first authentication.
+                    // 5-minute TTL limits exposure if a token is leaked.
+                    // Broker issues fresh tokens on each /session call for reconnects.
+                    if created.elapsed() < std::time::Duration::from_secs(300) {
                         Some(Ok(did.clone()))
                     } else {
                         Some(Err("Web auth token expired".to_string()))
@@ -305,23 +311,45 @@ pub(super) async fn handle_authenticate(
                             broadcast_account_notify(state, session_id, &nick, &did);
                         }
                         Err(reason) if reason.starts_with("DPOP_NONCE:") => {
-                            // DPoP nonce rotation: PDS requires a fresh nonce.
-                            // Re-issue a challenge so the client can retry with the nonce.
-                            let nonce = &reason["DPOP_NONCE:".len()..];
-                            tracing::info!(%session_id, %nonce, "DPoP nonce required, re-issuing challenge");
+                            conn.dpop_retries += 1;
+                            if conn.dpop_retries > 3 {
+                                tracing::warn!(%session_id, retries = conn.dpop_retries, "DPoP nonce retry limit exceeded");
+                                conn.sasl_in_progress = false;
+                                conn.sasl_failures += 1;
+                                let fail = Message::from_server(
+                                    server_name,
+                                    irc::ERR_SASLFAIL,
+                                    vec![conn.nick_or_star(), "SASL authentication failed (DPoP nonce retry limit exceeded)"],
+                                );
+                                send(state, session_id, format!("{fail}\r\n"));
+                                if conn.sasl_failures >= 3 {
+                                    send(
+                                        state,
+                                        session_id,
+                                        "ERROR :Too many SASL failures\r\n".to_string(),
+                                    );
+                                    // Drop the send channel to force-close the connection.
+                                    state.connections.lock().remove(session_id);
+                                }
+                            } else {
+                                // DPoP nonce rotation: PDS requires a fresh nonce.
+                                // Re-issue a challenge so the client can retry with the nonce.
+                                let nonce = &reason["DPOP_NONCE:".len()..];
+                                tracing::info!(%session_id, %nonce, retry = conn.dpop_retries, "DPoP nonce required, re-issuing challenge");
 
-                            send(
-                                state,
-                                session_id,
-                                format!(
-                                    ":{server_name} NOTICE {} :DPOP_NONCE {nonce}\r\n",
-                                    conn.nick_or_star()
-                                ),
-                            );
+                                send(
+                                    state,
+                                    session_id,
+                                    format!(
+                                        ":{server_name} NOTICE {} :DPOP_NONCE {nonce}\r\n",
+                                        conn.nick_or_star()
+                                    ),
+                                );
 
-                            // Issue a new challenge for retry
-                            let encoded = state.challenge_store.create(session_id);
-                            send(state, session_id, format!("AUTHENTICATE {encoded}\r\n"));
+                                // Issue a new challenge for retry
+                                let encoded = state.challenge_store.create(session_id);
+                                send(state, session_id, format!("AUTHENTICATE {encoded}\r\n"));
+                            }
                         }
                         Err(reason) => {
                             tracing::warn!(%session_id, "SASL auth failed: {reason}");
@@ -339,6 +367,8 @@ pub(super) async fn handle_authenticate(
                                     session_id,
                                     "ERROR :Too many SASL failures\r\n".to_string(),
                                 );
+                                // Drop the send channel to force-close the connection.
+                                state.connections.lock().remove(session_id);
                             }
                         }
                     }

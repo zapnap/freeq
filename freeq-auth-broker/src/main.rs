@@ -10,10 +10,15 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{AllowHeaders, AllowOrigin, CorsLayer};
+use axum::http::Method;
 
+use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+use aes_gcm::aead::Aead;
 use base64::Engine;
+use hkdf::Hkdf;
 use p256::ecdsa::SigningKey;
+use sha2::Sha256;
 
 #[derive(Clone)]
 struct BrokerConfig {
@@ -21,6 +26,7 @@ struct BrokerConfig {
     freeq_server_url: String,
     shared_secret: String,
     _db_path: String,
+    encryption_key: [u8; 32],
 }
 
 struct BrokerState {
@@ -175,10 +181,63 @@ async fn resolve_did(did: &str) -> Result<DidDocument, anyhow::Error> {
     if did.starts_with("did:web:") {
         let domain = did.trim_start_matches("did:web:").replace(':', "/");
         let url = format!("https://{domain}/.well-known/did.json");
+
+        // SSRF protection: resolve hostname and reject private IPs
+        let host = domain.split('/').next().unwrap_or(&domain);
+        reject_private_host(host).await?;
+
         let doc: DidDocument = reqwest::get(&url).await?.json().await?;
         return Ok(doc);
     }
     Err(anyhow::anyhow!("Unsupported DID method"))
+}
+
+/// SSRF protection: resolve a hostname and reject private/loopback IPs.
+async fn reject_private_host(host: &str) -> Result<(), anyhow::Error> {
+    let host_lower = host.to_lowercase();
+    if host_lower == "localhost"
+        || host_lower.ends_with(".local")
+        || host_lower.ends_with(".internal")
+        || host_lower.ends_with(".localhost")
+    {
+        anyhow::bail!("SSRF blocked: private hostname {host}");
+    }
+
+    // If the host is an IP literal, check directly
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        if is_private_ip(&ip) {
+            anyhow::bail!("SSRF blocked: private IP {ip}");
+        }
+        return Ok(());
+    }
+
+    let addrs: Vec<std::net::SocketAddr> =
+        tokio::net::lookup_host(format!("{host}:443")).await?.collect();
+    for addr in &addrs {
+        if is_private_ip(&addr.ip()) {
+            anyhow::bail!("SSRF blocked: {} resolves to private IP {}", host, addr.ip());
+        }
+    }
+    Ok(())
+}
+
+fn is_private_ip(ip: &std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_unspecified()
+                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64) // CGNAT
+        }
+        std::net::IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || (v6.segments()[0] & 0xfe00) == 0xfc00 // ULA
+                || (v6.segments()[0] & 0xffc0) == 0xfe80 // link-local
+        }
+    }
 }
 
 fn pds_endpoint(doc: &DidDocument) -> Option<String> {
@@ -250,9 +309,20 @@ async fn main() {
     let shared_secret = std::env::var("BROKER_SHARED_SECRET").unwrap_or_else(|_| "".to_string());
     let db_path = std::env::var("BROKER_DB_PATH").unwrap_or_else(|_| "broker.db".to_string());
 
-    if shared_secret.is_empty() {
-        tracing::warn!("BROKER_SHARED_SECRET not set — broker cannot mint web-tokens");
+    // Ensure parent directory exists (for /app/data/broker.db etc.)
+    if let Some(parent) = std::path::Path::new(&db_path).parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).ok();
+        }
     }
+
+    if shared_secret.is_empty() {
+        tracing::error!("BROKER_SHARED_SECRET not set — refusing to start. Set this env var to a strong random secret.");
+        std::process::exit(1);
+    }
+
+    let encryption_key = derive_encryption_key(&shared_secret);
+    tracing::info!("Session encryption key derived from BROKER_SHARED_SECRET");
 
     let db = rusqlite::Connection::open(&db_path).expect("Failed to open broker db");
     init_db(&db).expect("Failed to init db");
@@ -263,6 +333,7 @@ async fn main() {
             freeq_server_url,
             shared_secret,
             _db_path: db_path,
+            encryption_key,
         },
         pending: Mutex::new(std::collections::HashMap::new()),
         db: Mutex::new(db),
@@ -275,7 +346,16 @@ async fn main() {
         .route("/auth/login", get(auth_login))
         .route("/auth/callback", get(auth_callback))
         .route("/session", post(session))
-        .layer(CorsLayer::permissive())
+        .layer(
+            CorsLayer::new()
+                .allow_origin(AllowOrigin::list([
+                    "https://irc.freeq.at".parse().unwrap(),
+                    "http://localhost:5173".parse().unwrap(),
+                    "http://127.0.0.1:5173".parse().unwrap(),
+                ]))
+                .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+                .allow_headers(AllowHeaders::any()),
+        )
         .with_state(state);
 
     let addr = std::env::var("BROKER_ADDR").unwrap_or_else(|_| {
@@ -510,11 +590,22 @@ async fn auth_login(
     let is_popup = is_truthy(q.popup.as_deref());
     let is_mobile = is_truthy(q.mobile.as_deref());
 
+    // C-6: Validate return_to against allowlist to prevent open redirects
+    if let Some(ref rt) = return_to {
+        if !is_valid_return_to(rt) {
+            tracing::warn!(return_to = %rt, "Rejected invalid return_to URL");
+            return Err((StatusCode::BAD_REQUEST, "Invalid return_to URL".to_string()));
+        }
+    }
+
     if return_to.is_none()
         && let Some(referer) = headers.get("referer").and_then(|v| v.to_str().ok())
         && let Ok(url) = url::Url::parse(referer)
     {
-        return_to = Some(url.origin().ascii_serialization());
+        let origin = url.origin().ascii_serialization();
+        if is_valid_return_to(&origin) {
+            return_to = Some(origin);
+        }
     }
     if return_to.is_none() && !is_mobile {
         return_to = Some("https://irc.freeq.at".to_string());
@@ -691,6 +782,11 @@ async fn auth_callback(
 
     let broker_token = generate_random_string(32);
     let now = chrono::Utc::now().timestamp();
+    // C-5: Encrypt sensitive fields before storing in DB
+    let enc_key = &state.config.encryption_key;
+    let encrypted_refresh = encrypt_field(enc_key, refresh_token);
+    let encrypted_dpop = encrypt_field(enc_key, &pending.dpop_key_b64);
+    let encrypted_nonce = dpop_nonce.as_deref().map(|n| encrypt_field(enc_key, n));
     {
         let db = state.db.lock().await;
         db.execute(
@@ -703,9 +799,9 @@ async fn auth_callback(
                 pending.handle,
                 pending.pds_url,
                 pending.token_endpoint,
-                refresh_token,
-                pending.dpop_key_b64,
-                dpop_nonce,
+                encrypted_refresh,
+                encrypted_dpop,
+                encrypted_nonce,
                 now,
                 now
             ],
@@ -753,14 +849,29 @@ async fn auth_callback(
     let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .encode(serde_json::to_vec(&result).unwrap_or_default());
     let redirect = format!("{return_to}#oauth={payload}");
-    tracing::info!(redirect = %redirect, "OAuth callback redirecting to app");
+    tracing::info!(redirect_base = %return_to, "OAuth callback redirecting to app");
     Ok(Redirect::temporary(&redirect).into_response())
 }
 
+const ALLOWED_ORIGINS: &[&str] = &[
+    "https://irc.freeq.at",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+];
+
 async fn session(
     State(state): State<Arc<BrokerState>>,
+    headers: HeaderMap,
     Json(req): Json<BrokerSessionRequest>,
 ) -> Result<Json<BrokerSessionResponse>, (StatusCode, String)> {
+    // M-13: CSRF protection — reject requests from disallowed origins
+    if let Some(origin) = headers.get("origin").and_then(|v| v.to_str().ok()) {
+        if !ALLOWED_ORIGINS.contains(&origin) {
+            tracing::warn!(origin = %origin, "Rejected /session request from disallowed origin");
+            return Err((StatusCode::FORBIDDEN, "Origin not allowed".to_string()));
+        }
+    }
+
     let record = get_session(&state, &req.broker_token)
         .await
         .ok_or((StatusCode::UNAUTHORIZED, "Invalid broker token".to_string()))?;
@@ -769,13 +880,16 @@ async fn session(
         .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Refresh failed: {e}")))?;
 
-    // Update stored refresh token + nonce
+    // Update stored refresh token + nonce (C-5: encrypt before storing)
     let now = chrono::Utc::now().timestamp();
+    let enc_key = &state.config.encryption_key;
+    let encrypted_refresh = encrypt_field(enc_key, &refresh_token);
+    let encrypted_nonce = dpop_nonce.as_deref().map(|n| encrypt_field(enc_key, n));
     {
         let db = state.db.lock().await;
         db.execute(
             "UPDATE sessions SET refresh_token = ?1, dpop_nonce = ?2, updated_at = ?3 WHERE broker_token = ?4",
-            rusqlite::params![refresh_token, dpop_nonce, now, record.broker_token],
+            rusqlite::params![encrypted_refresh, encrypted_nonce, now, record.broker_token],
         ).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
     }
 
@@ -819,20 +933,36 @@ async fn session(
 
 async fn get_session(state: &Arc<BrokerState>, broker_token: &str) -> Option<BrokerSessionRecord> {
     let db = state.db.lock().await;
+    let enc_key = &state.config.encryption_key;
     let mut stmt = db.prepare(
         "SELECT broker_token, did, handle, pds_url, token_endpoint, refresh_token, dpop_key_b64, dpop_nonce, created_at, updated_at FROM sessions WHERE broker_token = ?1"
     ).ok()?;
     let mut rows = stmt.query(rusqlite::params![broker_token]).ok()?;
     if let Some(row) = rows.next().ok().flatten() {
+        let encrypted_refresh: String = row.get(5).ok()?;
+        let encrypted_dpop: String = row.get(6).ok()?;
+        let encrypted_nonce: Option<String> = row.get(7).ok()?;
+        // C-5: Decrypt sensitive fields after reading from DB
+        let refresh_token = decrypt_field(enc_key, &encrypted_refresh)
+            .map_err(|e| tracing::error!("Failed to decrypt refresh_token: {e}"))
+            .ok()?;
+        let dpop_key_b64 = decrypt_field(enc_key, &encrypted_dpop)
+            .map_err(|e| tracing::error!("Failed to decrypt dpop_key_b64: {e}"))
+            .ok()?;
+        let dpop_nonce = encrypted_nonce
+            .map(|n| decrypt_field(enc_key, &n))
+            .transpose()
+            .map_err(|e| tracing::error!("Failed to decrypt dpop_nonce: {e}"))
+            .ok()?;
         Some(BrokerSessionRecord {
             broker_token: row.get(0).ok()?,
             did: row.get(1).ok()?,
             handle: row.get(2).ok()?,
             pds_url: row.get(3).ok()?,
             token_endpoint: row.get(4).ok()?,
-            refresh_token: row.get(5).ok()?,
-            dpop_key_b64: row.get(6).ok()?,
-            dpop_nonce: row.get(7).ok()?,
+            refresh_token,
+            dpop_key_b64,
+            dpop_nonce,
             created_at: row.get(8).ok()?,
             updated_at: row.get(9).ok()?,
         })
@@ -916,7 +1046,7 @@ async fn mint_web_token(
     handle: &str,
 ) -> Result<(String, String), anyhow::Error> {
     let body = serde_json::json!({"did": did, "handle": handle});
-    let sig = sign_body(&config.shared_secret, &body)?;
+    let (sig, ts) = sign_body(&config.shared_secret, &body)?;
     let url = format!(
         "{}/auth/broker/web-token",
         config.freeq_server_url.trim_end_matches('/')
@@ -925,6 +1055,7 @@ async fn mint_web_token(
     let resp = client
         .post(&url)
         .header("X-Broker-Signature", sig)
+        .header("X-Broker-Timestamp", ts)
         .json(&body)
         .send()
         .await?;
@@ -966,7 +1097,7 @@ async fn push_web_session_with_token(
         "dpop_key_b64": pending.dpop_key_b64,
         "dpop_nonce": dpop_nonce,
     });
-    let sig = sign_body(&config.shared_secret, &body)?;
+    let (sig, ts) = sign_body(&config.shared_secret, &body)?;
     let url = format!(
         "{}/auth/broker/session",
         config.freeq_server_url.trim_end_matches('/')
@@ -975,6 +1106,7 @@ async fn push_web_session_with_token(
     let resp = client
         .post(&url)
         .header("X-Broker-Signature", sig)
+        .header("X-Broker-Timestamp", ts)
         .json(&body)
         .send()
         .await?;
@@ -987,14 +1119,82 @@ async fn push_web_session_with_token(
     Ok(())
 }
 
-fn sign_body(secret: &str, body: &serde_json::Value) -> Result<String, anyhow::Error> {
+/// Derive a 256-bit encryption key from the shared secret using HKDF-SHA256.
+fn derive_encryption_key(shared_secret: &str) -> [u8; 32] {
+    let hk = Hkdf::<Sha256>::new(None, shared_secret.as_bytes());
+    let mut key = [0u8; 32];
+    hk.expand(b"freeq-broker-session-encryption-v1", &mut key)
+        .expect("HKDF expand failed");
+    key
+}
+
+/// Encrypt a plaintext string with AES-256-GCM. Returns base64url(nonce || ciphertext).
+fn encrypt_field(key: &[u8; 32], plaintext: &str) -> String {
+    use rand::RngCore;
+    let cipher = Aes256Gcm::new(key.into());
+    let mut nonce_bytes = [0u8; 12];
+    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let ciphertext = cipher
+        .encrypt(nonce, plaintext.as_bytes())
+        .expect("AES-GCM encryption failed");
+    let mut combined = nonce_bytes.to_vec();
+    combined.extend_from_slice(&ciphertext);
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&combined)
+}
+
+/// Decrypt a field previously encrypted with encrypt_field.
+fn decrypt_field(key: &[u8; 32], encoded: &str) -> Result<String, anyhow::Error> {
+    let combined = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(encoded)
+        .map_err(|e| anyhow::anyhow!("base64 decode failed: {e}"))?;
+    if combined.len() < 13 {
+        return Err(anyhow::anyhow!("encrypted field too short"));
+    }
+    let (nonce_bytes, ciphertext) = combined.split_at(12);
+    let cipher = Aes256Gcm::new(key.into());
+    let nonce = Nonce::from_slice(nonce_bytes);
+    let plaintext = cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|e| anyhow::anyhow!("AES-GCM decryption failed: {e}"))?;
+    String::from_utf8(plaintext).map_err(|e| anyhow::anyhow!("UTF-8 decode failed: {e}"))
+}
+
+/// Validate return_to against an allowlist to prevent open redirects.
+fn is_valid_return_to(url: &str) -> bool {
+    // Allow relative URLs
+    if url.starts_with('/') {
+        return true;
+    }
+    // Allow known origins
+    let allowed = [
+        "https://irc.freeq.at",
+        "http://localhost:",
+        "http://localhost/",
+        "http://127.0.0.1:",
+        "http://127.0.0.1/",
+    ];
+    allowed.iter().any(|prefix| url.starts_with(prefix))
+}
+
+/// Sign a request body with HMAC-SHA256. Returns (signature, timestamp) pair.
+/// The MAC covers `ts={timestamp}\n` || body_bytes to prevent replay attacks.
+fn sign_body(secret: &str, body: &serde_json::Value) -> Result<(String, String), anyhow::Error> {
     use base64::Engine;
     use hmac::{Hmac, Mac};
-    use sha2::Sha256;
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())?;
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .to_string();
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(secret.as_bytes())?;
     let bytes = serde_json::to_vec(body)?;
+    mac.update(format!("ts={timestamp}\n").as_bytes());
     mac.update(&bytes);
-    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes()))
+    Ok((
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes()),
+        timestamp,
+    ))
 }
 
 fn init_db(db: &rusqlite::Connection) -> Result<(), rusqlite::Error> {

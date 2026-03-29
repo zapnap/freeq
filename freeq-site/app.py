@@ -71,6 +71,8 @@ SLUG_MAP = {
     "encryption": ("site", "ENCRYPTION.md"),
     "bot-quickstart": ("site", "BOT-QUICKSTART.md"),
     "policy-system": ("site", "POLICY.md"),
+    "agents": ("site", "agents.md"),
+    "security": ("site", "SECURITY.md"),
 }
 
 
@@ -144,6 +146,11 @@ def debug_docs():
         "cwd": str(Path.cwd()),
     }
     return json.dumps(result, indent=2), 200, {"Content-Type": "application/json"}
+
+
+@app.route("/.well-known/<path:filename>")
+def well_known(filename):
+    return send_from_directory(Path(__file__).parent / ".well-known", filename)
 
 
 @app.route("/favicon.ico")

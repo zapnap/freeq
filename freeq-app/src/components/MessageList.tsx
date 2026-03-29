@@ -8,6 +8,7 @@ import { BlueskyEmbed } from './BlueskyEmbed';
 import { LinkPreview } from './LinkPreview';
 import { MessageContextMenu } from './MessageContextMenu';
 import { MarkdownMessage } from './MarkdownRenderer';
+import { CoordinationEventCard, isCoordinationEvent } from './CoordinationCards';
 
 // ── Colors ──
 
@@ -16,7 +17,7 @@ const NICK_COLORS = [
   '#ff9547', '#00c4ff', '#ff5c5c', '#7edd7e', '#ff85d0',
 ];
 
-function nickColor(nick: string): string {
+export function nickColor(nick: string): string {
   let h = 0;
   for (let i = 0; i < nick.length; i++) h = nick.charCodeAt(i) + ((h << 5) - h);
   return NICK_COLORS[Math.abs(h) % NICK_COLORS.length];
@@ -375,6 +376,12 @@ function MessageContent({ msg }: { msg: Message }) {
     );
   }
 
+  // Coordination event cards (Phase 3)
+  if (isCoordinationEvent(msg)) {
+    const card = <CoordinationEventCard msg={msg} />;
+    if (card) return card;
+  }
+
   // Markdown messages — render with full markdown support
   const mimeType = msg.tags?.['+freeq.at/mime'];
   if (mimeType === 'text/markdown') {
@@ -613,6 +620,7 @@ function FullMessage({ msg, channel, onNickClick }: MessageProps) {
   const color = msg.isSelf ? '#b18cff' : nickColor(msg.from);
   const currentNick = getNick();
   const isMention = !msg.isSelf && msg.text.toLowerCase().includes(currentNick.toLowerCase());
+  const isPinned = useStore((s) => s.channels.get(channel.toLowerCase())?.pins?.some(p => p.msgid === msg.id) ?? false);
 
   // Find DID for this user — check channel members reactively, fall back to authDid for self
   const member = useStore((s) => s.channels.get(channel.toLowerCase())?.members.get(msg.from.toLowerCase()));
@@ -627,6 +635,7 @@ function FullMessage({ msg, channel, onNickClick }: MessageProps) {
   return (
     <div
       className={`msg-full group px-4 pt-3 pb-1 hover:bg-white/[0.02] flex gap-3 relative ${
+        isPinned ? 'bg-accent/[0.04] border-l-2 border-orange-400' :
         isMention ? 'bg-accent/[0.04] border-l-2 border-accent' : ''
       }`}
       onContextMenu={(e) => { e.preventDefault(); setCtxMenu({ x: e.clientX, y: e.clientY }); }}
@@ -653,7 +662,8 @@ function FullMessage({ msg, channel, onNickClick }: MessageProps) {
             <span className="text-xs text-fg-dim bg-warning/10 text-warning px-1.5 py-0.5 rounded">away</span>
           )}
           <span className="text-xs text-fg-dim whitespace-nowrap cursor-default" title={msg.timestamp.toLocaleString([], { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' })}>{formatTime(msg.timestamp)}</span>
-          {msg.editOf && <span className="text-xs text-fg-dim">(edited)</span>}
+          {msg.isStreaming && <span className="text-xs text-blue-400 animate-pulse">streaming…</span>}
+          {msg.editOf && !msg.isStreaming && <span className="text-xs text-fg-dim">(edited)</span>}
           {msg.encrypted && <EncryptedBadge />}
         </div>
         <MessageContent msg={msg} />
@@ -710,6 +720,7 @@ function GroupedMessage({ msg, channel }: MessageProps) {
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
   const currentNick = getNick();
   const isMention = !msg.isSelf && msg.text.toLowerCase().includes(currentNick.toLowerCase());
+  const isPinned = useStore((s) => s.channels.get(channel.toLowerCase())?.pins?.some(p => p.msgid === msg.id) ?? false);
 
   const openEmojiPicker = (e: React.MouseEvent) => {
     setPickerPos({ x: e.clientX, y: e.clientY });
@@ -719,6 +730,7 @@ function GroupedMessage({ msg, channel }: MessageProps) {
   return (
     <div
       className={`group px-4 py-0.5 hover:bg-white/[0.02] flex gap-3 relative ${
+        isPinned ? 'bg-accent/[0.04] border-l-2 border-orange-400' :
         isMention ? 'bg-accent/[0.04] border-l-2 border-accent' : ''
       }`}
       onContextMenu={(e) => { e.preventDefault(); setCtxMenu({ x: e.clientX, y: e.clientY }); }}
@@ -1121,13 +1133,10 @@ export function MessageList() {
     const t4 = setTimeout(scrollBottom, 1200); // slow networks
 
     // DM buffers don't get NAMES/366 so history isn't auto-fetched.
-    // Request it on first activation if the buffer has no messages.
+    // Always request on activation (dedup handles duplicates).
     const isDM = activeChannel !== 'server' && !activeChannel.startsWith('#') && !activeChannel.startsWith('&');
     if (isDM) {
-      const ch = useStore.getState().channels.get(activeChannel.toLowerCase());
-      if (!ch || ch.messages.length === 0) {
-        requestHistory(activeChannel);
-      }
+      requestHistory(activeChannel);
     }
 
     return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); clearTimeout(t4); };

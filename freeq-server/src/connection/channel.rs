@@ -3,8 +3,8 @@
 
 use super::Connection;
 use super::helpers::{
-    broadcast_to_channel, make_extended_join, make_standard_join, s2s_broadcast,
-    s2s_broadcast_mode, s2s_next_event_id,
+    broadcast_to_channel, make_extended_join, make_extended_join_with_class, make_standard_join,
+    s2s_broadcast, s2s_broadcast_mode, s2s_next_event_id,
 };
 use crate::irc::{self, Message};
 use crate::server::SharedState;
@@ -22,6 +22,36 @@ pub(super) fn handle_join(
     let nick = conn.nick.as_deref().unwrap();
     let hostmask = conn.hostmask();
     let did = conn.authenticated_did.as_deref();
+
+    // Reject excessively long channel names to prevent memory abuse.
+    if channel.len() > 64 {
+        let reply = Message::from_server(
+            server_name,
+            "479",
+            vec![nick, channel, "Channel name too long (max 64 characters)"],
+        );
+        send(state, session_id, format!("{reply}\r\n"));
+        return;
+    }
+
+    // Per-user channel limit to prevent memory exhaustion
+    const MAX_CHANNELS_PER_USER: usize = 100;
+    if !conn.is_oper {
+        let channels = state.channels.lock();
+        let current_count = channels
+            .values()
+            .filter(|ch| ch.members.contains(session_id))
+            .count();
+        if current_count >= MAX_CHANNELS_PER_USER {
+            let reply = Message::from_server(
+                server_name,
+                irc::ERR_TOOMANYCHANNELS,
+                vec![nick, channel, "You have joined too many channels"],
+            );
+            send(state, session_id, format!("{reply}\r\n"));
+            return;
+        }
+    }
 
     // A channel is "new" only if it doesn't exist at all — not locally,
     // not via S2S. If remote members are present (from S2S sync), the
@@ -298,6 +328,13 @@ pub(super) fn handle_join(
     let std_join = make_standard_join(&hostmask, channel);
     let realname = conn.realname.as_deref().unwrap_or(nick);
     let ext_join = make_extended_join(&hostmask, channel, did, realname);
+    let ext_join_class = make_extended_join_with_class(
+        &hostmask,
+        channel,
+        did,
+        realname,
+        conn.actor_class,
+    );
 
     let members: Vec<String> = state
         .channels
@@ -307,17 +344,40 @@ pub(super) fn handle_join(
         .unwrap_or_default();
 
     let ext_set = state.cap_extended_join.lock();
+    let tag_set = state.cap_message_tags.lock();
     let conns = state.connections.lock();
     for member_session in &members {
         if let Some(tx) = conns.get(member_session) {
-            if ext_set.contains(member_session) {
-                let _ = tx.try_send(ext_join.clone());
+            let result = if ext_set.contains(member_session) {
+                // Clients with message-tags get the actor class tag
+                if tag_set.contains(member_session) {
+                    tx.try_send(ext_join_class.clone())
+                } else {
+                    tx.try_send(ext_join.clone())
+                }
             } else {
-                let _ = tx.try_send(std_join.clone());
+                tx.try_send(std_join.clone())
+            };
+            if let Err(e) = result {
+                tracing::warn!(
+                    channel = %channel,
+                    session = %member_session,
+                    nick = %nick,
+                    error = %e,
+                    "JOIN broadcast failed — client may have stale member list"
+                );
             }
+        } else {
+            tracing::debug!(
+                channel = %channel,
+                session = %member_session,
+                nick = %nick,
+                "JOIN broadcast: session in ch.members but not in connections (ghost?)"
+            );
         }
     }
     drop(conns);
+    drop(tag_set);
     drop(ext_set);
 
     // Broadcast JOIN to S2S peers
@@ -470,10 +530,19 @@ pub(super) fn handle_join(
         // Local members: look up nick from session ID (deduplicated for multi-device)
         let nicks = state.nick_to_session.lock();
         let mut seen_nicks = std::collections::HashSet::new();
+        let member_count = member_sessions.len();
         let mut list: Vec<String> = member_sessions
             .iter()
             .filter_map(|s| {
-                nicks.get_nick(s).and_then(|n| {
+                let nick_result = nicks.get_nick(s);
+                if nick_result.is_none() {
+                    tracing::warn!(
+                        channel = %channel,
+                        session = %s,
+                        "NAMES: session in ch.members but not in nick_to_session"
+                    );
+                }
+                nick_result.and_then(|n| {
                     let nick_lower = n.to_lowercase();
                     if !seen_nicks.insert(nick_lower) {
                         return None;
@@ -489,6 +558,13 @@ pub(super) fn handle_join(
                 })
             })
             .collect();
+        if list.is_empty() && member_count > 0 {
+            tracing::warn!(
+                channel = %channel,
+                member_count = member_count,
+                "NAMES: all members resolved to empty list!"
+            );
+        }
         // Remote members from S2S peers (with @ prefix if op on home server or DID-based)
         let channels_lock = state.channels.lock();
         let ch_state = channels_lock.get(channel);
@@ -848,7 +924,11 @@ pub(super) fn handle_mode(
                     return;
                 }
 
-                let mask = mode_arg.unwrap();
+                let mask = mode_arg.unwrap().trim();
+                if mask.is_empty() {
+                    return; // Reject empty/whitespace-only ban masks
+                }
+                let mask = mask; // rebind after trim
                 if adding {
                     let entry = BanEntry::new(mask.to_string(), conn.hostmask());
                     let mut channels = state.channels.lock();
@@ -1225,15 +1305,18 @@ pub(super) fn handle_invite(
             session_id: target_sid,
         } => {
             // Add invite by session ID + DID
-            {
+            let s2s_invitee = {
                 let mut channels = state.channels.lock();
+                let did = state.session_dids.lock().get(&target_sid).cloned();
                 if let Some(ch) = channels.get_mut(channel) {
                     ch.invites.insert(target_sid.clone());
-                    if let Some(did) = state.session_dids.lock().get(&target_sid) {
-                        ch.invites.insert(did.clone());
+                    if let Some(ref d) = did {
+                        ch.invites.insert(d.clone());
                     }
                 }
-            }
+                // For S2S, prefer DID over nick-based token
+                did.unwrap_or_else(|| format!("nick:{target_nick}"))
+            };
 
             // Notify inviter
             let reply = Message::from_server(server_name, "341", vec![nick, target_nick, channel]);
@@ -1245,24 +1328,48 @@ pub(super) fn handle_invite(
             if let Some(tx) = state.connections.lock().get(&target_sid) {
                 let _ = tx.try_send(invite_msg);
             }
+
+            // Broadcast invite to S2S peers
+            s2s_broadcast(
+                state,
+                crate::s2s::S2sMessage::Invite {
+                    event_id: s2s_next_event_id(state),
+                    channel: channel.to_string(),
+                    invitee: s2s_invitee,
+                    invited_by: nick.to_string(),
+                    origin: state.server_iroh_id.lock().clone().unwrap_or_default(),
+                },
+            );
         }
 
         NetworkTarget::Remote(rm) => {
             // Add invite by DID if available (so it survives reconnect/rejoin)
-            {
+            let s2s_invitee = {
                 let mut channels = state.channels.lock();
                 if let Some(ch) = channels.get_mut(channel) {
                     if let Some(ref did) = rm.did {
                         ch.invites.insert(did.clone());
                     }
-                    // Also store by nick as a fallback for guests without DID
                     ch.invites.insert(format!("nick:{target_nick}"));
                 }
-            }
+                rm.did.clone().unwrap_or_else(|| format!("nick:{target_nick}"))
+            };
 
             // Notify inviter (remote target can't be notified directly)
             let reply = Message::from_server(server_name, "341", vec![nick, target_nick, channel]);
             send(state, session_id, format!("{reply}\r\n"));
+
+            // Broadcast invite to S2S peers
+            s2s_broadcast(
+                state,
+                crate::s2s::S2sMessage::Invite {
+                    event_id: s2s_next_event_id(state),
+                    channel: channel.to_string(),
+                    invitee: s2s_invitee,
+                    invited_by: nick.to_string(),
+                    origin: state.server_iroh_id.lock().clone().unwrap_or_default(),
+                },
+            );
         }
 
         NetworkTarget::Unknown => {
@@ -1310,6 +1417,16 @@ pub(super) fn handle_topic(
 
     match new_topic {
         Some(text) => {
+            // Enforce topic length limit to prevent memory abuse.
+            if text.len() > 512 {
+                let reply = Message::from_server(
+                    server_name,
+                    "FAIL",
+                    vec!["TOPIC", "TOO_LONG", "Topic too long (max 512 characters)"],
+                );
+                send(state, session_id, format!("{reply}\r\n"));
+                return;
+            }
             // Check +t: if topic_locked, only ops can set topic
             let (is_op, is_locked) = {
                 let channels = state.channels.lock();
@@ -1431,8 +1548,29 @@ pub(super) fn handle_part(
     conn: &Connection,
     channel: &str,
     state: &Arc<SharedState>,
+    server_name: &str,
     session_id: &str,
+    send: &impl Fn(&Arc<SharedState>, &str, String),
 ) {
+    let nick = conn.nick_or_star();
+
+    // Verify user is in the channel
+    let in_channel = state
+        .channels
+        .lock()
+        .get(channel)
+        .map(|ch| ch.members.contains(session_id))
+        .unwrap_or(false);
+    if !in_channel {
+        let reply = Message::from_server(
+            server_name,
+            crate::irc::ERR_NOTONCHANNEL,
+            vec![nick, channel, "You're not on that channel"],
+        );
+        send(state, session_id, format!("{reply}\r\n"));
+        return;
+    }
+
     let hostmask = conn.hostmask();
     let part_msg = format!(":{hostmask} PART {channel}\r\n");
 

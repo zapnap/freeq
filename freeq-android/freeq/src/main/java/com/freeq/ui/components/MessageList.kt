@@ -52,6 +52,7 @@ import androidx.compose.ui.unit.sp
 import com.freeq.model.AppState
 import com.freeq.model.AvatarCache
 import com.freeq.model.ChannelState
+import com.freeq.model.PinCache
 import com.freeq.model.ChatMessage
 import com.freeq.model.MemberInfo
 import com.freeq.ui.theme.FreeqColors
@@ -393,9 +394,12 @@ private fun MessageBubble(
     val isOwn = msg.from.equals(appState.nick.value, ignoreCase = true)
     val isMention = !isOwn && appState.nick.value.isNotEmpty() &&
             msg.text.contains(appState.nick.value, ignoreCase = true)
+    // Read directly from pins map so Compose tracks the state change
+    val isPinned = PinCache.pins[channelState.name.lowercase()]?.contains(msg.id) == true
 
     val bgModifier = when {
         isHighlighted -> Modifier.background(FreeqColors.accent.copy(alpha = 0.12f))
+        isPinned -> Modifier.background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f))
         isMention -> Modifier.background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f))
         else -> Modifier
     }
@@ -453,13 +457,23 @@ private fun MessageBubble(
             .offset { IntOffset(swipeOffset.value.toInt(), 0) }
             .then(bgModifier)
             .then(
-                if (isMention) Modifier.drawBehind {
-                    drawRect(
-                        color = accentColor,
-                        topLeft = androidx.compose.ui.geometry.Offset.Zero,
-                        size = androidx.compose.ui.geometry.Size(3.dp.toPx(), size.height)
-                    )
-                } else Modifier
+                when {
+                    isPinned -> Modifier.drawBehind {
+                        drawRect(
+                            color = Color(0xFFFF9800),
+                            topLeft = androidx.compose.ui.geometry.Offset.Zero,
+                            size = androidx.compose.ui.geometry.Size(3.dp.toPx(), size.height)
+                        )
+                    }
+                    isMention -> Modifier.drawBehind {
+                        drawRect(
+                            color = accentColor,
+                            topLeft = androidx.compose.ui.geometry.Offset.Zero,
+                            size = androidx.compose.ui.geometry.Size(3.dp.toPx(), size.height)
+                        )
+                    }
+                    else -> Modifier
+                }
             )
             .padding(
                 start = 16.dp,
@@ -680,6 +694,27 @@ private fun MessageBubble(
                 },
                 leadingIcon = { Icon(Icons.Default.AddReaction, contentDescription = null) }
             )
+            // Pin/Unpin - only for ops in channels
+            if (channelState.name.startsWith("#")) {
+                val myNick = appState.nick.value
+                val isOp = channelState.members.any {
+                    it.nick.equals(myNick, ignoreCase = true) && it.isOp
+                }
+                if (isOp) {
+                    DropdownMenuItem(
+                        text = { Text(if (isPinned) "Unpin Message" else "Pin Message") },
+                        onClick = {
+                            if (isPinned) {
+                                appState.unpinMessage(channelState.name, msg.id)
+                            } else {
+                                appState.pinMessage(channelState.name, msg.id)
+                            }
+                            showMenu = false
+                        },
+                        leadingIcon = { Icon(Icons.Default.PushPin, contentDescription = null) }
+                    )
+                }
+            }
             if (isOwn) {
                 DropdownMenuItem(
                     text = { Text("Edit") },

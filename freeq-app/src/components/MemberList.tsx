@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useStore } from '../store';
+import { useStore, type Member } from '../store';
 import { fetchProfile, getCachedProfile, type ATProfile } from '../lib/profiles';
 import { UserPopover } from './UserPopover';
 import { sendWhois } from '../irc/client';
@@ -27,7 +27,7 @@ export function MemberList() {
   const isDM = !activeChannel.startsWith('#');
 
   if (isDM) {
-    return <DMProfilePanel nick={activeChannel} channel={ch} />;
+    return <DMProfilePanel key={activeChannel} nick={activeChannel} channel={ch} />;
   }
 
   const members = [...ch.members.values()].sort((a, b) => {
@@ -36,10 +36,12 @@ export function MemberList() {
     return wa - wb || a.nick.localeCompare(b.nick);
   });
 
-  const ops = members.filter((m) => m.isOp);
-  const halfops = members.filter((m) => !m.isOp && m.isHalfop);
-  const voiced = members.filter((m) => !m.isOp && !m.isHalfop && m.isVoiced);
-  const regular = members.filter((m) => !m.isOp && !m.isHalfop && !m.isVoiced);
+  const isAgent = (m: Member) => m.actorClass === 'agent' || m.actorClass === 'external_agent';
+  const ops = members.filter((m) => m.isOp && !isAgent(m));
+  const halfops = members.filter((m) => !m.isOp && m.isHalfop && !isAgent(m));
+  const voiced = members.filter((m) => !m.isOp && !m.isHalfop && m.isVoiced && !isAgent(m));
+  const regular = members.filter((m) => !m.isOp && !m.isHalfop && !m.isVoiced && !isAgent(m));
+  const agents = members.filter(isAgent);
 
   const onMemberClick = (nick: string, did: string | undefined, e: React.MouseEvent) => {
     setPopover({ nick, did, pos: { x: e.clientX, y: e.clientY } });
@@ -66,6 +68,11 @@ export function MemberList() {
         <Section label={`${ops.length > 0 || halfops.length > 0 || voiced.length > 0 ? 'Members' : 'Online'} — ${regular.length}`}>
           {regular.map((m) => <MemberItem key={m.nick} member={m} onClick={onMemberClick} />)}
         </Section>
+        {agents.length > 0 && (
+          <Section label={`Agents — ${agents.length}`}>
+            {agents.map((m) => <MemberItem key={m.nick} member={m} onClick={onMemberClick} />)}
+          </Section>
+        )}
       </div>
 
       {popover && (
@@ -175,8 +182,8 @@ function DMProfilePanel({ nick, channel }: { nick: string; channel: { members: M
           <div className="text-sm text-fg-muted">{nick}</div>
         )}
 
-        {/* AT Handle — linked to Bluesky */}
-        {handle && (
+        {/* AT Handle — linked to Bluesky (not for did:key users) */}
+        {handle && !did?.startsWith('did:key:') && (
           <a
             href={`https://bsky.app/profile/${handle}`}
             target="_blank"
@@ -195,7 +202,12 @@ function DMProfilePanel({ nick, channel }: { nick: string; channel: { members: M
         <div className="text-xs text-fg-dim mt-1">
           {presence.online ? (
             presence.away ? (
-              <span className="text-warning">Away{presence.away !== '' ? `: ${presence.away}` : ''}</span>
+              <span className="text-warning">Away{presence.away !== '' ? `: ${(() => {
+                try {
+                  const j = JSON.parse(presence.away!);
+                  return j.status || j.state || presence.away;
+                } catch { return presence.away; }
+              })()}` : ''}</span>
             ) : (
               <span className="text-success">Online</span>
             )
@@ -294,7 +306,7 @@ function DMProfilePanel({ nick, channel }: { nick: string; channel: { members: M
         )}
 
         {/* Actions */}
-        {handle && (
+        {handle && !did?.startsWith('did:key:') && (
           <div className="mt-4">
             <a
               href={`https://bsky.app/profile/${handle}`}
@@ -331,6 +343,7 @@ interface MemberItemProps {
     isVoiced: boolean;
     away?: string | null;
     typing?: boolean;
+    actorClass?: 'human' | 'agent' | 'external_agent';
   };
   onClick: (nick: string, did: string | undefined, e: React.MouseEvent) => void;
 }
@@ -363,7 +376,14 @@ function MemberItem({ member, onClick }: MemberItemProps) {
           {member.nick}
         </span>
 
-        {member.did && (
+        {member.actorClass === 'agent' && (
+          <span className="text-xs" title="Agent">🤖</span>
+        )}
+        {member.actorClass === 'external_agent' && (
+          <span className="text-xs" title="External Agent">🌐</span>
+        )}
+
+        {member.did && !member.actorClass?.includes('agent') && (
           <span className="text-accent text-xs" title={`Verified AT Protocol identity: ${member.did}`}>✓</span>
         )}
 

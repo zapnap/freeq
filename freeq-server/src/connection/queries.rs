@@ -120,18 +120,78 @@ pub(super) fn handle_whois(
             );
             send(state, session_id, format!("{end}\r\n"));
         } else {
-            let reply = Message::from_server(
-                server_name,
-                irc::ERR_NOSUCHNICK,
-                vec![my_nick, target_nick, "No such nick"],
-            );
-            send(state, session_id, format!("{reply}\r\n"));
-            let end = Message::from_server(
-                server_name,
-                irc::RPL_ENDOFWHOIS,
-                vec![my_nick, target_nick, "End of /WHOIS list"],
-            );
-            send(state, session_id, format!("{end}\r\n"));
+            // Check if this is a spawned (virtual) agent
+            let spawned = state.spawned_agents.lock().values()
+                .find(|sa| sa.nick.eq_ignore_ascii_case(target_nick))
+                .cloned();
+
+            if let Some(sa) = spawned {
+                let parent_nick = state.nick_to_session.lock()
+                    .get_nick(&sa.parent_session)
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| sa.parent_did.clone());
+
+                let realname = format!("Spawned agent (parent: {parent_nick})");
+                let whoisuser = Message::from_server(
+                    server_name,
+                    irc::RPL_WHOISUSER,
+                    vec![my_nick, target_nick, "spawn", "freeq/spawn", "*", &realname],
+                );
+                send(state, session_id, format!("{whoisuser}\r\n"));
+
+                let whoisserver = Message::from_server(
+                    server_name,
+                    irc::RPL_WHOISSERVER,
+                    vec![my_nick, target_nick, server_name, "freeq"],
+                );
+                send(state, session_id, format!("{whoisserver}\r\n"));
+
+                // Show DID
+                let did_line = Message::from_server(
+                    server_name,
+                    "330",
+                    vec![my_nick, target_nick, &sa.child_did, "is authenticated as"],
+                );
+                send(state, session_id, format!("{did_line}\r\n"));
+
+                // Show actor class
+                let class_line = Message::from_server(
+                    server_name,
+                    "673",
+                    vec![my_nick, target_nick, "actor_class=agent"],
+                );
+                send(state, session_id, format!("{class_line}\r\n"));
+
+                // Show spawn info
+                let caps_str = if sa.capabilities.is_empty() { "none".to_string() } else { sa.capabilities.join(", ") };
+                let spawn_info = format!("parent={parent_nick}, capabilities={caps_str}, task={}", sa.task_ref.as_deref().unwrap_or("-"));
+                let spawn_line = Message::from_server(
+                    server_name,
+                    "NOTICE",
+                    vec![my_nick, &format!("Spawned agent: {spawn_info}")],
+                );
+                send(state, session_id, format!("{spawn_line}\r\n"));
+
+                let end = Message::from_server(
+                    server_name,
+                    irc::RPL_ENDOFWHOIS,
+                    vec![my_nick, target_nick, "End of /WHOIS list"],
+                );
+                send(state, session_id, format!("{end}\r\n"));
+            } else {
+                let reply = Message::from_server(
+                    server_name,
+                    irc::ERR_NOSUCHNICK,
+                    vec![my_nick, target_nick, "No such nick"],
+                );
+                send(state, session_id, format!("{reply}\r\n"));
+                let end = Message::from_server(
+                    server_name,
+                    irc::RPL_ENDOFWHOIS,
+                    vec![my_nick, target_nick, "End of /WHOIS list"],
+                );
+                send(state, session_id, format!("{end}\r\n"));
+            }
         }
         return;
     };
@@ -191,6 +251,25 @@ pub(super) fn handle_whois(
             vec![my_nick, target_nick, &format!("iroh endpoint: {iroh_id}")],
         );
         send(state, session_id, format!("{iroh_notice}\r\n"));
+    }
+
+    // Show actor class if not human (673 = custom RPL_ACTORCLASS)
+    {
+        let actor_class = state
+            .session_actor_class
+            .lock()
+            .get(&target_session)
+            .copied();
+        if let Some(class) = actor_class {
+            if class != crate::connection::ActorClass::Human {
+                let class_line = Message::from_server(
+                    server_name,
+                    "673",
+                    vec![my_nick, target_nick, &format!("actor_class={class}")],
+                );
+                send(state, session_id, format!("{class_line}\r\n"));
+            }
+        }
     }
 
     // Show linked identities (e.g., GitHub)

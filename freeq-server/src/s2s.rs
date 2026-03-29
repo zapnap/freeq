@@ -336,6 +336,19 @@ pub enum S2sMessage {
         origin: String,
     },
 
+    /// An invite was issued for a user on a channel.
+    #[serde(rename = "invite")]
+    Invite {
+        #[serde(default)]
+        event_id: String,
+        channel: String,
+        /// The invitee identifier (DID, nick:XXX, or session ID).
+        invitee: String,
+        /// Nick of the user who issued the invite.
+        invited_by: String,
+        origin: String,
+    },
+
     /// Internal event: a peer's S2S link has disconnected.
     /// Not sent over the wire — synthesized locally so the event processor
     /// can clean up remote_members for that peer's origin.
@@ -386,6 +399,9 @@ pub struct ChannelInfo {
     /// Active bans (mask strings).
     #[serde(default)]
     pub bans: Vec<String>,
+    /// Active invites (DIDs, nick:XXX tokens).
+    #[serde(default)]
+    pub invites: Vec<String>,
 }
 
 /// Bounded set for event dedup. Uses two layers:
@@ -1004,6 +1020,8 @@ async fn handle_s2s_connection(
                         tracing::debug!(peer = %read_peer, msg_count, "S2S received: {}", line.chars().take(120).collect::<String>());
 
                         // Phase 2: Unwrap signed envelopes
+                        // C-7 fix: Reject unsigned operational messages.
+                        // Only Hello/HelloAck/KeyRotation are exempt (handshake/key mgmt).
                         let msg = match msg {
                             S2sMessage::Signed { ref payload, ref signature, ref signer } => {
                                 match read_manager.verify_signed(payload, signature, signer, &authenticated_peer_id) {
@@ -1014,7 +1032,17 @@ async fn handle_s2s_connection(
                                     }
                                 }
                             }
-                            other => other,
+                            S2sMessage::Hello { .. }
+                            | S2sMessage::HelloAck { .. }
+                            | S2sMessage::KeyRotation { .. } => msg,
+                            other => {
+                                tracing::warn!(
+                                    peer = %read_peer,
+                                    msg_type = %serde_json::to_string(&other).unwrap_or_default().chars().take(60).collect::<String>(),
+                                    "S2S: rejected unsigned message — signing required"
+                                );
+                                continue;
+                            }
                         };
 
                         let event = AuthenticatedS2sEvent {

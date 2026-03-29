@@ -5,6 +5,21 @@ use crate::server::{RemoteMember, SharedState};
 use std::sync::Arc;
 
 /// Generate a cloaked hostname from an optional DID.
+/// Send a message to a client session. Logs a warning if the send buffer is full (message dropped).
+pub(crate) fn send_to_client(
+    state: &SharedState,
+    session_id: &str,
+    line: String,
+) {
+    let conns = state.connections.lock();
+    if let Some(tx) = conns.get(session_id) {
+        if let Err(e) = tx.try_send(line) {
+            let nick = state.nick_to_session.lock().get_nick(session_id).map(|s| s.to_string()).unwrap_or_default();
+            tracing::warn!(session = %session_id, nick = %nick, "Send buffer full, message dropped: {e}");
+        }
+    }
+}
+
 pub fn cloaked_host_for_did(did: Option<&str>) -> String {
     if let Some(did) = did {
         let short = did.strip_prefix("did:").unwrap_or(did);
@@ -181,7 +196,10 @@ pub(super) fn broadcast_to_channel(state: &Arc<SharedState>, channel: &str, msg:
     let conns = state.connections.lock();
     for member_session in &members {
         if let Some(tx) = conns.get(member_session) {
-            let _ = tx.try_send(msg.to_string());
+            if let Err(_e) = tx.try_send(msg.to_string()) {
+                let nick = state.nick_to_session.lock().get_nick(member_session).map(|s| s.to_string()).unwrap_or_default();
+                tracing::warn!(session = %member_session, nick = %nick, channel = %channel, "Broadcast: send buffer full, message dropped");
+            }
         }
     }
 }
@@ -196,23 +214,26 @@ pub(crate) fn broadcast_account_notify(
     let hostmask = format!("{nick}!~u@{host}");
     let line = format!(":{hostmask} ACCOUNT {did}\r\n");
 
-    // Find all channels this user is in
-    let channels = state.channels.lock();
-    let mut notified = std::collections::HashSet::new();
-    for ch in channels.values() {
-        if ch.members.contains(session_id) {
-            let cap_set = state.cap_account_notify.lock();
-            let conns = state.connections.lock();
-            for member_sid in &ch.members {
-                if member_sid != session_id && !notified.contains(member_sid) {
-                    if cap_set.contains(member_sid)
-                        && let Some(tx) = conns.get(member_sid)
-                    {
-                        let _ = tx.try_send(line.clone());
+    // Collect targets first (release channels lock before acquiring connections)
+    let mut targets = std::collections::HashSet::new();
+    {
+        let channels = state.channels.lock();
+        let cap_set = state.cap_account_notify.lock();
+        for ch in channels.values() {
+            if ch.members.contains(session_id) {
+                for member_sid in &ch.members {
+                    if member_sid != session_id && cap_set.contains(member_sid) {
+                        targets.insert(member_sid.clone());
                     }
-                    notified.insert(member_sid.clone());
                 }
             }
+        }
+    }
+    // Now send with only connections lock held
+    let conns = state.connections.lock();
+    for sid in &targets {
+        if let Some(tx) = conns.get(sid) {
+            let _ = tx.try_send(line.clone());
         }
     }
 }
@@ -227,6 +248,22 @@ pub(crate) fn make_extended_join(
 ) -> String {
     let account = did.unwrap_or("*");
     format!(":{hostmask} JOIN {channel} {account} :{realname}\r\n")
+}
+
+/// Build an extended JOIN line with actor class tag (for agent-aware clients).
+pub(crate) fn make_extended_join_with_class(
+    hostmask: &str,
+    channel: &str,
+    did: Option<&str>,
+    realname: &str,
+    actor_class: super::ActorClass,
+) -> String {
+    let account = did.unwrap_or("*");
+    if actor_class != super::ActorClass::Human {
+        format!("@+freeq.at/actor-class={actor_class} :{hostmask} JOIN {channel} {account} :{realname}\r\n")
+    } else {
+        format!(":{hostmask} JOIN {channel} {account} :{realname}\r\n")
+    }
 }
 
 /// Build a standard JOIN line.

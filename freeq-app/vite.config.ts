@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
@@ -7,6 +8,13 @@ const FREEQ_WEB = process.env.FREEQ_WEB || 'http://127.0.0.1:8080'
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  define: {
+    '__FREEQ_TARGET__': JSON.stringify(FREEQ_WEB),
+  },
+  test: {
+    environment: 'node',
+    include: ['src/**/*.test.ts'],
+  },
   server: {
     host: '127.0.0.1',
     proxy: {
@@ -17,7 +25,7 @@ export default defineConfig({
       },
       '/api': {
         target: FREEQ_WEB,
-        changeOrigin: false,
+        changeOrigin: true, // required for HTTPS targets
       },
       '/auth': {
         target: FREEQ_WEB,

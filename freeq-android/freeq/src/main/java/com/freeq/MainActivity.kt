@@ -13,6 +13,7 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.freeq.model.AppState
+import com.freeq.model.ServerConfig
 import com.freeq.ui.FreeqApp
 
 class MainActivity : ComponentActivity() {
@@ -74,13 +75,15 @@ class MainActivity : ComponentActivity() {
                 // Persist secrets for session restore
                 brokerTok?.let {
                     state.securePrefs.edit().putString("brokerToken", it).apply()
+                    // Track login time for 14-day minimum session duration
+                    state.prefs.edit().putLong("lastLoginTime", System.currentTimeMillis()).apply()
                 }
                 did?.let {
                     state.securePrefs.edit().putString("did", it).apply()
                 }
                 // Cache the web token for fast reconnect (25 min TTL, server expires at 30 min)
                 state.cacheWebToken(token)
-                state.serverAddress.value = "irc.freeq.at:6667"
+                state.serverAddress.value = ServerConfig.ircServer
                 state.connect(nick)
             }
         }
