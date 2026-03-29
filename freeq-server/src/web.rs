@@ -1104,6 +1104,17 @@ async fn api_channel_history(
         format!("#{name}")
     };
 
+    // Restrict history for channels with access controls (+i, +k).
+    // These channels require membership to read history — use IRC CHATHISTORY instead.
+    {
+        let channels = state.channels.lock();
+        if let Some(ch) = channels.get(&channel.to_lowercase()) {
+            if ch.invite_only || ch.key.is_some() {
+                return Err(StatusCode::FORBIDDEN);
+            }
+        }
+    }
+
     let limit = params.limit.unwrap_or(50).min(200);
 
     // Try database first for full history
