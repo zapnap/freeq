@@ -1570,6 +1570,15 @@ static S2S_RATE_LIMITS: std::sync::LazyLock<parking_lot::Mutex<HashMap<String, (
     std::sync::LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
 const S2S_MAX_EVENTS_PER_SEC: u32 = 100;
 
+/// Strip characters that could enable IRC protocol injection (\r, \n, \0) from
+/// S2S-provided strings. Truncates to `max_len` to prevent memory abuse.
+fn sanitize_s2s_str(s: &str, max_len: usize) -> String {
+    s.chars()
+        .filter(|c| *c != '\r' && *c != '\n' && *c != '\0')
+        .take(max_len)
+        .collect()
+}
+
 async fn process_s2s_message(
     state: &Arc<SharedState>,
     manager: &Arc<crate::s2s::S2sManager>,
@@ -1895,6 +1904,11 @@ async fn process_s2s_message(
             sig,
             ..
         } => {
+            // Sanitize all peer-provided strings to prevent IRC protocol injection.
+            let from = sanitize_s2s_str(&from, 512);
+            let target = sanitize_s2s_str(&target, 200);
+            let text = sanitize_s2s_str(&text, 4096);
+
             // Generate a local msgid if the remote didn't send one
             let msgid = msgid.unwrap_or_else(crate::msgid::generate);
 
@@ -2048,8 +2062,9 @@ async fn process_s2s_message(
             origin,
             ..
         } => {
-            // Normalize channel name — IRC channels are case-insensitive
-            let channel = channel.to_lowercase();
+            // Sanitize peer-provided strings to prevent IRC protocol injection.
+            let nick = sanitize_s2s_str(&nick, 64);
+            let channel = sanitize_s2s_str(&channel, 200).to_lowercase();
 
             // ── S2S authorization: enforce bans and +i ──
             {
@@ -2145,7 +2160,9 @@ async fn process_s2s_message(
             set_by,
             ..
         } => {
-            let channel = channel.to_lowercase();
+            let channel = sanitize_s2s_str(&channel, 200).to_lowercase();
+            let topic = sanitize_s2s_str(&topic, 512);
+            let set_by = sanitize_s2s_str(&set_by, 200);
             // CRDT is the single source of truth for topic convergence.
             // The S2S Topic event is a notification for immediate display —
             // we apply it locally for UX responsiveness, then write to CRDT
