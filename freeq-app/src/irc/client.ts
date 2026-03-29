@@ -557,24 +557,30 @@ async function handleLine(rawLine: string) {
       store.setRegistered(true);
       store.setConnectedServer(lastUrl);
       // Auto-join channels:
-      // 1. Explicit channels from connect() call (e.g. invite link)
-      // 2. Channels from current session (reconnect)
-      // 3. Saved channels from localStorage (fresh page load)
-      // For DID-authenticated users, the server also auto-joins saved channels,
-      // but sending JOIN for already-joined channels is harmless (server ignores).
-      let toJoin = autoJoinChannels.length > 0
-        ? autoJoinChannels
-        : joinedChannels.size > 0
-          ? [...joinedChannels]
-          : loadSavedChannels();
-      // Always include #freeq for new users (no saved channels)
-      if (toJoin.length === 0) toJoin = ['#freeq'];
-      // Ensure #freeq is always in the list
-      if (!toJoin.some(ch => ch.toLowerCase().replace(/^#/, '') === 'freeq' || ch.toLowerCase() === '#freeq')) {
-        toJoin.unshift('#freeq');
+      // - Explicit channels from connect() call (e.g. invite link) always apply.
+      // - For DID-authenticated users, the server auto-joins from the DB
+      //   (user_channels table, maintained on JOIN/PART). Don't duplicate.
+      // - For guests, join from in-memory session set or #freeq default.
+      let toJoin: string[];
+      if (autoJoinChannels.length > 0) {
+        // Explicit channels (invite link, connect screen)
+        toJoin = autoJoinChannels;
+      } else if (saslDid) {
+        // Authenticated: server handles auto-rejoin from DB.
+        // Only join #freeq if the server doesn't auto-join anything
+        // (the server will send JOINs which populate the channel list).
+        toJoin = [];
+      } else if (joinedChannels.size > 0) {
+        // Guest reconnect: rejoin channels from current session
+        toJoin = [...joinedChannels];
+      } else {
+        // Fresh guest: join #freeq
+        toJoin = ['#freeq'];
       }
-      // The server auto-joins saved channels for DID users (registration.rs).
-      // Only send JOIN for channels not already joined to avoid duplicate 366/CHATHISTORY.
+      // Ensure #freeq for guests with no channels
+      if (!saslDid && toJoin.length === 0) {
+        toJoin = ['#freeq'];
+      }
       for (const ch of toJoin) {
         const name = ch.trim();
         if (name && !store.channels.has(name.toLowerCase())) {
