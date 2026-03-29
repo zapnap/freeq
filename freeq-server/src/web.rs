@@ -1104,6 +1104,17 @@ async fn api_channel_history(
         format!("#{name}")
     };
 
+    // Restrict history for channels with access controls (+i, +k).
+    // These channels require membership to read history — use IRC CHATHISTORY instead.
+    {
+        let channels = state.channels.lock();
+        if let Some(ch) = channels.get(&channel.to_lowercase()) {
+            if ch.invite_only || ch.key.is_some() {
+                return Err(StatusCode::FORBIDDEN);
+            }
+        }
+    }
+
     let limit = params.limit.unwrap_or(50).min(200);
 
     // Try database first for full history
@@ -1409,30 +1420,39 @@ fn verify_broker_signature_raw(
             "Missing broker signature".to_string(),
         ))?;
 
-    // Replay protection: check timestamp freshness (optional for backward compat)
-    if let Some(ts_str) = headers
+    // Replay protection: require timestamp and enforce ≤60s skew.
+    let ts_str = headers
         .get("x-broker-timestamp")
         .and_then(|v| v.to_str().ok())
-        && let Ok(ts) = ts_str.parse::<u64>()
-    {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        if now.abs_diff(ts) > 60 {
-            return Err((
-                StatusCode::UNAUTHORIZED,
-                "Broker request expired (timestamp > 60s)".to_string(),
-            ));
-        }
+        .ok_or((
+            StatusCode::UNAUTHORIZED,
+            "Missing X-Broker-Timestamp header".to_string(),
+        ))?;
+    let ts: u64 = ts_str.parse().map_err(|_| {
+        (
+            StatusCode::UNAUTHORIZED,
+            "Invalid X-Broker-Timestamp".to_string(),
+        )
+    })?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    if now.abs_diff(ts) > 60 {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "Broker request expired (timestamp > 60s)".to_string(),
+        ));
     }
 
+    // MAC covers ts={timestamp}\n || body to bind the timestamp to the signature.
     let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).map_err(|_| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             "HMAC init failed".to_string(),
         )
     })?;
+    mac.update(format!("ts={ts_str}\n").as_bytes());
     mac.update(body_bytes);
     let expected =
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
@@ -1985,6 +2005,10 @@ async fn auth_callback(
         access_jwt: access_token.to_string(),
         pds_url: pending.pds_url.clone(),
         web_token: Some(web_token),
+        created_at: SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
     };
 
     // Store web session for server-proxied operations (media upload)
@@ -2204,10 +2228,14 @@ fn mobile_nick_from_handle(handle: &str) -> String {
 /// Server proxies the upload to the user's PDS using their stored OAuth credentials.
 /// Returns JSON: `{ "url": "...", "content_type": "...", "size": N }`.
 async fn api_upload(
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
     State(state): State<Arc<SharedState>>,
     headers: axum::http::HeaderMap,
     mut multipart: axum::extract::Multipart,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if !state.rest_rate_limiter.check(addr.ip()) {
+        return Err((StatusCode::TOO_MANY_REQUESTS, "Rate limit exceeded".to_string()));
+    }
     let mut file_data: Option<Vec<u8>> = None;
     let mut content_type = String::from("application/octet-stream");
     let mut did = String::new();
@@ -2474,9 +2502,14 @@ struct OgQuery {
 /// and sandbox CSP headers that prevent browser/AVPlayer playback.
 /// Supports Range requests for video seeking / AVPlayer compatibility.
 async fn api_blob_proxy(
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    State(state): State<Arc<SharedState>>,
     headers: axum::http::HeaderMap,
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
+    if !state.rest_rate_limiter.check(addr.ip()) {
+        return (StatusCode::TOO_MANY_REQUESTS, "Rate limit exceeded").into_response();
+    }
     let Some(url) = q.get("url") else {
         return (StatusCode::BAD_REQUEST, "missing url parameter").into_response();
     };
@@ -2581,7 +2614,18 @@ async fn api_blob_proxy(
 
 /// Fetch OpenGraph metadata from a URL and return as JSON.
 /// Avoids clients leaking browsing data to third-party proxy services.
-async fn api_og_preview(Query(q): Query<OgQuery>) -> impl IntoResponse {
+async fn api_og_preview(
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    State(state): State<Arc<SharedState>>,
+    Query(q): Query<OgQuery>,
+) -> impl IntoResponse {
+    if !state.rest_rate_limiter.check(addr.ip()) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({"error": "Rate limit exceeded"})),
+        )
+            .into_response();
+    }
     // Validate URL
     let url = match url::Url::parse(&q.url) {
         Ok(u) if u.scheme() == "http" || u.scheme() == "https" => u,
@@ -2783,6 +2827,47 @@ async fn api_upload_keys(
             axum::http::StatusCode::BAD_REQUEST,
             axum::Json(serde_json::json!({ "error": "Missing 'did' or 'bundle'" })),
         ),
+    }
+}
+
+// ── Per-IP rate limiting ──────────────────────────────────────────────
+
+/// Simple per-IP sliding-window rate limiter.
+/// Tracks (window_start_secs, request_count) per IP. Resets each window.
+pub struct IpRateLimiter {
+    max_requests: u32,
+    window_secs: u64,
+    state: parking_lot::Mutex<std::collections::HashMap<std::net::IpAddr, (u64, u32)>>,
+}
+
+impl IpRateLimiter {
+    pub fn new(max_requests: u32, window_secs: u64) -> Self {
+        Self {
+            max_requests,
+            window_secs,
+            state: parking_lot::Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+
+    /// Returns true if the request is allowed, false if rate-limited.
+    pub fn check(&self, ip: std::net::IpAddr) -> bool {
+        let now = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let mut map = self.state.lock();
+        let entry = map.entry(ip).or_insert((now, 0));
+        if now - entry.0 >= self.window_secs {
+            *entry = (now, 1);
+            true
+        } else {
+            entry.1 += 1;
+            entry.1 <= self.max_requests
+        }
+    }
+
+    pub fn window_secs(&self) -> u64 {
+        self.window_secs
     }
 }
 

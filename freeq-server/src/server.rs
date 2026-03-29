@@ -151,6 +151,9 @@ pub struct OAuthResult {
     /// One-time token for SASL web-token auth (consumed on first use).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub web_token: Option<String>,
+    /// When this result was created (Unix timestamp seconds).
+    #[serde(skip)]
+    pub created_at: u64,
 }
 
 /// A linked external identity attached to an AT Protocol DID.
@@ -525,6 +528,8 @@ pub struct SharedState {
     pub ghost_sessions: Mutex<HashMap<String, GhostSession>>,
     /// Spawned (virtual) agents: child_did → SpawnedAgent.
     pub spawned_agents: Mutex<HashMap<String, SpawnedAgent>>,
+    /// Per-IP rate limiter for expensive REST endpoints (OG preview, blob proxy, upload).
+    pub rest_rate_limiter: crate::web::IpRateLimiter,
 }
 
 /// A spawned virtual agent (child of a real agent session).
@@ -732,6 +737,7 @@ fn derive_key_from_signing(signing_key: &ed25519_dalek::SigningKey) -> [u8; 32] 
 fn load_msg_signing_key(data_dir: &str) -> ed25519_dalek::SigningKey {
     let key_path = std::path::Path::new(data_dir).join("msg-signing-key.secret");
     if key_path.exists() {
+        crate::secrets::tighten_permissions(&key_path);
         if let Ok(data) = std::fs::read(&key_path)
             && let Ok(bytes) = <[u8; 32]>::try_from(data.as_slice())
         {
@@ -744,7 +750,7 @@ fn load_msg_signing_key(data_dir: &str) -> ed25519_dalek::SigningKey {
         );
     }
     let key = ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng);
-    if let Err(e) = std::fs::write(&key_path, key.to_bytes()) {
+    if let Err(e) = crate::secrets::write_secret(&key_path, &key.to_bytes()) {
         tracing::error!("Failed to persist msg signing key: {e}");
     } else {
         tracing::info!("Generated message signing key at {}", key_path.display());
@@ -781,6 +787,7 @@ impl Server {
             let key_path = std::path::Path::new(self.config.data_dir.as_deref().unwrap_or("."))
                 .join("db-encryption-key.secret");
             if key_path.exists() {
+                crate::secrets::tighten_permissions(&key_path);
                 if let Ok(data) = std::fs::read(&key_path) {
                     if let Ok(bytes) = <[u8; 32]>::try_from(data.as_slice()) {
                         tracing::info!("Loaded DB encryption key from {}", key_path.display());
@@ -797,7 +804,7 @@ impl Server {
                 // First run with separate key: derive from signing key for backward compat
                 // with existing encrypted messages, then persist for future independence.
                 let key = derive_key_from_signing(&msg_signing_key);
-                if let Err(e) = std::fs::write(&key_path, key) {
+                if let Err(e) = crate::secrets::write_secret(&key_path, &key) {
                     tracing::error!("Failed to persist DB encryption key: {e}");
                 } else {
                     tracing::info!("Generated DB encryption key at {}", key_path.display());
@@ -978,6 +985,8 @@ impl Server {
             upload_tokens: Mutex::new(HashMap::new()),
             ghost_sessions: Mutex::new(HashMap::new()),
             spawned_agents: Mutex::new(HashMap::new()),
+            // 30 requests per 60-second window per IP for expensive REST endpoints
+            rest_rate_limiter: crate::web::IpRateLimiter::new(30, 60),
         }))
     }
 
@@ -1325,6 +1334,28 @@ impl Server {
                             tracing::info!("Pruned {pruned} stale login completions");
                         }
                     }
+                    // Prune stale OAuth pending/complete maps (10 min TTL)
+                    {
+                        let now = SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        let mut pending = cleanup_state.oauth_pending.lock();
+                        let before = pending.len();
+                        pending.retain(|_, p| now.saturating_sub(p.created_at) < 600);
+                        let pruned = before - pending.len();
+                        if pruned > 0 {
+                            tracing::info!("Pruned {pruned} stale OAuth pending entries");
+                        }
+                        drop(pending);
+                        let mut complete = cleanup_state.oauth_complete.lock();
+                        let before = complete.len();
+                        complete.retain(|_, r| now.saturating_sub(r.created_at) < 600);
+                        let pruned = before - complete.len();
+                        if pruned > 0 {
+                            tracing::info!("Pruned {pruned} stale OAuth complete entries");
+                        }
+                    }
                     // Prune stale web sessions (24h TTL — PDS tokens expire anyway)
                     {
                         let mut sessions = cleanup_state.web_sessions.lock();
@@ -1566,6 +1597,15 @@ impl Server {
 static S2S_RATE_LIMITS: std::sync::LazyLock<parking_lot::Mutex<HashMap<String, (u64, u32)>>> =
     std::sync::LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
 const S2S_MAX_EVENTS_PER_SEC: u32 = 100;
+
+/// Strip characters that could enable IRC protocol injection (\r, \n, \0) from
+/// S2S-provided strings. Truncates to `max_len` to prevent memory abuse.
+fn sanitize_s2s_str(s: &str, max_len: usize) -> String {
+    s.chars()
+        .filter(|c| *c != '\r' && *c != '\n' && *c != '\0')
+        .take(max_len)
+        .collect()
+}
 
 async fn process_s2s_message(
     state: &Arc<SharedState>,
@@ -1904,6 +1944,11 @@ async fn process_s2s_message(
             sig,
             ..
         } => {
+            // Sanitize all peer-provided strings to prevent IRC protocol injection.
+            let from = sanitize_s2s_str(&from, 512);
+            let target = sanitize_s2s_str(&target, 200);
+            let text = sanitize_s2s_str(&text, 4096);
+
             // Generate a local msgid if the remote didn't send one
             let msgid = msgid.unwrap_or_else(crate::msgid::generate);
 
@@ -2061,8 +2106,9 @@ async fn process_s2s_message(
             origin,
             ..
         } => {
-            // Normalize channel name — IRC channels are case-insensitive
-            let channel = channel.to_lowercase();
+            // Sanitize peer-provided strings to prevent IRC protocol injection.
+            let nick = sanitize_s2s_str(&nick, 64);
+            let channel = sanitize_s2s_str(&channel, 200).to_lowercase();
 
             // ── S2S authorization: enforce bans and +i ──
             {
@@ -2179,7 +2225,9 @@ async fn process_s2s_message(
             set_by,
             ..
         } => {
-            let channel = channel.to_lowercase();
+            let channel = sanitize_s2s_str(&channel, 200).to_lowercase();
+            let topic = sanitize_s2s_str(&topic, 512);
+            let set_by = sanitize_s2s_str(&set_by, 200);
             // CRDT is the single source of truth for topic convergence.
             // The S2S Topic event is a notification for immediate display —
             // we apply it locally for UX responsiveness, then write to CRDT

@@ -165,9 +165,10 @@ pub(super) async fn handle_authenticate(
             let web_token_result = if response.method.as_deref() == Some("web-token") {
                 let mut tokens = state.web_auth_tokens.lock();
                 if let Some((did, _handle, created)) = tokens.remove(&response.signature) {
-                    // Single-use: token is consumed on first authentication.
+                    // Single-use: token consumed on first authentication.
+                    // 5-minute TTL limits exposure if a token is leaked.
                     // Broker issues fresh tokens on each /session call for reconnects.
-                    if created.elapsed() < std::time::Duration::from_secs(1800) {
+                    if created.elapsed() < std::time::Duration::from_secs(300) {
                         Some(Ok(did.clone()))
                     } else {
                         Some(Err("Web auth token expired".to_string()))
