@@ -173,14 +173,14 @@ describe('editMessage edge cases', () => {
     // Text may or may not be updated — document behavior
   });
 
-  it('edit with empty new text', () => {
+  it('edit with empty text shows placeholder (FIXED)', () => {
     ensureChannel('#test');
     useStore.getState().addMessage('#test', mkMsg({ id: 'empty_edit', text: 'original' }));
     useStore.getState().editMessage('#test', 'empty_edit', '');
     const ch = useStore.getState().channels.get('#test')!;
     const msg = ch.messages.find(m => m.id === 'empty_edit');
-    // BUG: empty edit makes message invisible
-    expect(msg?.text).toBe('');
+    // FIXED: empty edit shows placeholder
+    expect(msg?.text).toBe('[message cleared]');
   });
 });
 

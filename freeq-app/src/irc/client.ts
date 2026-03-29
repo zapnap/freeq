@@ -928,10 +928,20 @@ async function handleLine(rawLine: string) {
     case 'MODE': {
       const target = msg.params[0];
       if (target.startsWith('#') || target.startsWith('&')) {
-        const mode = msg.params[1] || '';
-        const arg = msg.params[2];
-        store.handleMode(target, mode, arg, from);
-        store.addSystemMessage(target, `${from} set mode ${mode}${arg ? ' ' + arg : ''}`);
+        const modeStr = msg.params[1] || '';
+        // Parse compound mode string: "+ov alice bob" → [+o alice, +v bob]
+        // Modes that take an argument: o, h, v, k, b
+        const argsWithParam = new Set(['o', 'h', 'v', 'k', 'b']);
+        let adding = true;
+        let argIdx = 2; // msg.params index for next arg
+        for (const ch of modeStr) {
+          if (ch === '+') { adding = true; continue; }
+          if (ch === '-') { adding = false; continue; }
+          const modeArg = argsWithParam.has(ch) ? msg.params[argIdx++] : undefined;
+          store.handleMode(target, `${adding ? '+' : '-'}${ch}`, modeArg, from);
+        }
+        const allArgs = msg.params.slice(2).join(' ');
+        store.addSystemMessage(target, `${from} set mode ${modeStr}${allArgs ? ' ' + allArgs : ''}`);
       }
       break;
     }
@@ -1075,7 +1085,7 @@ async function handleLine(rawLine: string) {
     }
     case '330': { // RPL_WHOISACCOUNT (DID)
       const whoisNick = msg.params[1] || '';
-      const did = msg.params[2] || '';
+      const did = msg.params[2]?.trim() || undefined;
       store.updateWhois(whoisNick, { did });
       if (!backgroundWhois.has(whoisNick.toLowerCase())) {
         store.addSystemMessage('server', `  DID: ${did}`);
@@ -1108,7 +1118,7 @@ async function handleLine(rawLine: string) {
     }
     case '671': { // AT handle
       const whoisNick = msg.params[1] || '';
-      const handle = msg.params[2] || '';
+      const handle = msg.params[2]?.trim() || undefined;
       store.updateWhois(whoisNick, { handle });
       if (!backgroundWhois.has(whoisNick.toLowerCase())) {
         store.addSystemMessage('server', `  Handle: ${handle}`);

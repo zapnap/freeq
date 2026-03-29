@@ -350,6 +350,7 @@ export const useStore = create<Store>((set, get) => ({
   }),
 
   addDmTarget: (nick) => set((s) => {
+    if (!nick || !nick.trim()) return {}; // Reject empty nick
     const channels = new Map(s.channels);
     const key = nick.toLowerCase();
     if (!channels.has(key)) {
@@ -373,6 +374,8 @@ export const useStore = create<Store>((set, get) => ({
   }),
 
   setActiveChannel: (name) => set((s) => {
+    // Validate target exists (except 'server' which is always valid)
+    if (name !== 'server' && !s.channels.has(name.toLowerCase())) return {};
     const channels = new Map(s.channels);
     // Mark last-read on the channel we're leaving
     const oldCh = channels.get(s.activeChannel.toLowerCase());
@@ -591,6 +594,8 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   editMessage: (channel, originalMsgId, newText, newMsgId, isStreaming) => set((s) => {
+    // Treat empty edit as a "cleared" message to prevent invisible messages
+    const displayText = newText || (isStreaming ? '' : '[message cleared]');
     const channels = new Map(s.channels);
     const ch = channels.get(channel.toLowerCase());
     if (ch) {
@@ -598,7 +603,7 @@ export const useStore = create<Store>((set, get) => ({
       // where the first edit changes id but subsequent edits still reference the original
       ch.messages = ch.messages.map((m) =>
         (m.id === originalMsgId || m.editOf === originalMsgId)
-          ? { ...m, text: newText, id: newMsgId || m.id, editOf: originalMsgId, isStreaming: !!isStreaming }
+          ? { ...m, text: displayText, id: newMsgId || m.id, editOf: originalMsgId, isStreaming: !!isStreaming }
           : m
       );
       channels.set(channel.toLowerCase(), { ...ch });
@@ -610,7 +615,7 @@ export const useStore = create<Store>((set, get) => ({
       if (batch.target.toLowerCase() !== channel.toLowerCase()) continue;
       batch.messages = batch.messages.map((m) =>
         (m.id === originalMsgId || m.editOf === originalMsgId)
-          ? { ...m, text: newText, id: newMsgId || m.id, editOf: originalMsgId, isStreaming: !!isStreaming }
+          ? { ...m, text: displayText, id: newMsgId || m.id, editOf: originalMsgId, isStreaming: !!isStreaming }
           : m
       );
       batches.set(id, batch);
@@ -631,6 +636,7 @@ export const useStore = create<Store>((set, get) => ({
   }),
 
   addReaction: (channel, msgId, emoji, fromNick) => set((s) => {
+    if (!emoji || !emoji.trim()) return {}; // Reject empty emoji
     const channels = new Map(s.channels);
     const ch = channels.get(channel.toLowerCase());
     if (!ch) return { channels };

@@ -572,11 +572,10 @@ describe('channel list operations', () => {
     expect(s().activeChannel).toBe('server');
   });
 
-  it('BUG: setActiveChannel to non-existent channel accepted', () => {
+  it('FIXED: setActiveChannel to non-existent channel rejected', () => {
     s().setActiveChannel('#fantasy');
-    // BUG: no validation — channel doesn't exist in store
-    expect(s().activeChannel).toBe('#fantasy');
-    // UI will show empty view
+    // FIXED: validation rejects non-existent channels
+    expect(s().activeChannel).toBe('server');
   });
 
   it('removeChannel when not active', () => {
@@ -659,12 +658,12 @@ describe('message edge cases', () => {
     expect(m?.reactions?.has('👨‍👩‍👧‍👦')).toBe(true);
   });
 
-  it('BUG: reaction with empty emoji accepted', () => {
+  it('FIXED: reaction with empty emoji rejected', () => {
     s().addMessage('#msg', msg({ id: 'r2' }));
     s().addReaction('#msg', 'r2', '', 'alice');
     const m = s().channels.get('#msg')!.messages.find(m => m.id === 'r2');
-    // BUG: empty emoji stored as reaction key
-    expect(m?.reactions?.has('')).toBe(true);
+    // FIXED: empty emoji rejected
+    expect(m?.reactions?.has('')).toBeFalsy();
   });
 
   it('multiple reactions from same user', () => {
@@ -712,12 +711,12 @@ describe('message edge cases', () => {
     expect(s().bookmarks.some(b => b.msgId === 'bk2')).toBe(false);
   });
 
-  it('BUG: editMessage to empty text makes message invisible', () => {
+  it('FIXED: editMessage to empty text shows placeholder', () => {
     s().addMessage('#msg', msg({ id: 'inv', text: 'visible' }));
     s().editMessage('#msg', 'inv', '');
     const m = s().channels.get('#msg')!.messages.find(m => m.id === 'inv');
-    // BUG: empty text — message exists but displays as nothing
-    expect(m?.text).toBe('');
+    // FIXED: empty edit gets placeholder text
+    expect(m?.text).toBe('[message cleared]');
   });
 
   it('system message has isSystem flag', () => {
