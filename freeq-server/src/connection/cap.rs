@@ -162,8 +162,8 @@ pub(super) async fn handle_authenticate(
                 if let Some((did, _handle, created)) = tokens.get(&response.signature) {
                     // Reusable within TTL — allows reconnect with same token.
                     // Broker issues fresh tokens on each /session call anyway.
-                    // 30-minute TTL gives ample headroom for reconnects and page reloads.
-                    if created.elapsed() < std::time::Duration::from_secs(1800) {
+                    // 5-minute TTL limits exposure if a token is leaked.
+                    if created.elapsed() < std::time::Duration::from_secs(300) {
                         Some(Ok(did.clone()))
                     } else {
                         Some(Err("Web auth token expired".to_string()))
