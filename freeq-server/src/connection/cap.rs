@@ -136,6 +136,11 @@ pub(super) async fn handle_authenticate(
 ) {
     let param = msg.params.first().map(|s| s.as_str()).unwrap_or("");
 
+    if conn.sasl_failures >= 3 {
+        // Already sent ERROR for too many failures; ignore further AUTHENTICATE attempts.
+        return;
+    }
+
     if param == "*" {
         // SASL abort — client is cancelling the authentication attempt
         conn.sasl_in_progress = false;
@@ -158,11 +163,10 @@ pub(super) async fn handle_authenticate(
         if let Some(response) = sasl::decode_response(param) {
             // Check for web-token method first (server-side OAuth pre-verified)
             let web_token_result = if response.method.as_deref() == Some("web-token") {
-                let tokens = state.web_auth_tokens.lock();
-                if let Some((did, _handle, created)) = tokens.get(&response.signature) {
-                    // Reusable within TTL — allows reconnect with same token.
-                    // Broker issues fresh tokens on each /session call anyway.
-                    // 30-minute TTL gives ample headroom for reconnects and page reloads.
+                let mut tokens = state.web_auth_tokens.lock();
+                if let Some((did, _handle, created)) = tokens.remove(&response.signature) {
+                    // Single-use: token is consumed on first authentication.
+                    // Broker issues fresh tokens on each /session call for reconnects.
                     if created.elapsed() < std::time::Duration::from_secs(1800) {
                         Some(Ok(did.clone()))
                     } else {
@@ -323,6 +327,8 @@ pub(super) async fn handle_authenticate(
                                         session_id,
                                         "ERROR :Too many SASL failures\r\n".to_string(),
                                     );
+                                    // Drop the send channel to force-close the connection.
+                                    state.connections.lock().remove(session_id);
                                 }
                             } else {
                                 // DPoP nonce rotation: PDS requires a fresh nonce.
@@ -360,6 +366,8 @@ pub(super) async fn handle_authenticate(
                                     session_id,
                                     "ERROR :Too many SASL failures\r\n".to_string(),
                                 );
+                                // Drop the send channel to force-close the connection.
+                                state.connections.lock().remove(session_id);
                             }
                         }
                     }

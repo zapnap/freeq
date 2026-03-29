@@ -2116,7 +2116,7 @@ fn oauth_result_html(message: &str, result: Option<&crate::server::OAuthResult>)
             }} catch(e) {{}}
             // Try postMessage to opener as secondary channel
             if (window.opener) {{
-                try {{ window.opener.postMessage({{ type: 'freeq-oauth', result: {json} }}, '*'); }} catch(e) {{}}
+                try {{ window.opener.postMessage({{ type: 'freeq-oauth', result: {json} }}, window.location.origin); }} catch(e) {{}}
             }}
             // Try to close this window after a delay (gives BroadcastChannel time to deliver).
             // The main window will also try popup.close() when it receives the result.
@@ -2369,6 +2369,15 @@ async fn api_upload(
 
 // ── Channel invite page ────────────────────────────────────────────────
 
+/// Escape user-controlled strings for safe embedding in HTML.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#x27;")
+}
+
 async fn channel_invite_page(
     Path(channel): Path<String>,
     State(state): State<Arc<SharedState>>,
@@ -2390,8 +2399,9 @@ async fn channel_invite_page(
     };
 
     let server = &state.config.server_name;
-    let topic_html = topic_text.as_deref().unwrap_or("No topic set");
-    let channel_display = channel.trim_start_matches('#');
+    let topic_html = html_escape(topic_text.as_deref().unwrap_or("No topic set"));
+    let channel_display = html_escape(channel.trim_start_matches('#'));
+    let channel_escaped = html_escape(&channel);
     let member_word = if member_count == 1 {
         "member"
     } else {
@@ -2403,14 +2413,14 @@ async fn channel_invite_page(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{channel} — freeq</title>
-<meta property="og:title" content="{channel} on freeq">
+<title>{channel_escaped} — freeq</title>
+<meta property="og:title" content="{channel_escaped} on freeq">
 <meta property="og:description" content="{topic_html} — {member_count} {member_word} online">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://{server}/join/{channel_display}">
 <meta property="og:image" content="https://{server}/freeq.png">
 <meta name="twitter:card" content="summary">
-<meta name="twitter:title" content="{channel} on freeq">
+<meta name="twitter:title" content="{channel_escaped} on freeq">
 <meta name="twitter:description" content="{topic_html} — {member_count} {member_word} online">
 <meta name="twitter:image" content="https://{server}/freeq.png">
 <style>
@@ -2440,7 +2450,7 @@ h1 .accent{{color:#00d4aa}}
   <div class="channel">#{channel_display}</div>
   <div class="topic">{topic_html}</div>
   <div class="stats"><span>{member_count}</span> {member_word} online on <span>{server}</span></div>
-  <a href="https://{server}/#auto-join={channel}" class="btn">Join Channel</a>
+  <a href="https://{server}/#auto-join={channel_escaped}" class="btn">Join Channel</a>
   <div class="alt">
     Or connect with any IRC client: <code>{server}:6667</code><br>
     <a href="https://freeq.at" target="_blank">Learn more about freeq</a>
@@ -2752,6 +2762,17 @@ async fn api_upload_keys(
 
     match (did, bundle) {
         (Some(did), Some(bundle)) => {
+            // Verify the requester is authenticated as this DID
+            let did_is_authenticated = {
+                let session_dids = state.session_dids.lock();
+                session_dids.values().any(|d| d == did)
+            };
+            if !did_is_authenticated {
+                return (
+                    axum::http::StatusCode::FORBIDDEN,
+                    axum::Json(serde_json::json!({ "error": "DID not authenticated" })),
+                );
+            }
             state
                 .prekey_bundles
                 .lock()

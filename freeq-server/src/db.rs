@@ -90,6 +90,8 @@ pub struct MessageRow {
     pub replaces_msgid: Option<String>,
     /// Unix timestamp when this message was deleted (soft delete).
     pub deleted_at: Option<u64>,
+    /// DID of the sender (if authenticated at send time).
+    pub sender_did: Option<String>,
 }
 
 /// A persisted identity (DID-nick binding).
@@ -213,6 +215,7 @@ impl Db {
             "ALTER TABLE messages ADD COLUMN msgid TEXT",
             "ALTER TABLE messages ADD COLUMN replaces_msgid TEXT",
             "ALTER TABLE messages ADD COLUMN deleted_at INTEGER",
+            "ALTER TABLE messages ADD COLUMN sender_did TEXT",
         ];
         for sql in &migrations {
             // Ignore "duplicate column name" errors — means column already exists
@@ -497,6 +500,7 @@ impl Db {
         timestamp: u64,
         tags: &HashMap<String, String>,
         msgid: Option<&str>,
+        sender_did: Option<&str>,
     ) -> SqlResult<()> {
         let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "{}".to_string());
         let stored_text = if let Some(ref key) = self.encryption_key {
@@ -505,15 +509,16 @@ impl Db {
             text.to_string()
         };
         self.conn.execute(
-            "INSERT INTO messages (channel, sender, text, timestamp, tags_json, msgid)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO messages (channel, sender, text, timestamp, tags_json, msgid, sender_did)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 channel,
                 sender,
                 stored_text,
                 timestamp as i64,
                 tags_json,
-                msgid
+                msgid,
+                sender_did
             ],
         )?;
         Ok(())
@@ -530,7 +535,7 @@ impl Db {
     ) -> SqlResult<Vec<MessageRow>> {
         let mut rows_vec = if let Some(before_ts) = before {
             let mut stmt = self.conn.prepare(
-                "SELECT id, channel, sender, text, timestamp, tags_json, msgid, replaces_msgid, deleted_at
+                "SELECT id, channel, sender, text, timestamp, tags_json, msgid, replaces_msgid, deleted_at, sender_did
                  FROM messages
                  WHERE channel = ?1 AND deleted_at IS NULL AND timestamp < ?2
                  ORDER BY timestamp DESC, id DESC
@@ -543,7 +548,7 @@ impl Db {
             rows.collect::<SqlResult<Vec<_>>>()?
         } else {
             let mut stmt = self.conn.prepare(
-                "SELECT id, channel, sender, text, timestamp, tags_json, msgid, replaces_msgid, deleted_at
+                "SELECT id, channel, sender, text, timestamp, tags_json, msgid, replaces_msgid, deleted_at, sender_did
                  FROM messages
                  WHERE channel = ?1 AND deleted_at IS NULL
                  ORDER BY timestamp DESC, id DESC
@@ -571,7 +576,7 @@ impl Db {
         limit: usize,
     ) -> SqlResult<Vec<MessageRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, channel, sender, text, timestamp, tags_json, msgid, replaces_msgid, deleted_at
+            "SELECT id, channel, sender, text, timestamp, tags_json, msgid, replaces_msgid, deleted_at, sender_did
              FROM messages
              WHERE channel = ?1 AND deleted_at IS NULL AND timestamp > ?2
              ORDER BY timestamp ASC, id ASC
@@ -599,7 +604,7 @@ impl Db {
         limit: usize,
     ) -> SqlResult<Vec<MessageRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, channel, sender, text, timestamp, tags_json, msgid, replaces_msgid, deleted_at
+            "SELECT id, channel, sender, text, timestamp, tags_json, msgid, replaces_msgid, deleted_at, sender_did
              FROM messages
              WHERE channel = ?1 AND deleted_at IS NULL AND timestamp > ?2 AND timestamp < ?3
              ORDER BY timestamp ASC, id ASC
@@ -636,7 +641,7 @@ impl Db {
         msgid: &str,
     ) -> SqlResult<Option<MessageRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, channel, sender, text, timestamp, tags_json, msgid, replaces_msgid, deleted_at
+            "SELECT id, channel, sender, text, timestamp, tags_json, msgid, replaces_msgid, deleted_at, sender_did
              FROM messages
              WHERE channel = ?1 AND msgid = ?2
              LIMIT 1"
@@ -657,7 +662,7 @@ impl Db {
     /// Find a message by msgid across all channels.
     pub fn find_message_by_msgid(&self, msgid: &str) -> SqlResult<Option<MessageRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, channel, sender, text, timestamp, tags_json, msgid, replaces_msgid, deleted_at
+            "SELECT id, channel, sender, text, timestamp, tags_json, msgid, replaces_msgid, deleted_at, sender_did
              FROM messages
              WHERE msgid = ?1 AND deleted_at IS NULL
              LIMIT 1",
@@ -698,6 +703,7 @@ impl Db {
         tags: &HashMap<String, String>,
         msgid: &str,
         replaces_msgid: &str,
+        sender_did: Option<&str>,
     ) -> SqlResult<()> {
         let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "{}".to_string());
         let stored_text = if let Some(ref key) = self.encryption_key {
@@ -706,9 +712,9 @@ impl Db {
             text.to_string()
         };
         self.conn.execute(
-            "INSERT INTO messages (channel, sender, text, timestamp, tags_json, msgid, replaces_msgid)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![channel, sender, stored_text, timestamp as i64, tags_json, msgid, replaces_msgid],
+            "INSERT INTO messages (channel, sender, text, timestamp, tags_json, msgid, replaces_msgid, sender_did)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![channel, sender, stored_text, timestamp as i64, tags_json, msgid, replaces_msgid, sender_did],
         )?;
         Ok(())
     }
@@ -918,6 +924,7 @@ fn map_message_row(row: &rusqlite::Row) -> SqlResult<MessageRow> {
         .get::<_, Option<i64>>(8)
         .unwrap_or(None)
         .map(|v| v as u64);
+    let sender_did: Option<String> = row.get(9).unwrap_or(None);
     Ok(MessageRow {
         id: row.get(0)?,
         channel: row.get(1)?,
@@ -928,6 +935,7 @@ fn map_message_row(row: &rusqlite::Row) -> SqlResult<MessageRow> {
         msgid,
         replaces_msgid,
         deleted_at,
+        sender_did,
     })
 }
 
@@ -1017,6 +1025,7 @@ mod tests {
             1000,
             &HashMap::new(),
             Some("01TEST00000000000000000001"),
+            None,
         )
         .unwrap();
         db.insert_message(
@@ -1026,6 +1035,7 @@ mod tests {
             1001,
             &tags,
             Some("01TEST00000000000000000002"),
+            None,
         )
         .unwrap();
         db.insert_message(
@@ -1035,6 +1045,7 @@ mod tests {
             1002,
             &HashMap::new(),
             Some("01TEST00000000000000000003"),
+            None,
         )
         .unwrap();
 
@@ -1098,9 +1109,9 @@ mod tests {
     #[test]
     fn messages_different_channels() {
         let db = Db::open_memory().unwrap();
-        db.insert_message("#a", "u", "msg-a", 1000, &HashMap::new(), None)
+        db.insert_message("#a", "u", "msg-a", 1000, &HashMap::new(), None, None)
             .unwrap();
-        db.insert_message("#b", "u", "msg-b", 1001, &HashMap::new(), None)
+        db.insert_message("#b", "u", "msg-b", 1001, &HashMap::new(), None, None)
             .unwrap();
 
         let a = db.get_messages("#a", 100, None).unwrap();

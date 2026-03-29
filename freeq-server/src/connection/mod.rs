@@ -29,7 +29,7 @@ pub(crate) mod routing;
 use std::sync::Arc;
 
 use anyhow::Result;
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
+use tokio::io::{AsyncRead, AsyncWrite, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 
@@ -390,15 +390,70 @@ where
         }
 
         line_buf.clear();
-        // Cap line length to 8KB to prevent OOM from malicious clients
+        // Cap line length to 8KB to prevent OOM from malicious clients.
+        // SECURITY: We use a bounded read that limits memory before data
+        // is fully buffered, preventing OOM from clients sending gigabytes
+        // without a newline.
         const MAX_LINE_LEN: usize = 8192;
-        let read_result =
-            tokio::time::timeout(ping_interval, reader.read_line(&mut line_buf)).await;
+        let read_result = tokio::time::timeout(ping_interval, async {
+            use tokio::io::AsyncBufReadExt as _;
+            loop {
+                let buf = reader.fill_buf().await?;
+                if buf.is_empty() {
+                    // EOF
+                    return Ok::<usize, std::io::Error>(0);
+                }
+                // Look for newline in the available buffer
+                let len = if let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+                    // Found newline — take up to and including it
+                    let chunk = &buf[..=pos];
+                    line_buf.push_str(&String::from_utf8_lossy(chunk));
+                    pos + 1
+                } else {
+                    // No newline yet — take the whole buffer
+                    let chunk = buf;
+                    line_buf.push_str(&String::from_utf8_lossy(chunk));
+                    chunk.len()
+                };
+                reader.consume(len);
+                // If we found a newline (line_buf ends with \n), we're done
+                if line_buf.ends_with('\n') {
+                    return Ok(line_buf.len());
+                }
+                // If accumulated data exceeds limit, reject
+                if line_buf.len() >= MAX_LINE_LEN {
+                    return Ok(line_buf.len());
+                }
+            }
+        })
+        .await;
         if line_buf.len() > MAX_LINE_LEN {
             tracing::warn!(%session_id, len = line_buf.len(), "Line too long, dropping");
             let reply =
                 Message::from_server(&server_name, "417", vec!["*", "Input line was too long"]);
             send(&state, &session_id, format!("{reply}\r\n"));
+            // Drain remaining bytes up to the next newline to resync.
+            // Use bounded drain to avoid the same OOM issue.
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                use tokio::io::AsyncBufReadExt as _;
+                let mut drained: usize = 0;
+                const DRAIN_LIMIT: usize = 1_048_576; // 1MB max drain
+                loop {
+                    let buf = reader.fill_buf().await?;
+                    if buf.is_empty() {
+                        break;
+                    }
+                    let nl_pos = buf.iter().position(|&b| b == b'\n');
+                    let consume_len = nl_pos.map(|p| p + 1).unwrap_or(buf.len());
+                    reader.consume(consume_len);
+                    drained += consume_len;
+                    if nl_pos.is_some() || drained >= DRAIN_LIMIT {
+                        break;
+                    }
+                }
+                Ok::<(), std::io::Error>(())
+            })
+            .await;
             continue;
         }
 

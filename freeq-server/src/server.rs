@@ -1575,6 +1575,18 @@ async fn process_s2s_message(
 ) {
     use crate::s2s::S2sMessage;
 
+    // ── C-1 fix: Reject messages from unauthenticated peers ──
+    // Hello and HelloAck are the handshake itself, so they must pass through.
+    if !matches!(&msg, S2sMessage::Hello { .. } | S2sMessage::HelloAck { .. }) {
+        if !manager.authenticated_peers.lock().await.contains(authenticated_peer_id) {
+            tracing::warn!(
+                peer = %authenticated_peer_id,
+                "S2S: dropping message from unauthenticated peer"
+            );
+            return;
+        }
+    }
+
     // ── S2S rate limiting ──
     {
         let now = std::time::SystemTime::now()
@@ -1967,6 +1979,9 @@ async fn process_s2s_message(
                     }
                     drop(channels);
                     let empty_tags = HashMap::new();
+                    // S2S messages: look up sender DID from nick_owners if available
+                    let sender_nick = from.split('!').next().unwrap_or(&from);
+                    let s2s_sender_did = state.nick_owners.lock().get(sender_nick).cloned();
                     state.with_db(|db| {
                         db.insert_message(
                             &target,
@@ -1975,6 +1990,7 @@ async fn process_s2s_message(
                             timestamp,
                             &empty_tags,
                             Some(&msgid),
+                            s2s_sender_did.as_deref(),
                         )
                     });
                 }
@@ -2030,7 +2046,7 @@ async fn process_s2s_message(
                         tags.insert("+freeq.at/sig".to_string(), sig.clone());
                     }
                     state.with_db(|db| {
-                        db.insert_message(&dm_key, &from, &text, timestamp, &tags, Some(&msgid))
+                        db.insert_message(&dm_key, &from, &text, timestamp, &tags, Some(&msgid), sender_did.as_deref())
                     });
                 }
             }
@@ -2041,7 +2057,7 @@ async fn process_s2s_message(
             channel,
             did,
             handle,
-            is_op,
+            is_op: _, // Intentionally ignored — op status derived locally (C-2)
             origin,
             ..
         } => {
@@ -2076,6 +2092,21 @@ async fn process_s2s_message(
                 }
             }
 
+            // Validate DID format if provided — reject obviously bogus values
+            // without making outbound HTTP calls.
+            if let Some(ref d) = did {
+                let valid = (d.starts_with("did:plc:") || d.starts_with("did:web:"))
+                    && d.len() >= 12
+                    && d.len() <= 256;
+                if !valid {
+                    tracing::warn!(
+                        channel = %channel, nick = %nick, did = %d,
+                        "S2S Join rejected: malformed DID"
+                    );
+                    return;
+                }
+            }
+
             // Presence is S2S-event-only (NOT in CRDT — avoids ghost users)
             // Idempotent: set-based, don't assume not present
             {
@@ -2086,13 +2117,19 @@ async fn process_s2s_message(
                     ch.invites.remove(d);
                 }
                 ch.invites.remove(&format!("nick:{nick}"));
+                // Never trust is_op from the peer — determine op status from
+                // local channel state (founder_did / did_ops) to prevent
+                // forged operator claims (C-2 mitigation).
+                let actual_is_op = did.as_deref().is_some_and(|d| {
+                    ch.founder_did.as_deref() == Some(d) || ch.did_ops.contains(d)
+                });
                 ch.remote_members.insert(
                     nick.clone(),
                     RemoteMember {
                         origin: origin.clone(),
                         did: did.clone(),
                         handle: handle.clone(),
-                        is_op,
+                        is_op: actual_is_op,
                     },
                 );
             }
@@ -2444,15 +2481,20 @@ async fn process_s2s_message(
                     }
 
                     // Presence: S2S-event-based (idempotent set-based merge)
+                    // Never trust is_op from the peer — derive from local
+                    // channel state to prevent forged op claims (C-2).
                     if !info.nick_info.is_empty() {
                         for ni in &info.nick_info {
+                            let actual_is_op = ni.did.as_deref().is_some_and(|d| {
+                                ch.founder_did.as_deref() == Some(d) || ch.did_ops.contains(d)
+                            });
                             ch.remote_members.insert(
                                 ni.nick.clone(),
                                 RemoteMember {
                                     origin: peer_id.clone(),
                                     did: ni.did.clone(),
                                     handle: None,
-                                    is_op: ni.is_op,
+                                    is_op: actual_is_op,
                                 },
                             );
                         }
