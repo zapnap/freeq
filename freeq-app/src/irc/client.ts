@@ -1032,10 +1032,14 @@ async function handleLine(rawLine: string) {
     // ── WHOIS ──
     case '311': { // RPL_WHOISUSER: nick user host * :realname
       const whoisNick = msg.params[1] || '';
+      // Reset identity fields — they'll only be re-set if server sends 330/671.
+      // This prevents stale DID/handle from a previous user with the same nick.
       store.updateWhois(whoisNick, {
         user: msg.params[2],
         host: msg.params[3],
         realname: msg.params[5] || msg.params[4],
+        did: undefined,
+        handle: undefined,
       });
       if (!backgroundWhois.has(whoisNick.toLowerCase())) {
         store.addSystemMessage('server', `WHOIS ${whoisNick}: ${msg.params[2]}@${msg.params[3]} (${msg.params[5] || msg.params[4]})`);
