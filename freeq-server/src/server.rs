@@ -1366,6 +1366,28 @@ impl Server {
                             tracing::info!("Pruned {pruned} stale web sessions");
                         }
                     }
+                    // Prune old messages per channel (keep last 50K per channel)
+                    {
+                        const MAX_MESSAGES_PER_CHANNEL: usize = 50_000;
+                        let channel_names: Vec<String> = cleanup_state
+                            .channels
+                            .lock()
+                            .keys()
+                            .cloned()
+                            .collect();
+                        for ch in &channel_names {
+                            let ch = ch.clone();
+                            cleanup_state.with_db(|db| db.prune_messages(&ch, MAX_MESSAGES_PER_CHANNEL));
+                        }
+                    }
+                    // Prune stale IP rate limiter entries
+                    {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        cleanup_state.rest_rate_limiter.prune(now);
+                    }
                 }
             });
         }
@@ -2628,7 +2650,9 @@ pub(crate) async fn process_s2s_message(
                     }
 
                     // Merge invites from remote (additive — don't remove local invites)
+                    // Cap at 500 to prevent resource exhaustion from malicious peers.
                     for invite in &info.invites {
+                        if ch.invites.len() >= 500 { break; }
                         ch.invites.insert(invite.clone());
                     }
 

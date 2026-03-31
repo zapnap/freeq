@@ -490,18 +490,30 @@ export const useStore = create<Store>((set, get) => ({
     return { channels };
   }),
 
-  setTyping: (channel, nick, typing) => set((s) => {
-    const channels = new Map(s.channels);
-    const ch = channels.get(channel.toLowerCase());
-    if (ch) {
-      const member = ch.members.get(nick.toLowerCase());
-      if (member) {
-        ch.members.set(nick.toLowerCase(), { ...member, typing });
-        channels.set(channel.toLowerCase(), { ...ch });
+  setTyping: (channel, nick, typing) => {
+    set((s) => {
+      const channels = new Map(s.channels);
+      const ch = channels.get(channel.toLowerCase());
+      if (ch) {
+        const member = ch.members.get(nick.toLowerCase());
+        if (member) {
+          ch.members.set(nick.toLowerCase(), { ...member, typing });
+          channels.set(channel.toLowerCase(), { ...ch });
+        }
       }
+      return { channels };
+    });
+    // Auto-clear typing after 10 seconds if not refreshed
+    if (typing) {
+      setTimeout(() => {
+        const s = useStore.getState();
+        const ch = s.channels.get(channel.toLowerCase());
+        if (ch?.members.get(nick.toLowerCase())?.typing) {
+          useStore.getState().setTyping(channel, nick, false);
+        }
+      }, 10_000);
     }
-    return { channels };
-  }),
+  },
 
   updateMemberDid: (nick, did) => set((s) => {
     const channels = new Map(s.channels);

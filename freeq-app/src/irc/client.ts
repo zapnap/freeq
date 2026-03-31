@@ -770,7 +770,8 @@ async function handleLine(rawLine: string) {
       }
 
       // Background WHOIS for DM partners to learn their DID (enables E2EE)
-      if (!isChannel && !isSelf && !didForNick(from) && !backgroundWhois.has(from.toLowerCase())) {
+      // Cap at 500 to prevent unbounded memory growth on unreliable servers
+      if (!isChannel && !isSelf && !didForNick(from) && !backgroundWhois.has(from.toLowerCase()) && backgroundWhois.size < 500) {
         backgroundWhois.add(from.toLowerCase());
         raw(`WHOIS ${from}`);
       }

@@ -78,6 +78,28 @@ impl Default for ConnectConfig {
     }
 }
 
+impl ConnectConfig {
+    /// Validate configuration fields. Returns an error describing the first invalid field.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.server_addr.is_empty() {
+            return Err("server_addr must not be empty".into());
+        }
+        if self.nick.is_empty() || self.nick.len() > 64 {
+            return Err("nick must be 1-64 characters".into());
+        }
+        if self.nick.contains(|c: char| c.is_control() || c == ' ' || c == ',' || c == '*' || c == '?' || c == '!' || c == '@' || c == '#') {
+            return Err("nick contains invalid characters".into());
+        }
+        if self.user.is_empty() {
+            return Err("user must not be empty".into());
+        }
+        if self.tls_insecure && !self.tls {
+            tracing::warn!("tls_insecure has no effect when tls is false");
+        }
+        Ok(())
+    }
+}
+
 /// Commands the consumer can send to the client.
 #[derive(Debug)]
 pub enum Command {
@@ -1868,10 +1890,5 @@ fn rand_jitter(max: u64) -> u64 {
     if max == 0 {
         return 0;
     }
-    // Simple pseudo-random using current time
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos() as u64;
-    nanos % max
+    rand::random::<u64>() % max
 }

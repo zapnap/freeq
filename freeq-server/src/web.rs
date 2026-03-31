@@ -2869,6 +2869,12 @@ impl IpRateLimiter {
     pub fn window_secs(&self) -> u64 {
         self.window_secs
     }
+
+    /// Evict entries older than 1 hour to prevent unbounded growth.
+    pub fn prune(&self, now_secs: u64) {
+        let mut map = self.state.lock();
+        map.retain(|_, (ts, _)| now_secs.saturating_sub(*ts) < 3600);
+    }
 }
 
 /// Security headers middleware.
