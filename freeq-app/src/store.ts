@@ -275,7 +275,7 @@ export const useStore = create<Store>((set, get) => ({
   editingMsg: null,
   theme: (localStorage.getItem('freeq-theme') as 'dark' | 'light') || 'dark',
   messageDensity: (localStorage.getItem('freeq-density') as 'default' | 'compact' | 'cozy') || 'default',
-  showJoinPart: localStorage.getItem('freeq-show-join-part') === 'true',
+  showJoinPart: localStorage.getItem('freeq-show-join-part') !== 'false',
   loadExternalMedia: localStorage.getItem('freeq-load-media') !== 'false',
   favorites: new Set(safeJsonParse(localStorage.getItem('freeq-favorites'), [])),
   mutedChannels: new Set(safeJsonParse(localStorage.getItem('freeq-muted'), [])),
