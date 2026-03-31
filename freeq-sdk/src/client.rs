@@ -1629,8 +1629,10 @@ async fn execute_command<W: AsyncWrite + Unpin>(
             }
         }
         Command::Raw(line) => {
-            tracing::debug!("[SDK] Raw command: {}", line);
-            writer.write_all(format!("{line}\r\n").as_bytes()).await?;
+            // Strip CRLF/NUL to prevent protocol injection via raw commands
+            let safe: String = line.chars().filter(|c| *c != '\r' && *c != '\n' && *c != '\0').collect();
+            tracing::debug!("[SDK] Raw command: {}", safe);
+            writer.write_all(format!("{safe}\r\n").as_bytes()).await?;
             tracing::debug!("[SDK] Raw command sent OK");
         }
         Command::Quit(msg) => {

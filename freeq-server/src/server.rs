@@ -1396,6 +1396,7 @@ impl Server {
 
         // Accept plain connections
         const MAX_CONNS_PER_IP: u32 = 20;
+        const MAX_GLOBAL_CONNS: u32 = 10_000;
         tokio::select! {
             _ = shutdown => {}
             result = async {
@@ -1403,6 +1404,15 @@ impl Server {
                     let (stream, addr) = plain_listener.accept().await?;
                     let ip = addr.ip();
                     let state = Arc::clone(&state);
+                    // Global connection limit (defense against distributed DoS)
+                    {
+                        let ip_conns = state.ip_connections.lock();
+                        let total: u32 = ip_conns.values().sum();
+                        if total >= MAX_GLOBAL_CONNS {
+                            tracing::warn!(total, "Connection rejected: global limit reached ({MAX_GLOBAL_CONNS})");
+                            continue;
+                        }
+                    }
                     // Per-IP connection limit
                     {
                         let mut ip_conns = state.ip_connections.lock();
