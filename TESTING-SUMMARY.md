@@ -4,11 +4,11 @@
 
 | Component | Tests | Passing |
 |-----------|-------|---------|
-| Server (Rust) | 638 | 638 |
-| SDK (Rust) | 317 | 317 |
+| Server (Rust) | 642 | 642 |
+| SDK (Rust) | 333 | 333 |
 | Web Client (vitest) | 397 | 397 |
 | Web Client (Playwright E2E) | 48 | 48 |
-| **Total** | **1,400** | **1,400** |
+| **Total** | **1,420** | **1,420** |
 
 ## Bugs Found and Fixed
 
@@ -142,27 +142,34 @@
 - Phantom members prevented
 - Empty/whitespace nicks rejected
 
-## Open Items (documented but not yet fixed)
+## Additional Fixes (final round)
+
+| # | Fix | Details |
+|---|-----|---------|
+| 36 | Per-channel ban limit (500) | Prevents memory/DB exhaustion via MODE +b spam |
+| 37 | Per-channel invite limit (500) | Prevents invite HashSet exhaustion |
+| 38 | Global connection limit (10,000) | Prevents distributed DoS (was per-IP only) |
+| 39 | SDK raw command CRLF injection | Strips \r\n\0 from Command::Raw before wire |
+
+### Total: 39 bugs found and fixed
+
+## Remaining Open Items
 
 ### S2S Federation
-- `is_op` flag in Join/SyncResponse accepted without DID authority proof
+- ~~`is_op` flag accepted without DID authority proof~~ **ALREADY FIXED** (recalculated from founder_did/did_ops)
 - SyncResponse invites merged without founder authority check
 - Dedup high-water mark resets on peer disconnect
 
 ### Web Client
-- Compound MODE parsing fixed in client.ts but store.ts handleMode still takes single-char mode
 - Typing indicators have no auto-timeout
 - backgroundWhois set has no size limit
 - DM targets not in any channel member list lose DID updates
 
 ### SDK
-- `client.rs` Raw command allows CRLF injection (documented)
 - `oauth.rs` has zero test coverage (requires mock PDS)
 - `ConnectConfig` fields not validated
 - Jitter function uses system time instead of crypto random
 
 ### Server
-- No global connection limit (only per-IP)
-- No per-channel ban/invite count limits
 - No automatic database message pruning
 - OAuth flow requires real PDS (untestable in unit tests)
