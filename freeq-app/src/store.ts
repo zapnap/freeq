@@ -535,8 +535,9 @@ export const useStore = create<Store>((set, get) => ({
     const adding = mode.startsWith('+');
     const modeChar = mode.replace(/^[+-]/, '');
 
-    // User modes (+o, +h, +v) — only apply if member exists (don't create phantoms)
-    if ((modeChar === 'o' || modeChar === 'h' || modeChar === 'v') && arg) {
+    // User modes (+o, +h, +v) require an arg (the target nick)
+    const isUserMode = modeChar === 'o' || modeChar === 'h' || modeChar === 'v';
+    if (isUserMode && arg) {
       const member = ch.members.get(arg.toLowerCase());
       if (member) {
         if (modeChar === 'o') member.isOp = adding;
@@ -544,6 +545,9 @@ export const useStore = create<Store>((set, get) => ({
         if (modeChar === 'v') member.isVoiced = adding;
         ch.members.set(arg.toLowerCase(), { ...member });
       }
+    } else if (isUserMode && !arg) {
+      // User mode without arg is a protocol error — ignore silently
+      // (don't fall through to channel modes or "o" gets added to modes set)
     } else {
       // Channel modes
       if (adding) ch.modes.add(modeChar);
