@@ -394,7 +394,7 @@ export function ComposeBox() {
           e.preventDefault();
           // Get the filtered list and pick the selected one
           const filter = slashCmd.filter.toLowerCase();
-          const COMMANDS = ['join','part','topic','invite','kick','op','deop','voice','mode','msg','me','md','whois','away','encrypt','decrypt','policy','raw','help'];
+          const COMMANDS = ['join','part','topic','invite','kick','op','deop','voice','mode','msg','me','md','whois','away','encrypt','decrypt','pins','policy','raw','help'];
           const filtered = filter ? COMMANDS.filter(c => c.startsWith(filter)) : COMMANDS;
           if (filtered[slashCmd.selected]) {
             setText(`/${filtered[slashCmd.selected]} `);
