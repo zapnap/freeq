@@ -3772,4 +3772,171 @@ mod s2s_adversarial_tests {
         assert!(count <= 100,
             "S2S rate limit breached: received {count} messages (limit 100/sec)");
     }
+
+    // ═══════════════════════════════════════════════════════════
+    // S2S DM: delivery and persistence for local recipients
+    // ═══════════════════════════════════════════════════════════
+
+    #[tokio::test]
+    async fn s2s_dm_delivered_to_local_user() {
+        let state = test_state();
+        let mgr = test_manager();
+        setup_authenticated_peer(&state, &mgr).await;
+
+        // Set up local user "bob" who will receive the DM
+        let (tx, mut rx) = mpsc::channel(16);
+        state.connections.lock().insert("bob-sess".to_string(), tx);
+        state.nick_to_session.lock().insert("bob", "bob-sess");
+        state.cap_message_tags.lock().insert("bob-sess".to_string());
+
+        // Remote user sends DM to local bob
+        process_s2s_message(&state, &mgr, PEER, S2sMessage::Privmsg {
+            event_id: format!("{PEER}:dm1"),
+            from: "alice!a@remote".to_string(),
+            target: "bob".to_string(),
+            text: "hey bob, private msg".to_string(),
+            origin: PEER.to_string(),
+            msgid: Some("dm-msg-001".to_string()),
+            sig: None,
+        }).await;
+
+        // Bob should receive the DM
+        let msg = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            rx.recv()
+        ).await.expect("timeout waiting for DM").expect("channel closed");
+        assert!(msg.contains("hey bob, private msg"), "Bob should receive DM text, got: {msg}");
+        assert!(msg.contains("PRIVMSG bob"), "Should be addressed to bob, got: {msg}");
+    }
+
+    fn test_state_with_db() -> Arc<SharedState> {
+        let config = crate::config::ServerConfig {
+            listen_addr: "127.0.0.1:0".to_string(),
+            server_name: "test-s2s".to_string(),
+            challenge_timeout_secs: 60,
+            ..Default::default()
+        };
+        let signing_key = ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng);
+        let db = crate::db::Db::open_memory().unwrap();
+        Arc::new(SharedState {
+            server_name: config.server_name.clone(),
+            challenge_store: crate::sasl::ChallengeStore::new(60),
+            did_resolver: freeq_sdk::did::DidResolver::static_map(HashMap::new()),
+            connections: Mutex::new(HashMap::new()),
+            nick_to_session: Mutex::new(NickMap::new()),
+            session_dids: Mutex::new(HashMap::new()),
+            did_sessions: Mutex::new(HashMap::new()),
+            did_nicks: Mutex::new(HashMap::new()),
+            nick_owners: Mutex::new(HashMap::new()),
+            session_handles: Mutex::new(HashMap::new()),
+            channels: Mutex::new(HashMap::new()),
+            cap_message_tags: Mutex::new(HashSet::new()),
+            cap_multi_prefix: Mutex::new(HashSet::new()),
+            cap_echo_message: Mutex::new(HashSet::new()),
+            cap_server_time: Mutex::new(HashSet::new()),
+            cap_batch: Mutex::new(HashSet::new()),
+            cap_account_notify: Mutex::new(HashSet::new()),
+            cap_extended_join: Mutex::new(HashSet::new()),
+            cap_away_notify: Mutex::new(HashSet::new()),
+            server_opers: Mutex::new(HashSet::new()),
+            session_actor_class: Mutex::new(HashMap::new()),
+            provenance_declarations: Mutex::new(HashMap::new()),
+            agent_presence: Mutex::new(HashMap::new()),
+            agent_heartbeats: Mutex::new(HashMap::new()),
+            oauth_pending: Mutex::new(HashMap::new()),
+            oauth_complete: Mutex::new(HashMap::new()),
+            web_auth_tokens: Mutex::new(HashMap::new()),
+            web_sessions: Mutex::new(HashMap::new()),
+            login_pending: Mutex::new(HashMap::new()),
+            linked_identities: Mutex::new(HashMap::new()),
+            login_completions: Mutex::new(HashMap::new()),
+            session_iroh_ids: Mutex::new(HashMap::new()),
+            session_away: Mutex::new(HashMap::new()),
+            server_iroh_id: Mutex::new(Some("test-server-id".to_string())),
+            iroh_endpoint: Mutex::new(None),
+            s2s_manager: Mutex::new(None),
+            cluster_doc: crate::crdt::ClusterDoc::new("test-server-id"),
+            db: Some(Mutex::new(db)),
+            config,
+            plugin_manager: crate::plugin::PluginManager::new(),
+            policy_engine: None,
+            prekey_bundles: Mutex::new(HashMap::new()),
+            msg_timestamps: Mutex::new(HashMap::new()),
+            ip_connections: Mutex::new(HashMap::new()),
+            msg_signing_key: signing_key,
+            boot_time: std::time::Instant::now(),
+            boot_timestamp: chrono::Utc::now(),
+            session_msg_keys: Mutex::new(HashMap::new()),
+            did_msg_keys: Mutex::new(HashMap::new()),
+            session_client_info: Mutex::new(HashMap::new()),
+            upload_tokens: Mutex::new(HashMap::new()),
+            ghost_sessions: Mutex::new(HashMap::new()),
+            spawned_agents: Mutex::new(HashMap::new()),
+            rest_rate_limiter: crate::web::IpRateLimiter::new(30, 60),
+        })
+    }
+
+    #[tokio::test]
+    async fn s2s_dm_persisted_when_both_dids_known() {
+        let state = test_state_with_db();
+        let mgr = test_manager();
+        setup_authenticated_peer(&state, &mgr).await;
+
+        // Set up nick_owners for both users
+        state.nick_owners.lock().insert("alice".to_string(), "did:plc:alice".to_string());
+        state.nick_owners.lock().insert("bob".to_string(), "did:plc:bob".to_string());
+
+        // Set up local user "bob"
+        let (tx, _rx) = mpsc::channel(16);
+        state.connections.lock().insert("bob-sess".to_string(), tx);
+        state.nick_to_session.lock().insert("bob", "bob-sess");
+
+        // Remote alice sends DM to local bob
+        process_s2s_message(&state, &mgr, PEER, S2sMessage::Privmsg {
+            event_id: format!("{PEER}:dm2"),
+            from: "alice!a@remote".to_string(),
+            target: "bob".to_string(),
+            text: "persisted dm".to_string(),
+            origin: PEER.to_string(),
+            msgid: Some("dm-msg-002".to_string()),
+            sig: None,
+        }).await;
+
+        // Check DB for the DM
+        let dm_key = crate::db::canonical_dm_key("did:plc:alice", "did:plc:bob");
+        let msgs = state.with_db(|db| db.get_messages(&dm_key, 10, None)).unwrap();
+        assert_eq!(msgs.len(), 1, "DM should be persisted in DB");
+        assert_eq!(msgs[0].text, "persisted dm");
+    }
+
+    #[tokio::test]
+    async fn s2s_dm_not_persisted_without_dids() {
+        let state = test_state_with_db();
+        let mgr = test_manager();
+        setup_authenticated_peer(&state, &mgr).await;
+
+        // Only bob has a DID, alice does not
+        state.nick_owners.lock().insert("bob".to_string(), "did:plc:bob".to_string());
+
+        // Set up local user "bob"
+        let (tx, _rx) = mpsc::channel(16);
+        state.connections.lock().insert("bob-sess".to_string(), tx);
+        state.nick_to_session.lock().insert("bob", "bob-sess");
+
+        // Remote alice (no DID) sends DM to local bob
+        process_s2s_message(&state, &mgr, PEER, S2sMessage::Privmsg {
+            event_id: format!("{PEER}:dm3"),
+            from: "alice!a@remote".to_string(),
+            target: "bob".to_string(),
+            text: "unpersisted dm".to_string(),
+            origin: PEER.to_string(),
+            msgid: Some("dm-msg-003".to_string()),
+            sig: None,
+        }).await;
+
+        // DM should NOT be persisted (alice has no DID)
+        let dm_key = crate::db::canonical_dm_key("unknown", "did:plc:bob");
+        let msgs = state.with_db(|db| db.get_messages(&dm_key, 10, None)).unwrap();
+        assert_eq!(msgs.len(), 0, "DM without sender DID should not be persisted");
+    }
 }
