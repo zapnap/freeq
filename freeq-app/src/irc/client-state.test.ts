@@ -443,3 +443,38 @@ describe('WHOIS state mutations', () => {
     expect(s().whoisCache.get('alice')?.did).toBeUndefined();
   });
 });
+
+// ═══════════════════════════════════════════════════════════════
+// SELF-REACTION LOCAL ECHO
+// ═══════════════════════════════════════════════════════════════
+
+describe('sendReaction local echo', () => {
+  beforeEach(() => {
+    useStore.setState({
+      channels: new Map(),
+      nick: 'me',
+      activeChannel: '#react',
+    });
+    s().addChannel('#react');
+    s().addMessage('#react', m({ id: 'target-msg', from: 'alice', text: 'react to this' }));
+  });
+
+  it('BUG: sendReaction should add reaction to store immediately', () => {
+    // This is the core bug: when the user sends a reaction, it should
+    // appear in the store right away (optimistic local echo), not only
+    // when the server echoes the TAGMSG back.
+    s().addReaction('#react', 'target-msg', '👍', 'me');
+    const ch = s().channels.get('#react')!;
+    const msg = ch.messages.find(m => m.id === 'target-msg')!;
+    expect(msg.reactions?.get('👍')?.has('me')).toBe(true);
+  });
+
+  it('server echo of self-reaction should not double-count', () => {
+    // User reacts locally, then server echoes it back
+    s().addReaction('#react', 'target-msg', '🎉', 'me');
+    s().addReaction('#react', 'target-msg', '🎉', 'me'); // echo
+    const ch = s().channels.get('#react')!;
+    const msg = ch.messages.find(m => m.id === 'target-msg')!;
+    expect(msg.reactions?.get('🎉')?.size).toBe(1);
+  });
+});

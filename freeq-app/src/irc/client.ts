@@ -371,6 +371,13 @@ export function sendReaction(target: string, emoji: string, msgId?: string) {
   const tags: Record<string, string> = { '+react': emoji };
   if (msgId) tags['+reply'] = msgId;
   raw(format('TAGMSG', [target], tags));
+
+  // Optimistic local echo — show the reaction immediately.
+  // If the server echoes it back (echo-message cap), addReaction uses a Set
+  // so the duplicate is harmlessly ignored.
+  if (msgId) {
+    useStore.getState().addReaction(target, msgId, emoji, nick);
+  }
 }
 
 export function joinChannel(channel: string) {

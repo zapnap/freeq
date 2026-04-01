@@ -422,4 +422,22 @@ describe('reactions', () => {
     const m = ch.messages.find(m => m.id === 'rmsg')!;
     expect(m.reactions?.size).toBe(2);
   });
+
+  it('self-reaction shows immediately (own nick appears in reaction)', () => {
+    // Simulate: user "me" is logged in and reacts to a message.
+    // The reaction should appear in the store immediately, not only after
+    // the server echoes it back.
+    useStore.getState().addReaction('#react', 'rmsg', '🎉', 'me');
+    const ch = useStore.getState().channels.get('#react')!;
+    const m = ch.messages.find(m => m.id === 'rmsg')!;
+    expect(m.reactions?.get('🎉')?.has('me')).toBe(true);
+  });
+
+  it('duplicate self-reaction does not double-count', () => {
+    useStore.getState().addReaction('#react', 'rmsg', '👍', 'me');
+    useStore.getState().addReaction('#react', 'rmsg', '👍', 'me');
+    const ch = useStore.getState().channels.get('#react')!;
+    const m = ch.messages.find(m => m.id === 'rmsg')!;
+    expect(m.reactions?.get('👍')?.size).toBe(1);
+  });
 });
