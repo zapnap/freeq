@@ -846,6 +846,9 @@ function handleCommand(text: string, activeChannel: string) {
     case 'md': case 'markdown':
       if (args && target) sendMarkdown(target, args);
       break;
+    case 'pins':
+      if (target) rawCommand(`PINS ${target}`);
+      break;
     case 'me': case 'action':
       if (target) rawCommand(`PRIVMSG ${target} :\x01ACTION ${args}\x01`);
       break;
@@ -856,6 +859,7 @@ function handleCommand(text: string, activeChannel: string) {
       store.addSystemMessage(activeChannel, '── Commands ──');
       store.addSystemMessage(activeChannel, '/join #channel  ·  /part  ·  /topic text');
       store.addSystemMessage(activeChannel, '/kick user  ·  /op user  ·  /voice user  ·  /invite user');
+      store.addSystemMessage(activeChannel, '/pins  — list pinned messages');
       store.addSystemMessage(activeChannel, '/whois user  ·  /away reason  ·  /me action');
       store.addSystemMessage(activeChannel, '/msg user text  ·  /mode +o user  ·  /raw IRC_LINE');
       store.addSystemMessage(activeChannel, '/md **bold** text  — send as rendered markdown');
