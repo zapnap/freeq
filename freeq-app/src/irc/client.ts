@@ -42,14 +42,6 @@ function saveJoinedChannels() {
   } catch { /* quota exceeded, etc */ }
 }
 
-function loadSavedChannels(): string[] {
-  try {
-    const stored = localStorage.getItem(SAVED_CHANNELS_KEY);
-    if (stored) return JSON.parse(stored);
-  } catch { /* corrupted */ }
-  return [];
-}
-
 // Background WHOIS lookups (suppress output for these)
 const backgroundWhois = new Set<string>();
 
@@ -1091,7 +1083,7 @@ async function handleLine(rawLine: string) {
       if (!backgroundWhois.has(whoisNick.toLowerCase())) {
         store.addSystemMessage('server', `  DID: ${did}`);
       }
-      if (whoisNick) {
+      if (whoisNick && did) {
         store.updateMemberDid(whoisNick, did);
       }
       if (did) {
