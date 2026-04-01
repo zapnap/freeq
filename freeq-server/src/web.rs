@@ -1198,33 +1198,44 @@ async fn api_channel_pins(
     } else {
         format!("#{name}")
     };
-    let channels = state.channels.lock();
-    match channels.get(&channel) {
-        Some(ch) => {
-            let pins: Vec<serde_json::Value> = ch
-                .pins
-                .iter()
-                .filter_map(|p| {
-                    // Look up current message content from history
-                    let msg = ch.history.iter().find(|m| m.msgid.as_deref() == Some(&p.msgid))?;
-                    Some(serde_json::json!({
-                        "msgid": p.msgid,
-                        "from": msg.from,
-                        "text": msg.text,
-                        "timestamp": chrono::DateTime::from_timestamp(msg.timestamp as i64, 0)
-                            .map(|dt| dt.to_rfc3339())
-                            .unwrap_or_default(),
-                        "pinned_by": p.pinned_by,
-                        "pinned_at": p.pinned_at,
-                    }))
-                })
-                .collect();
-            Ok(Json(
-                serde_json::json!({ "channel": channel, "pins": pins }),
-            ))
+    let pin_list = {
+        let channels = state.channels.lock();
+        match channels.get(&channel) {
+            Some(ch) => ch.pins.clone(),
+            None => return Err(StatusCode::NOT_FOUND),
         }
-        None => Err(StatusCode::NOT_FOUND),
+    };
+
+    let mut pins: Vec<serde_json::Value> = Vec::new();
+    for p in &pin_list {
+        // Try in-memory history first, fall back to DB
+        let (from, text, timestamp) = {
+            let channels = state.channels.lock();
+            let ch = channels.get(&channel);
+            ch.and_then(|c| {
+                c.history.iter().find(|m| m.msgid.as_deref() == Some(&p.msgid)).map(|msg| {
+                    (msg.from.clone(), msg.text.clone(), msg.timestamp)
+                })
+            })
+        }.or_else(|| {
+            state.with_db(|db| db.find_message_by_msgid(&p.msgid))
+                .flatten()
+                .map(|row| (row.sender, row.text, row.timestamp))
+        }).unwrap_or_else(|| ("unknown".to_string(), "[message not found]".to_string(), p.pinned_at));
+
+        pins.push(serde_json::json!({
+            "msgid": p.msgid,
+            "from": from,
+            "text": text,
+            "timestamp": chrono::DateTime::from_timestamp(timestamp as i64, 0)
+                .map(|dt| dt.to_rfc3339())
+                .unwrap_or_default(),
+            "pinned_by": p.pinned_by,
+            "pinned_at": p.pinned_at,
+        }));
     }
+
+    Ok(Json(serde_json::json!({ "channel": channel, "pins": pins })))
 }
 
 async fn api_user(
