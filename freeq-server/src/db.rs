@@ -1251,6 +1251,74 @@ mod tests {
         let loaded = db.load_channels().unwrap();
         assert_eq!(loaded.get("#test").unwrap().bans.len(), 1);
     }
+
+    #[test]
+    fn store_and_get_reactions() {
+        let db = Db::open_memory().unwrap();
+        db.store_reaction("msg001", "#test", "alice", Some("did:plc:alice"), "👍", 1000).unwrap();
+        db.store_reaction("msg001", "#test", "bob", None, "👍", 1001).unwrap();
+        db.store_reaction("msg001", "#test", "alice", Some("did:plc:alice"), "❤️", 1002).unwrap();
+
+        let reactions = db.get_reactions_for_messages(&["msg001"]).unwrap();
+        let msg_reactions = reactions.get("msg001").unwrap();
+        assert_eq!(msg_reactions.len(), 3);
+        assert_eq!(msg_reactions[0].reactor_nick, "alice");
+        assert_eq!(msg_reactions[0].emoji, "👍");
+        assert_eq!(msg_reactions[1].reactor_nick, "bob");
+        assert_eq!(msg_reactions[2].emoji, "❤️");
+    }
+
+    #[test]
+    fn duplicate_reaction_ignored() {
+        let db = Db::open_memory().unwrap();
+        db.store_reaction("msg001", "#test", "alice", None, "👍", 1000).unwrap();
+        db.store_reaction("msg001", "#test", "alice", None, "👍", 1001).unwrap(); // duplicate
+
+        let reactions = db.get_reactions_for_messages(&["msg001"]).unwrap();
+        assert_eq!(reactions.get("msg001").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn remove_reaction() {
+        let db = Db::open_memory().unwrap();
+        db.store_reaction("msg001", "#test", "alice", None, "👍", 1000).unwrap();
+        db.store_reaction("msg001", "#test", "alice", None, "❤️", 1001).unwrap();
+
+        let removed = db.remove_reaction("msg001", "alice", "👍").unwrap();
+        assert_eq!(removed, 1);
+
+        let reactions = db.get_reactions_for_messages(&["msg001"]).unwrap();
+        let msg_reactions = reactions.get("msg001").unwrap();
+        assert_eq!(msg_reactions.len(), 1);
+        assert_eq!(msg_reactions[0].emoji, "❤️");
+    }
+
+    #[test]
+    fn get_reactions_multiple_messages() {
+        let db = Db::open_memory().unwrap();
+        db.store_reaction("msg001", "#test", "alice", None, "👍", 1000).unwrap();
+        db.store_reaction("msg002", "#test", "bob", None, "🎉", 1001).unwrap();
+        db.store_reaction("msg003", "#test", "carol", None, "❤️", 1002).unwrap();
+
+        let reactions = db.get_reactions_for_messages(&["msg001", "msg002", "msg003"]).unwrap();
+        assert!(reactions.contains_key("msg001"));
+        assert!(reactions.contains_key("msg002"));
+        assert!(reactions.contains_key("msg003"));
+    }
+
+    #[test]
+    fn get_reactions_empty_input() {
+        let db = Db::open_memory().unwrap();
+        let reactions = db.get_reactions_for_messages(&[]).unwrap();
+        assert!(reactions.is_empty());
+    }
+
+    #[test]
+    fn get_reactions_no_matches() {
+        let db = Db::open_memory().unwrap();
+        let reactions = db.get_reactions_for_messages(&["nonexistent"]).unwrap();
+        assert!(reactions.is_empty());
+    }
 }
 
 // ── Agent governance DB methods ────────────────────────────────────
