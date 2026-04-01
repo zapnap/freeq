@@ -580,7 +580,7 @@ export const useStore = create<Store>((set, get) => ({
     }
 
     ch.messages = [...ch.messages, msg].slice(-1000);
-    if (s.activeChannel.toLowerCase() !== channel.toLowerCase()) {
+    if (!msg.isSystem && s.activeChannel.toLowerCase() !== channel.toLowerCase()) {
       ch.unreadCount++;
     }
     channels.set(channel.toLowerCase(), ch);
