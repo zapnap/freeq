@@ -363,7 +363,18 @@ impl Db {
             ",
         )?;
 
-        // Phase 3: reactions table
+        // Phase 3: reactions + pins tables
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS pins (
+                channel      TEXT NOT NULL,
+                msgid        TEXT NOT NULL,
+                pinned_by    TEXT NOT NULL,
+                pinned_at    INTEGER NOT NULL,
+                UNIQUE(channel, msgid)
+            );
+            CREATE INDEX IF NOT EXISTS idx_pins_channel ON pins(channel, pinned_at DESC);
+            ",
+        )?;
         self.conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS reactions (
                 target_msgid TEXT NOT NULL,
@@ -506,6 +517,32 @@ impl Db {
             let (channel, ban) = row?;
             if let Some(ch) = channels.get_mut(&channel) {
                 ch.bans.push(ban);
+            }
+        }
+
+        // Load pins
+        let mut stmt = self
+            .conn
+            .prepare("SELECT channel, msgid, pinned_by, pinned_at FROM pins ORDER BY pinned_at DESC")?;
+        let pin_rows = stmt.query_map([], |row| {
+            let channel: String = row.get(0)?;
+            let msgid: String = row.get(1)?;
+            let pinned_by: String = row.get(2)?;
+            let pinned_at: i64 = row.get(3)?;
+            Ok((
+                channel,
+                crate::server::PinnedMessage {
+                    msgid,
+                    pinned_by,
+                    pinned_at: pinned_at as u64,
+                },
+            ))
+        })?;
+
+        for row in pin_rows {
+            let (channel, pin) = row?;
+            if let Some(ch) = channels.get_mut(&channel) {
+                ch.pins.push(pin);
             }
         }
 
@@ -829,6 +866,50 @@ impl Db {
             result.entry(row.target_msgid.clone()).or_default().push(row);
         }
         Ok(result)
+    }
+
+    // ── Pins ──────────────────────────────────────────────────────────
+
+    /// Store a pin. Duplicate (channel, msgid) is ignored.
+    pub fn store_pin(
+        &self,
+        channel: &str,
+        msgid: &str,
+        pinned_by: &str,
+        pinned_at: u64,
+    ) -> SqlResult<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO pins (channel, msgid, pinned_by, pinned_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![channel, msgid, pinned_by, pinned_at as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Remove a pin.
+    pub fn remove_pin(&self, channel: &str, msgid: &str) -> SqlResult<usize> {
+        let changed = self.conn.execute(
+            "DELETE FROM pins WHERE channel = ?1 AND msgid = ?2",
+            params![channel, msgid],
+        )?;
+        Ok(changed)
+    }
+
+    /// Get all pins for a channel, most recent first.
+    pub fn get_pins(&self, channel: &str) -> SqlResult<Vec<crate::server::PinnedMessage>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT msgid, pinned_by, pinned_at FROM pins
+             WHERE channel = ?1
+             ORDER BY pinned_at DESC"
+        )?;
+        let rows = stmt.query_map(params![channel], |row| {
+            Ok(crate::server::PinnedMessage {
+                msgid: row.get(0)?,
+                pinned_by: row.get(1)?,
+                pinned_at: row.get::<_, i64>(2)? as u64,
+            })
+        })?;
+        rows.collect()
     }
 
     /// Get raw (potentially encrypted) message text for testing.
@@ -1318,6 +1399,82 @@ mod tests {
         let db = Db::open_memory().unwrap();
         let reactions = db.get_reactions_for_messages(&["nonexistent"]).unwrap();
         assert!(reactions.is_empty());
+    }
+
+    // ── Pin persistence tests ──
+
+    #[test]
+    fn store_and_get_pins() {
+        let db = Db::open_memory().unwrap();
+        db.store_pin("#test", "msg001", "alice", 1000).unwrap();
+        db.store_pin("#test", "msg002", "bob", 1001).unwrap();
+
+        let pins = db.get_pins("#test").unwrap();
+        assert_eq!(pins.len(), 2);
+        // Most recent first
+        assert_eq!(pins[0].msgid, "msg002");
+        assert_eq!(pins[0].pinned_by, "bob");
+        assert_eq!(pins[1].msgid, "msg001");
+    }
+
+    #[test]
+    fn duplicate_pin_ignored() {
+        let db = Db::open_memory().unwrap();
+        db.store_pin("#test", "msg001", "alice", 1000).unwrap();
+        db.store_pin("#test", "msg001", "bob", 1001).unwrap(); // same msgid
+
+        let pins = db.get_pins("#test").unwrap();
+        assert_eq!(pins.len(), 1);
+        assert_eq!(pins[0].pinned_by, "alice"); // first pinner wins
+    }
+
+    #[test]
+    fn remove_pin() {
+        let db = Db::open_memory().unwrap();
+        db.store_pin("#test", "msg001", "alice", 1000).unwrap();
+        db.store_pin("#test", "msg002", "bob", 1001).unwrap();
+
+        let removed = db.remove_pin("#test", "msg001").unwrap();
+        assert_eq!(removed, 1);
+
+        let pins = db.get_pins("#test").unwrap();
+        assert_eq!(pins.len(), 1);
+        assert_eq!(pins[0].msgid, "msg002");
+    }
+
+    #[test]
+    fn remove_nonexistent_pin() {
+        let db = Db::open_memory().unwrap();
+        let removed = db.remove_pin("#test", "nonexistent").unwrap();
+        assert_eq!(removed, 0);
+    }
+
+    #[test]
+    fn pins_separate_per_channel() {
+        let db = Db::open_memory().unwrap();
+        db.store_pin("#chan1", "msg001", "alice", 1000).unwrap();
+        db.store_pin("#chan2", "msg002", "bob", 1001).unwrap();
+
+        let pins1 = db.get_pins("#chan1").unwrap();
+        let pins2 = db.get_pins("#chan2").unwrap();
+        assert_eq!(pins1.len(), 1);
+        assert_eq!(pins2.len(), 1);
+        assert_eq!(pins1[0].msgid, "msg001");
+        assert_eq!(pins2[0].msgid, "msg002");
+    }
+
+    #[test]
+    fn load_pins_on_channel_startup() {
+        let db = Db::open_memory().unwrap();
+        let ch = ChannelState::default();
+        db.save_channel("#test", &ch).unwrap();
+        db.store_pin("#test", "msg001", "alice", 1000).unwrap();
+        db.store_pin("#test", "msg002", "bob", 1001).unwrap();
+
+        let channels = db.load_channels().unwrap();
+        let loaded = channels.get("#test").unwrap();
+        assert_eq!(loaded.pins.len(), 2);
+        assert_eq!(loaded.pins[0].msgid, "msg002"); // most recent first
     }
 }
 
