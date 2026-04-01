@@ -846,9 +846,25 @@ function handleCommand(text: string, activeChannel: string) {
     case 'md': case 'markdown':
       if (args && target) sendMarkdown(target, args);
       break;
-    case 'pins':
-      if (target) rawCommand(`PINS ${target}`);
+    case 'pins': {
+      if (!target) break;
+      const chanName = target.startsWith('#') ? target.slice(1) : target;
+      fetch(`${window.location.origin}/api/v1/channels/${encodeURIComponent(chanName)}/pins`)
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+          const pins = data?.pins || [];
+          if (pins.length === 0) {
+            store.addSystemMessage(activeChannel, `No pinned messages in ${target}`);
+          } else {
+            store.addSystemMessage(activeChannel, `── Pinned messages in ${target} (${pins.length}) ──`);
+            for (const p of pins) {
+              store.addSystemMessage(activeChannel, `📌 ${p.from}: ${p.text}`);
+            }
+          }
+        })
+        .catch(() => store.addSystemMessage(activeChannel, `Failed to fetch pins for ${target}`));
       break;
+    }
     case 'me': case 'action':
       if (target) rawCommand(`PRIVMSG ${target} :\x01ACTION ${args}\x01`);
       break;
