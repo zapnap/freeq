@@ -108,6 +108,20 @@ pub(super) fn handle_tagmsg(
         }
     }
 
+    // ── Persist reactions (+react with +reply) ──
+    if let (Some(emoji), Some(target_msgid)) = (tags.get("+react"), tags.get("+reply")) {
+        let nick = conn.nick_or_star().to_string();
+        let did = conn.authenticated_did.clone();
+        let channel = target.to_string();
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let emoji = emoji.clone();
+        let target_msgid = target_msgid.clone();
+        state.with_db(|db| db.store_reaction(&target_msgid, &channel, &nick, did.as_deref(), &emoji, ts));
+    }
+
     let hostmask = conn.hostmask();
 
     let timestamp = std::time::SystemTime::now()
@@ -891,6 +905,12 @@ pub(super) fn handle_chathistory(
         );
     }
 
+    // Fetch reactions for all messages in this batch
+    let msgids: Vec<&str> = messages.iter().filter_map(|r| r.msgid.as_deref()).collect();
+    let reactions: std::collections::HashMap<String, Vec<crate::db::ReactionRow>> =
+        state.with_db(|db| db.get_reactions_for_messages(&msgids))
+            .unwrap_or_default();
+
     for row in &messages {
         let mut tags = if has_tags {
             row.tags.clone()
@@ -901,6 +921,20 @@ pub(super) fn handle_chathistory(
         if has_tags {
             if let Some(ref mid) = row.msgid {
                 tags.insert("msgid".to_string(), mid.clone());
+                // Include reactions as +freeq.at/reactions tag
+                // Format: emoji1:nick1,nick2;emoji2:nick3
+                if let Some(reaction_rows) = reactions.get(mid) {
+                    let mut by_emoji: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
+                    for r in reaction_rows {
+                        by_emoji.entry(&r.emoji).or_default().push(&r.reactor_nick);
+                    }
+                    let encoded: Vec<String> = by_emoji.iter().map(|(emoji, nicks)| {
+                        format!("{}:{}", emoji, nicks.join(","))
+                    }).collect();
+                    if !encoded.is_empty() {
+                        tags.insert("+freeq.at/reactions".to_string(), encoded.join(";"));
+                    }
+                }
             }
             if let Some(ref replaces) = row.replaces_msgid {
                 tags.entry("+draft/edit".to_string())

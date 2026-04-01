@@ -91,6 +91,17 @@ pub struct Db {
     encryption_key: Option<[u8; 32]>,
 }
 
+/// A persisted reaction row.
+#[derive(Debug, Clone)]
+pub struct ReactionRow {
+    pub target_msgid: String,
+    pub channel: String,
+    pub reactor_nick: String,
+    pub reactor_did: Option<String>,
+    pub emoji: String,
+    pub timestamp: u64,
+}
+
 /// A persisted message row.
 #[derive(Debug, Clone)]
 pub struct MessageRow {
@@ -349,6 +360,22 @@ impl Db {
             CREATE INDEX IF NOT EXISTS idx_coord_channel ON coordination_events(channel, timestamp);
             CREATE INDEX IF NOT EXISTS idx_coord_ref ON coordination_events(ref_id);
             CREATE INDEX IF NOT EXISTS idx_coord_actor ON coordination_events(actor_did, timestamp);
+            ",
+        )?;
+
+        // Phase 3: reactions table
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS reactions (
+                target_msgid TEXT NOT NULL,
+                channel      TEXT NOT NULL,
+                reactor_nick TEXT NOT NULL,
+                reactor_did  TEXT,
+                emoji        TEXT NOT NULL,
+                timestamp    INTEGER NOT NULL,
+                UNIQUE(target_msgid, reactor_nick, emoji)
+            );
+            CREATE INDEX IF NOT EXISTS idx_reactions_msgid ON reactions(target_msgid);
+            CREATE INDEX IF NOT EXISTS idx_reactions_channel ON reactions(channel);
             ",
         )?;
 
@@ -733,6 +760,75 @@ impl Db {
             params![channel, sender, stored_text, timestamp as i64, tags_json, msgid, replaces_msgid, sender_did],
         )?;
         Ok(())
+    }
+
+    // ── Reactions ──────────────────────────────────────────────────────
+
+    /// Store a reaction. Upsert — duplicate (msgid, nick, emoji) is ignored.
+    pub fn store_reaction(
+        &self,
+        target_msgid: &str,
+        channel: &str,
+        reactor_nick: &str,
+        reactor_did: Option<&str>,
+        emoji: &str,
+        timestamp: u64,
+    ) -> SqlResult<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO reactions (target_msgid, channel, reactor_nick, reactor_did, emoji, timestamp)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![target_msgid, channel, reactor_nick, reactor_did, emoji, timestamp as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Remove a reaction.
+    pub fn remove_reaction(
+        &self,
+        target_msgid: &str,
+        reactor_nick: &str,
+        emoji: &str,
+    ) -> SqlResult<usize> {
+        let changed = self.conn.execute(
+            "DELETE FROM reactions WHERE target_msgid = ?1 AND reactor_nick = ?2 AND emoji = ?3",
+            params![target_msgid, reactor_nick, emoji],
+        )?;
+        Ok(changed)
+    }
+
+    /// Get reactions for a list of message IDs, grouped by msgid -> emoji -> nicks.
+    pub fn get_reactions_for_messages(
+        &self,
+        msgids: &[&str],
+    ) -> SqlResult<HashMap<String, Vec<ReactionRow>>> {
+        if msgids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let placeholders: Vec<String> = msgids.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect();
+        let sql = format!(
+            "SELECT target_msgid, channel, reactor_nick, reactor_did, emoji, timestamp
+             FROM reactions WHERE target_msgid IN ({})
+             ORDER BY timestamp ASC",
+            placeholders.join(", ")
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params: Vec<&dyn rusqlite::ToSql> = msgids.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(params.as_slice(), |row| {
+            Ok(ReactionRow {
+                target_msgid: row.get(0)?,
+                channel: row.get(1)?,
+                reactor_nick: row.get(2)?,
+                reactor_did: row.get(3)?,
+                emoji: row.get(4)?,
+                timestamp: row.get::<_, i64>(5)? as u64,
+            })
+        })?;
+        let mut result: HashMap<String, Vec<ReactionRow>> = HashMap::new();
+        for row in rows {
+            let row = row?;
+            result.entry(row.target_msgid.clone()).or_default().push(row);
+        }
+        Ok(result)
     }
 
     /// Get raw (potentially encrypted) message text for testing.

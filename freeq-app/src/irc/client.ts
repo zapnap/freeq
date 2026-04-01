@@ -763,6 +763,25 @@ async function handleLine(rawLine: string) {
         isStreaming: msg.tags['+freeq.at/streaming'] === '1',
       };
 
+      // Parse persisted reactions from CHATHISTORY
+      const reactionsTag = msg.tags['+freeq.at/reactions'];
+      if (reactionsTag && message.id) {
+        // Format: emoji1:nick1,nick2;emoji2:nick3
+        for (const part of reactionsTag.split(';')) {
+          const [emoji, nicks] = part.split(':');
+          if (emoji && nicks) {
+            for (const n of nicks.split(',')) {
+              if (n) {
+                message.reactions = message.reactions || new Map();
+                const set = message.reactions.get(emoji) || new Set();
+                set.add(n);
+                message.reactions.set(emoji, set);
+              }
+            }
+          }
+        }
+      }
+
       // Ensure DM buffer exists
       if (!isChannel && !useStore.getState().channels.has(bufName.toLowerCase())) {
         useStore.getState().addChannel(bufName);
