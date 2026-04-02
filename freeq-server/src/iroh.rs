@@ -151,7 +151,7 @@ pub async fn start(state: Arc<SharedState>, bind_port: Option<u16>) -> Result<ir
     let key_path = state.config.data_dir().join("iroh-key.secret");
     let secret_key = load_or_create_secret_key(&key_path)?;
 
-    let mut builder = iroh::Endpoint::builder()
+    let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
         .secret_key(secret_key)
         .alpns(vec![ALPN.to_vec(), crate::s2s::S2S_ALPN.to_vec()]);
 

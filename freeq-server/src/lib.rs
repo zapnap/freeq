@@ -3,6 +3,7 @@
 
 pub mod av;
 pub mod av_artifacts;
+pub mod av_media;
 pub mod config;
 pub mod connection;
 pub mod crdt;
