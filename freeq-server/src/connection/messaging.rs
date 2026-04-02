@@ -579,24 +579,18 @@ pub(super) fn handle_privmsg(
                 // Target is local — deliver to ALL sessions for target's DID (multi-device).
                 // Also relay via S2S so the DM is visible on other federated servers
                 // (e.g. sender logged into multiple servers).
-                {
-                    let has_s2s = state.s2s_manager.lock().is_some();
-                    if has_s2s {
-                        let origin = state.server_iroh_id.lock().clone().unwrap_or_default();
-                        let sig = pm_tags.get("+freeq.at/sig").cloned();
-                        if let Some(m) = state.s2s_manager.lock().clone() {
-                            m.broadcast(crate::s2s::S2sMessage::Privmsg {
-                                event_id: s2s_next_event_id(state),
-                                from: conn.hostmask(),
-                                target: target.to_string(),
-                                text: text.to_string(),
-                                origin,
-                                msgid: Some(pm_msgid.clone()),
-                                sig,
-                            });
-                        }
-                    }
-                }
+                super::helpers::s2s_broadcast(
+                    state,
+                    crate::s2s::S2sMessage::Privmsg {
+                        event_id: s2s_next_event_id(state),
+                        from: conn.hostmask(),
+                        target: target.to_string(),
+                        text: text.to_string(),
+                        origin: state.server_iroh_id.lock().clone().unwrap_or_default(),
+                        msgid: Some(pm_msgid.clone()),
+                        sig: pm_tags.get("+freeq.at/sig").cloned(),
+                    },
+                );
                 // Send RPL_AWAY if target is away
                 if let Some(away_msg) = state.session_away.lock().get(session) {
                     let nick = conn.nick_or_star();
