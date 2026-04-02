@@ -887,6 +887,16 @@ async function handleLine(rawLine: string) {
       if (typing) {
         store.setTyping(bufName, from, typing === 'active');
       }
+
+      // Handle AV session state updates
+      const avState = msg.tags['+freeq.at/av-state'];
+      const avId = msg.tags['+freeq.at/av-id'];
+      if (avState && avId) {
+        const avActor = msg.tags['+freeq.at/av-actor'] || '';
+        const avCount = parseInt(msg.tags['+freeq.at/av-participants'] || '0', 10);
+        const avTitle = msg.tags['+freeq.at/av-title'];
+        handleAvSessionState(avId, avState, target, avActor, avCount, avTitle);
+      }
       break;
     }
 
@@ -1249,4 +1259,106 @@ function handleAuthenticate(msg: IRCMessage) {
     }
     raw('AUTHENTICATE +');
   }
+}
+
+// ── AV session helpers ──
+
+function handleAvSessionState(
+  sessionId: string,
+  action: string,
+  channel: string,
+  actorNick: string,
+  _participantCount: number,
+  title?: string,
+) {
+  const store = useStore.getState();
+  const existing = store.avSessions.get(sessionId);
+
+  switch (action) {
+    case 'started': {
+      const session: import('../store').AvSession = {
+        id: sessionId,
+        channel,
+        createdBy: '', // DID not in TAGMSG; will be filled from REST if needed
+        createdByNick: actorNick,
+        title: title || undefined,
+        participants: new Map([[actorNick, {
+          did: '',
+          nick: actorNick,
+          role: 'host' as const,
+          joinedAt: new Date(),
+        }]]),
+        state: 'active',
+        startedAt: new Date(),
+      };
+      store.updateAvSession(session);
+      break;
+    }
+    case 'joined': {
+      if (existing && existing.state === 'active') {
+        const updated = { ...existing, participants: new Map(existing.participants) };
+        updated.participants.set(actorNick, {
+          did: '',
+          nick: actorNick,
+          role: 'speaker' as const,
+          joinedAt: new Date(),
+        });
+        store.updateAvSession(updated);
+      }
+      break;
+    }
+    case 'left': {
+      if (existing && existing.state === 'active') {
+        const updated = { ...existing, participants: new Map(existing.participants) };
+        updated.participants.delete(actorNick);
+        store.updateAvSession(updated);
+      }
+      break;
+    }
+    case 'ended': {
+      if (existing) {
+        store.updateAvSession({ ...existing, state: 'ended', participants: new Map() });
+        // Remove ended sessions after a brief delay (so UI can show "ended" state)
+        setTimeout(() => store.removeAvSession(sessionId), 5000);
+      }
+      // If we were in this session, clear active
+      if (store.activeAvSession === sessionId) {
+        store.setActiveAvSession(null);
+      }
+      break;
+    }
+  }
+}
+
+/// Start an AV session in a channel.
+export function startAvSession(channel: string, title?: string) {
+  const tags: Record<string, string> = { '+freeq.at/av-start': '' };
+  if (title) tags['+freeq.at/av-title'] = title;
+  raw(format('TAGMSG', [channel], tags));
+}
+
+/// Join an AV session (by ID or channel's active session).
+export function joinAvSession(channel: string, sessionId?: string) {
+  const tags: Record<string, string> = { '+freeq.at/av-join': '' };
+  if (sessionId) tags['+freeq.at/av-id'] = sessionId;
+  raw(format('TAGMSG', [channel], tags));
+}
+
+/// Leave the current AV session.
+export function leaveAvSession(channel: string, sessionId: string) {
+  const tags: Record<string, string> = {
+    '+freeq.at/av-leave': '',
+    '+freeq.at/av-id': sessionId,
+  };
+  raw(format('TAGMSG', [channel], tags));
+  useStore.getState().setActiveAvSession(null);
+}
+
+/// End an AV session (host/ops only).
+export function endAvSession(channel: string, sessionId: string) {
+  const tags: Record<string, string> = {
+    '+freeq.at/av-end': '',
+    '+freeq.at/av-id': sessionId,
+  };
+  raw(format('TAGMSG', [channel], tags));
 }

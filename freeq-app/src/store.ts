@@ -93,6 +93,26 @@ export interface ChannelListEntry {
   count: number;
 }
 
+// ── AV Sessions ──
+
+export interface AvSession {
+  id: string;
+  channel: string | null;
+  createdBy: string;       // DID
+  createdByNick: string;
+  title?: string;
+  participants: Map<string, AvParticipant>;
+  state: 'active' | 'ended';
+  startedAt: Date;
+}
+
+export interface AvParticipant {
+  did: string;
+  nick: string;
+  role: 'host' | 'speaker' | 'listener';
+  joinedAt: Date;
+}
+
 export interface Store {
   // Connection
   connectionState: TransportState;
@@ -136,6 +156,10 @@ export interface Store {
   lightboxUrl: string | null;
   threadMsgId: string | null;
   threadChannel: string | null;
+
+  // AV sessions
+  avSessions: Map<string, AvSession>;
+  activeAvSession: string | null;  // session ID we're in
 
   // Actions — connection
   setConnectionState: (state: TransportState) => void;
@@ -215,6 +239,11 @@ export interface Store {
   openThread: (msgId: string, channel: string) => void;
   closeThread: () => void;
 
+  // AV session actions
+  updateAvSession: (session: AvSession) => void;
+  removeAvSession: (id: string) => void;
+  setActiveAvSession: (id: string | null) => void;
+
   // Join gate
   joinGateChannel: string | null;
   setJoinGateChannel: (channel: string | null) => void;
@@ -290,6 +319,8 @@ export const useStore = create<Store>((set, get) => ({
   lightboxUrl: null,
   threadMsgId: null,
   threadChannel: null,
+  avSessions: new Map(),
+  activeAvSession: null,
   joinGateChannel: null,
   channelSettingsOpen: null,
 
@@ -337,6 +368,8 @@ export const useStore = create<Store>((set, get) => ({
     threadChannel: null,
     joinGateChannel: null,
     channelSettingsOpen: null,
+    avSessions: new Map(),
+    activeAvSession: null,
     theme: s.theme, messageDensity: s.messageDensity, loadExternalMedia: s.loadExternalMedia, favorites: s.favorites, mutedChannels: s.mutedChannels, bookmarks: s.bookmarks, bookmarksPanelOpen: false, // preserve across reconnects
   })),
 
@@ -843,6 +876,20 @@ export const useStore = create<Store>((set, get) => ({
   setLightboxUrl: (url) => set({ lightboxUrl: url }),
   openThread: (msgId, channel) => set({ threadMsgId: msgId, threadChannel: channel }),
   closeThread: () => set({ threadMsgId: null, threadChannel: null }),
+
+  // AV sessions
+  updateAvSession: (session) => set((s) => {
+    const avSessions = new Map(s.avSessions);
+    avSessions.set(session.id, session);
+    return { avSessions };
+  }),
+  removeAvSession: (id) => set((s) => {
+    const avSessions = new Map(s.avSessions);
+    avSessions.delete(id);
+    return { avSessions, activeAvSession: s.activeAvSession === id ? null : s.activeAvSession };
+  }),
+  setActiveAvSession: (id) => set({ activeAvSession: id }),
+
   setJoinGateChannel: (channel) => set({ joinGateChannel: channel }),
   setChannelSettingsOpen: (channel) => set({ channelSettingsOpen: channel }),
 }));
