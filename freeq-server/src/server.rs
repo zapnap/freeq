@@ -1161,22 +1161,6 @@ impl Server {
             }
         }
 
-        // Start embedded iroh-live relay for browser WebTransport audio
-        if state.av_media.lock().is_some() {
-            tokio::spawn(async move {
-                // Install crypto provider if not already done
-                let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-                let config = iroh_live_relay::RelayConfig {
-                    bind: "[::]:4443".parse().unwrap(),
-                    http_bind: "[::]:4443".parse().unwrap(),
-                };
-                tracing::info!("Starting iroh-live relay on :4443 for browser WebTransport");
-                if let Err(e) = iroh_live_relay::run(config).await {
-                    tracing::error!("iroh-live relay failed: {e}");
-                }
-            });
-        }
-
         // Store iroh endpoint in shared state to keep it alive
         if let Some(endpoint) = iroh_endpoint {
             *state.iroh_endpoint.lock() = Some(endpoint);

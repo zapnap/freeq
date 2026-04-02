@@ -1,14 +1,14 @@
+import { useState } from 'react';
 import { useStore } from '../store';
-import { joinAvSession, leaveAvSession, endAvSession, startAvSession, getNick } from '../irc/client';
-
-// Relay port for WebTransport audio (iroh-live relay)
-const RELAY_PORT = 4443;
+import { joinAvSession, leaveAvSession, endAvSession, startAvSession, startSessionAudio, stopSessionAudio, getNick } from '../irc/client';
 
 /** Shows active AV session status in the channel header. */
 export function SessionIndicator({ channel }: { channel: string }) {
   const avSessions = useStore((s) => s.avSessions);
   const activeAvSession = useStore((s) => s.activeAvSession);
   const authDid = useStore((s) => s.authDid);
+  const [audioActive, setAudioActive] = useState(false);
+  const [muted, setMuted] = useState(false);
 
   // Find active session for this channel
   const session = [...avSessions.values()].find(
@@ -16,7 +16,6 @@ export function SessionIndicator({ channel }: { channel: string }) {
   );
 
   if (!session) {
-    // No active session — show start button for authenticated users
     if (!authDid) return null;
     return (
       <button
@@ -34,24 +33,46 @@ export function SessionIndicator({ channel }: { channel: string }) {
   const myNick = getNick();
   const isHost = session.createdByNick.toLowerCase() === myNick.toLowerCase();
 
-  const openAudio = () => {
-    if (session.irohTicket) {
-      // Open relay's built-in web app with the room ticket
-      const relayUrl = `https://${window.location.hostname}:${RELAY_PORT}/?name=${encodeURIComponent(session.irohTicket)}`;
-      window.open(relayUrl, `av-${session.id}`, 'width=400,height=300');
-    } else {
-      // Fetch ticket from REST API
-      fetch(`/api/v1/sessions/${session.id}`)
-        .then(r => r.json())
-        .then(data => {
-          if (data.iroh_ticket) {
-            const store = useStore.getState();
-            store.updateAvSession({ ...session, irohTicket: data.iroh_ticket });
-            const relayUrl = `https://${window.location.hostname}:${RELAY_PORT}/?name=${encodeURIComponent(data.iroh_ticket)}`;
-            window.open(relayUrl, `av-${session.id}`, 'width=400,height=300');
-          }
-        });
+  const handleJoinWithAudio = async () => {
+    joinAvSession(channel, session.id);
+    // Small delay for the server to process the join before starting audio
+    setTimeout(async () => {
+      try {
+        await startSessionAudio(channel);
+        setAudioActive(true);
+      } catch (e: any) {
+        useStore.getState().addSystemMessage(channel, `Audio failed: ${e.message}`);
+      }
+    }, 500);
+  };
+
+  const handleStartAudio = async () => {
+    try {
+      await startSessionAudio(channel);
+      setAudioActive(true);
+    } catch (e: any) {
+      useStore.getState().addSystemMessage(channel, `Audio failed: ${e.message}`);
     }
+  };
+
+  const handleToggleMute = async () => {
+    const { toggleMute } = await import('../lib/webrtc-audio');
+    const nowMuted = toggleMute();
+    setMuted(nowMuted);
+  };
+
+  const handleLeave = () => {
+    stopSessionAudio();
+    setAudioActive(false);
+    setMuted(false);
+    leaveAvSession(channel, session.id);
+  };
+
+  const handleEnd = () => {
+    stopSessionAudio();
+    setAudioActive(false);
+    setMuted(false);
+    endAvSession(channel, session.id);
   };
 
   return (
@@ -60,13 +81,13 @@ export function SessionIndicator({ channel }: { channel: string }) {
         isInSession ? 'bg-success/15 text-success' : 'bg-accent/10 text-accent'
       }`}>
         <span className="w-2 h-2 rounded-full bg-current animate-pulse" />
-        <span>{session.title || 'Voice session'}</span>
+        <span>{session.title || 'Voice'}</span>
         <span className="opacity-60">({participantCount})</span>
       </div>
 
       {!isInSession && (
         <button
-          onClick={() => joinAvSession(channel, session.id)}
+          onClick={handleJoinWithAudio}
           className="text-xs px-2.5 py-1 rounded-lg bg-accent text-white hover:bg-accent/90 font-medium"
         >
           Join
@@ -75,23 +96,35 @@ export function SessionIndicator({ channel }: { channel: string }) {
 
       {isInSession && (
         <div className="flex items-center gap-1">
+          {!audioActive ? (
+            <button
+              onClick={handleStartAudio}
+              className="text-xs px-2 py-1 rounded-lg bg-success/15 text-success hover:bg-success/25 font-medium flex items-center gap-1"
+              title="Start audio"
+            >
+              <MicIcon /> Audio
+            </button>
+          ) : (
+            <button
+              onClick={handleToggleMute}
+              className={`text-xs px-2 py-1 rounded-lg font-medium flex items-center gap-1 ${
+                muted ? 'bg-warning/15 text-warning' : 'bg-success/15 text-success'
+              }`}
+              title={muted ? 'Unmute' : 'Mute'}
+            >
+              {muted ? <MicOffIcon /> : <MicIcon />}
+              {muted ? 'Muted' : 'Live'}
+            </button>
+          )}
           <button
-            onClick={openAudio}
-            className="text-xs px-2.5 py-1 rounded-lg bg-success/15 text-success hover:bg-success/25 font-medium flex items-center gap-1"
-            title="Open audio connection"
-          >
-            <MicIcon />
-            Audio
-          </button>
-          <button
-            onClick={() => leaveAvSession(channel, session.id)}
+            onClick={handleLeave}
             className="text-xs px-2 py-1 rounded-lg bg-danger/10 text-danger hover:bg-danger/20 font-medium"
           >
             Leave
           </button>
           {isHost && (
             <button
-              onClick={() => endAvSession(channel, session.id)}
+              onClick={handleEnd}
               className="text-xs px-2 py-1 rounded-lg text-danger hover:bg-danger/10"
               title="End session for everyone"
             >
@@ -117,6 +150,16 @@ function MicIcon() {
     <svg className="w-3 h-3" viewBox="0 0 16 16" fill="currentColor">
       <path d="M3.5 6.5A.5.5 0 0 1 4 7v1a4 4 0 0 0 8 0V7a.5.5 0 0 1 1 0v1a5 5 0 0 1-4.5 4.975V15h3a.5.5 0 0 1 0 1h-7a.5.5 0 0 1 0-1h3v-2.025A5 5 0 0 1 3 8V7a.5.5 0 0 1 .5-.5z"/>
       <path d="M10 8a2 2 0 1 1-4 0V3a2 2 0 1 1 4 0v5zM8 0a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V3a3 3 0 0 0-3-3z"/>
+    </svg>
+  );
+}
+
+function MicOffIcon() {
+  return (
+    <svg className="w-3 h-3" viewBox="0 0 16 16" fill="currentColor">
+      <path d="M13 8c0 .564-.094 1.107-.266 1.613l-.814-.814A4.02 4.02 0 0 0 12 8V7a.5.5 0 0 1 1 0v1zm-5 4c.818 0 1.578-.245 2.212-.667l.718.719a4.973 4.973 0 0 1-2.43.923V15h3a.5.5 0 0 1 0 1h-7a.5.5 0 0 1 0-1h3v-2.025A5 5 0 0 1 3 8V7a.5.5 0 0 1 1 0v1a4 4 0 0 0 4 4zm3-9v4.879L5.158 2.037A3.001 3.001 0 0 1 11 3z"/>
+      <path d="M9.486 10.607 5 6.12V8a3 3 0 0 0 4.486 2.607zm-7.84-1.96l1.054 1.054A4.97 4.97 0 0 1 2.5 8V7a.5.5 0 0 0-1 0v1c0 .07.002.14.006.208z"/>
+      <path d="M.354 1.646a.5.5 0 0 1 .708 0l14 14a.5.5 0 0 1-.708.708l-14-14a.5.5 0 0 1 0-.708z"/>
     </svg>
   );
 }

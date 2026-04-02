@@ -48,7 +48,7 @@ parking_lot = { version = "0.12", features = ["deadlock_detection"] }
 automerge = { workspace = true }
 ulid = "1"
 iroh-live = { git = "https://github.com/n0-computer/iroh-live", default-features = false, features = ["opus"] }
-iroh-live-relay = { git = "https://github.com/n0-computer/iroh-live" }
+# iroh-live-relay deferred — too large for Miren build (disk space). Using WebRTC for browser audio.
 toml = "0.8"
 
 [dev-dependencies]

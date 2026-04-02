@@ -904,6 +904,14 @@ async function handleLine(rawLine: string) {
         store.setTyping(bufName, from, typing === 'active');
       }
 
+      // Handle WebRTC signaling for AV sessions
+      const avSignal = msg.tags['+freeq.at/av-signal'];
+      if (avSignal && from) {
+        import('../lib/webrtc-audio').then(({ handleSignal }) => {
+          handleSignal(from, decodeURIComponent(avSignal));
+        });
+      }
+
       // Handle AV session state updates
       const avState = msg.tags['+freeq.at/av-state'];
       const avId = msg.tags['+freeq.at/av-id'];
@@ -1391,4 +1399,45 @@ export function endAvSession(channel: string, sessionId: string) {
     '+freeq.at/av-id': sessionId,
   };
   raw(format('TAGMSG', [channel], tags));
+}
+
+/// Send a WebRTC signaling message to a specific user (via TAGMSG DM).
+export function sendAvSignal(targetNick: string, data: string) {
+  const tags: Record<string, string> = {
+    '+freeq.at/av-signal': encodeURIComponent(data),
+  };
+  raw(format('TAGMSG', [targetNick], tags));
+}
+
+/// Start WebRTC audio for the current AV session.
+/// Connects to all other participants in the session.
+export async function startSessionAudio(channel: string) {
+  const { startLocalAudio, setSignalCallback, connectToPeer } = await import('../lib/webrtc-audio');
+  const store = useStore.getState();
+  const sessionId = store.activeAvSession;
+  if (!sessionId) return;
+
+  const session = store.avSessions.get(sessionId);
+  if (!session) return;
+
+  // Set up signaling callback
+  setSignalCallback((target, data) => sendAvSignal(target, data));
+
+  // Capture mic
+  await startLocalAudio();
+  store.addSystemMessage(channel, 'Audio started — connecting to participants...');
+
+  // Connect to all other participants
+  const myNick = nick.toLowerCase();
+  for (const [, p] of session.participants) {
+    if (p.nick.toLowerCase() !== myNick) {
+      await connectToPeer(p.nick);
+    }
+  }
+}
+
+/// Stop WebRTC audio.
+export async function stopSessionAudio() {
+  const { stopLocalAudio } = await import('../lib/webrtc-audio');
+  stopLocalAudio();
 }
