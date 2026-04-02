@@ -265,6 +265,7 @@ pub(super) fn handle_tagmsg(
             super::helpers::s2s_next_event_id(state),
         ) {
             RouteResult::Local(ref session) => {
+                // Deliver locally
                 if let Some(tx) = state.connections.lock().get(session) {
                     let has_tags = state.cap_message_tags.lock().contains(session);
                     let has_time = state.cap_server_time.lock().contains(session);
@@ -279,6 +280,17 @@ pub(super) fn handle_tagmsg(
                         let _ = tx.try_send(fallback.clone());
                     }
                 }
+                // Also relay via S2S for cross-server visibility
+                super::helpers::s2s_broadcast(
+                    state,
+                    crate::s2s::S2sMessage::Tagmsg {
+                        event_id: super::helpers::s2s_next_event_id(state),
+                        from: conn.hostmask(),
+                        target: target.to_string(),
+                        tags: tags.clone(),
+                        origin: state.server_iroh_id.lock().clone().unwrap_or_default(),
+                    },
+                );
             }
             RouteResult::Relayed | RouteResult::Unreachable => {
                 // TAGMSG to remote user — best-effort relay (or silently dropped).
