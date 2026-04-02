@@ -1,6 +1,7 @@
 #![allow(deprecated)] // generic_array::from_slice in transitive crypto deps
 //! IRC server with AT Protocol SASL authentication.
 
+pub mod av;
 pub mod config;
 pub mod connection;
 pub mod crdt;

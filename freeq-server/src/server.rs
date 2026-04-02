@@ -486,6 +486,8 @@ pub struct SharedState {
     pub server_iroh_id: Mutex<Option<String>>,
     /// Iroh endpoint handle (kept alive for the server's lifetime).
     pub iroh_endpoint: Mutex<Option<iroh::Endpoint>>,
+    /// AV session manager (voice/video/screen sharing).
+    pub av_sessions: Mutex<crate::av::AvSessionManager>,
     /// S2S manager (if clustering is active).
     pub s2s_manager: Mutex<Option<Arc<crate::s2s::S2sManager>>>,
     /// CRDT document for cluster state convergence.
@@ -946,6 +948,7 @@ impl Server {
             session_away: Mutex::new(HashMap::new()),
             server_iroh_id: Mutex::new(None),
             iroh_endpoint: Mutex::new(None),
+            av_sessions: Mutex::new(crate::av::AvSessionManager::new()),
             s2s_manager: Mutex::new(None),
             cluster_doc: crate::crdt::ClusterDoc::new(&self.config.server_name),
             db: db.map(Mutex::new),
@@ -3338,6 +3341,7 @@ mod s2s_adversarial_tests {
             session_away: Mutex::new(HashMap::new()),
             server_iroh_id: Mutex::new(Some("test-server-id".to_string())),
             iroh_endpoint: Mutex::new(None),
+            av_sessions: Mutex::new(crate::av::AvSessionManager::new()),
             s2s_manager: Mutex::new(None),
             cluster_doc: crate::crdt::ClusterDoc::new("test-server-id"),
             db: None,
@@ -3854,6 +3858,7 @@ mod s2s_adversarial_tests {
             session_away: Mutex::new(HashMap::new()),
             server_iroh_id: Mutex::new(Some("test-server-id".to_string())),
             iroh_endpoint: Mutex::new(None),
+            av_sessions: Mutex::new(crate::av::AvSessionManager::new()),
             s2s_manager: Mutex::new(None),
             cluster_doc: crate::crdt::ClusterDoc::new("test-server-id"),
             db: Some(Mutex::new(db)),
