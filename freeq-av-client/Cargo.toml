@@ -9,7 +9,7 @@ name = "freeq-av"
 path = "src/main.rs"
 
 [dependencies]
-iroh-live = { git = "https://github.com/n0-computer/iroh-live", default-features = false, features = ["opus", "capture"] }
+iroh-live = { git = "https://github.com/n0-computer/iroh-live", default-features = false, features = ["opus"] }
 iroh = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
