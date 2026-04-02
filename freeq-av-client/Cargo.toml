@@ -1,0 +1,18 @@
+[package]
+name = "freeq-av-client"
+version = "0.1.0"
+edition = "2024"
+description = "Native audio client for freeq AV sessions"
+
+[[bin]]
+name = "freeq-av"
+path = "src/main.rs"
+
+[dependencies]
+iroh-live = { git = "https://github.com/n0-computer/iroh-live", default-features = false, features = ["opus", "capture"] }
+iroh = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }

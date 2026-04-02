@@ -47,10 +47,12 @@ iroh-quinn = { workspace = true }
 parking_lot = { version = "0.12", features = ["deadlock_detection"] }
 automerge = { workspace = true }
 ulid = "1"
-# iroh-live deferred — dep tree too large for Miren builder (disk space).
-# AV sessions use WebRTC for browser audio instead. iroh-live rooms will be
-# re-enabled when running on a larger build server or when iroh-live slims down.
+iroh-live = { git = "https://github.com/n0-computer/iroh-live", default-features = false, features = ["opus"], optional = true }
 toml = "0.8"
+
+[features]
+default = []
+av-native = ["iroh-live"]  # Enable iroh-live for native client audio (large dep tree)
 
 [dev-dependencies]
 freeq-sdk = { path = "../freeq-sdk" }

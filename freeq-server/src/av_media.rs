@@ -1,15 +1,12 @@
 //! Media backend for AV sessions.
 //!
-//! The actual browser audio uses WebRTC (peer-to-peer, signaled through IRC TAGMSG).
-//! This module provides the server-side room tracking. When iroh-live is available
-//! on a larger build server, the IrohLiveBackend can be re-enabled for native clients.
+//! With `av-native` feature: real iroh-live rooms for native client audio.
+//! Without: stub backend, browser audio uses WebRTC (signaled through IRC TAGMSG).
 
 use std::collections::HashMap;
 
-/// Opaque ticket string for joining a media session.
 pub type MediaTicket = String;
 
-/// Abstraction over the real-time media transport.
 pub trait MediaBackend: Send + Sync {
     fn create_room(
         &self,
@@ -22,12 +19,92 @@ pub trait MediaBackend: Send + Sync {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>>;
 }
 
-/// Stub backend — tracks rooms without real media transport.
-/// Browser audio uses WebRTC (signaled through IRC TAGMSG).
+// ── Real iroh-live backend (av-native feature) ─────────────────────
+
+#[cfg(feature = "av-native")]
+pub struct IrohLiveBackend {
+    live: std::sync::Arc<iroh_live::Live>,
+    rooms: parking_lot::Mutex<HashMap<String, ActiveRoom>>,
+}
+
+#[cfg(feature = "av-native")]
+struct ActiveRoom {
+    ticket: String,
+    _handle: iroh_live::rooms::RoomHandle,
+}
+
+#[cfg(feature = "av-native")]
+impl IrohLiveBackend {
+    pub async fn new(endpoint: iroh::Endpoint) -> Result<Self, String> {
+        let live = iroh_live::Live::builder(endpoint)
+            .with_router()
+            .with_gossip()
+            .spawn();
+        tracing::info!(
+            endpoint_id = %live.endpoint().id(),
+            "iroh-live media backend initialized"
+        );
+        Ok(Self {
+            live: std::sync::Arc::new(live),
+            rooms: parking_lot::Mutex::new(HashMap::new()),
+        })
+    }
+
+    pub fn live(&self) -> &iroh_live::Live {
+        &self.live
+    }
+}
+
+#[cfg(feature = "av-native")]
+impl MediaBackend for IrohLiveBackend {
+    fn create_room(
+        &self,
+        session_id: &str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<MediaTicket, String>> + Send + '_>> {
+        let session_id = session_id.to_string();
+        let live = self.live.clone();
+        Box::pin(async move {
+            let ticket = iroh_live::rooms::RoomTicket::generate();
+            let room = iroh_live::rooms::Room::new(&live, ticket.clone())
+                .await
+                .map_err(|e| format!("Failed to create room: {e}"))?;
+
+            let ticket_str = ticket.to_string();
+            let (_events, handle) = room.split();
+
+            self.rooms.lock().insert(session_id.clone(), ActiveRoom {
+                ticket: ticket_str.clone(),
+                _handle: handle,
+            });
+
+            tracing::info!(session_id = %session_id, ticket = %ticket_str, "Created iroh-live media room");
+            Ok(ticket_str)
+        })
+    }
+
+    fn close_room(
+        &self,
+        session_id: &str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>> {
+        let removed = self.rooms.lock().remove(session_id);
+        let sid = session_id.to_string();
+        Box::pin(async move {
+            if removed.is_some() {
+                tracing::info!(session_id = %sid, "Closed iroh-live media room");
+            }
+            Ok(())
+        })
+    }
+}
+
+// ── Stub backend (no av-native feature) ────────────────────────────
+
+#[cfg(not(feature = "av-native"))]
 pub struct IrohLiveBackend {
     rooms: parking_lot::Mutex<HashMap<String, String>>,
 }
 
+#[cfg(not(feature = "av-native"))]
 impl IrohLiveBackend {
     pub fn new() -> Self {
         Self {
@@ -36,6 +113,7 @@ impl IrohLiveBackend {
     }
 }
 
+#[cfg(not(feature = "av-native"))]
 impl MediaBackend for IrohLiveBackend {
     fn create_room(
         &self,
@@ -45,7 +123,7 @@ impl MediaBackend for IrohLiveBackend {
         Box::pin(async move {
             let ticket = format!("webrtc://{session_id}");
             self.rooms.lock().insert(session_id.clone(), ticket.clone());
-            tracing::info!(session_id = %session_id, "Created AV room (WebRTC signaling)");
+            tracing::info!(session_id = %session_id, "Created AV room (WebRTC signaling only)");
             Ok(ticket)
         })
     }
@@ -63,15 +141,40 @@ impl MediaBackend for IrohLiveBackend {
     }
 }
 
+// ── Server init (feature-gated) ────────────────────────────────────
+
+#[cfg(feature = "av-native")]
+pub async fn init_backend(endpoint: iroh::Endpoint) -> Option<std::sync::Arc<IrohLiveBackend>> {
+    match IrohLiveBackend::new(endpoint).await {
+        Ok(backend) => {
+            tracing::info!("iroh-live AV media backend initialized (native audio enabled)");
+            Some(std::sync::Arc::new(backend))
+        }
+        Err(e) => {
+            tracing::warn!("Failed to init iroh-live: {e}");
+            None
+        }
+    }
+}
+
+#[cfg(not(feature = "av-native"))]
+pub fn init_backend_stub() -> std::sync::Arc<IrohLiveBackend> {
+    tracing::info!("AV media backend initialized (WebRTC signaling only)");
+    std::sync::Arc::new(IrohLiveBackend::new())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn create_and_close_room() {
-        let backend = IrohLiveBackend::new();
-        let ticket = backend.create_room("test").await.unwrap();
-        assert!(ticket.contains("test"));
-        backend.close_room("test").await.unwrap();
+    async fn stub_create_and_close() {
+        #[cfg(not(feature = "av-native"))]
+        {
+            let backend = IrohLiveBackend::new();
+            let ticket = MediaBackend::create_room(&backend, "test").await.unwrap();
+            assert!(ticket.contains("test"));
+            MediaBackend::close_room(&backend, "test").await.unwrap();
+        }
     }
 }
