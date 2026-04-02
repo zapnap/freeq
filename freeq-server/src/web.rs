@@ -2375,8 +2375,15 @@ async fn api_upload(
     )
     .await
     .map_err(|e| {
-        tracing::warn!(did = %did, error = %e, "Media upload failed");
-        (StatusCode::BAD_GATEWAY, format!("PDS upload failed: {e}"))
+        let msg = format!("{e:#}"); // include full error chain
+        tracing::warn!(did = %did, error = %msg, "Media upload failed");
+        // Surface auth expiry to client so it can prompt re-login
+        let status = if msg.contains("expired") || msg.contains("401") {
+            StatusCode::UNAUTHORIZED
+        } else {
+            StatusCode::BAD_GATEWAY
+        };
+        (status, format!("PDS upload failed: {msg}"))
     })?;
 
     // Update stored DPoP nonce so subsequent uploads don't start stale
