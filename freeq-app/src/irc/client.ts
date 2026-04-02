@@ -45,6 +45,9 @@ function saveJoinedChannels() {
 // Background WHOIS lookups (suppress output for these)
 const backgroundWhois = new Set<string>();
 
+// Buffer for reassembling chunked WebRTC signaling messages
+const signalChunks = new Map<string, (string | undefined)[]>();
+
 // ── Public API (called by UI) ──
 
 export function connect(url: string, desiredNick: string, channels?: string[]) {
@@ -907,9 +910,24 @@ async function handleLine(rawLine: string) {
       // Handle WebRTC signaling for AV sessions
       const avSignal = msg.tags['+freeq.at/av-signal'];
       if (avSignal && from) {
-        import('../lib/webrtc-audio').then(({ handleSignal }) => {
-          handleSignal(from, decodeURIComponent(avSignal));
-        });
+        const chunkInfo = msg.tags['+freeq.at/av-chunk'];
+        if (chunkInfo) {
+          // Chunked signal — reassemble
+          const [id, idx, total] = chunkInfo.split(':');
+          const key = `${from}:${id}`;
+          if (!signalChunks.has(key)) signalChunks.set(key, new Array(parseInt(total)));
+          const chunks = signalChunks.get(key)!;
+          chunks[parseInt(idx)] = avSignal;
+          if (chunks.every(c => c !== undefined)) {
+            signalChunks.delete(key);
+            const full = decodeURIComponent(chunks.join(''));
+            import('../lib/webrtc-audio').then(({ handleSignal }) => handleSignal(from, full));
+          }
+        } else {
+          import('../lib/webrtc-audio').then(({ handleSignal }) => {
+            handleSignal(from, decodeURIComponent(avSignal));
+          });
+        }
       }
 
       // Handle AV session state updates
@@ -1411,11 +1429,29 @@ export function endAvSession(channel: string, sessionId: string) {
 }
 
 /// Send a WebRTC signaling message to a specific user (via TAGMSG DM).
+/// Large messages (SDP offers/answers) are chunked to stay under IRC line limits.
 export function sendAvSignal(targetNick: string, data: string) {
-  const tags: Record<string, string> = {
-    '+freeq.at/av-signal': encodeURIComponent(data),
-  };
-  raw(format('TAGMSG', [targetNick], tags));
+  const encoded = encodeURIComponent(data);
+  // IRC tag values + overhead must fit in ~7KB (server limit 8KB minus command/prefix)
+  const MAX_CHUNK = 4000;
+
+  if (encoded.length <= MAX_CHUNK) {
+    const tags: Record<string, string> = { '+freeq.at/av-signal': encoded };
+    raw(format('TAGMSG', [targetNick], tags));
+  } else {
+    // Chunk the signal — receiver reassembles
+    const id = Math.random().toString(36).slice(2, 8);
+    const chunks = Math.ceil(encoded.length / MAX_CHUNK);
+    for (let i = 0; i < chunks; i++) {
+      const chunk = encoded.slice(i * MAX_CHUNK, (i + 1) * MAX_CHUNK);
+      const tags: Record<string, string> = {
+        '+freeq.at/av-signal': chunk,
+        '+freeq.at/av-chunk': `${id}:${i}:${chunks}`,
+      };
+      raw(format('TAGMSG', [targetNick], tags));
+    }
+    console.log(`[webrtc] Sent ${chunks} chunks to ${targetNick} (${encoded.length} bytes)`);
+  }
 }
 
 /// Start WebRTC audio for the current AV session.

@@ -4,9 +4,6 @@
  * Uses peer-to-peer WebRTC with the freeq server as signaling relay.
  * Signaling messages (SDP offer/answer, ICE candidates) flow through
  * IRC TAGMSG with +freeq.at/av-signal tags.
- *
- * Each participant creates a peer connection to every other participant
- * (full mesh). For small rooms (2-8 people) this works well.
  */
 
 // WebRTC audio module — no store dependency (signals go through client.ts)
@@ -20,6 +17,7 @@ interface PeerState {
   pc: RTCPeerConnection;
   remoteNick: string;
   audioEl: HTMLAudioElement;
+  pendingIce: RTCIceCandidateInit[]; // buffered until remote description is set
 }
 
 let localStream: MediaStream | null = null;
@@ -51,7 +49,6 @@ export function stopLocalAudio() {
     localStream.getTracks().forEach((t) => t.stop());
     localStream = null;
   }
-  // Close all peer connections
   for (const [, peer] of peers) {
     peer.pc.close();
     peer.audioEl.remove();
@@ -76,16 +73,14 @@ export async function connectToPeer(remoteNick: string) {
   }
 
   console.log(`[webrtc] Connecting to ${remoteNick}...`);
-  const pc = createPeerConnection(remoteNick);
-  // Add local audio tracks
+  const peer = getOrCreatePeer(remoteNick);
   for (const track of localStream!.getTracks()) {
-    pc.addTrack(track, localStream!);
+    peer.pc.addTrack(track, localStream!);
     console.log(`[webrtc] Added local track to ${remoteNick}: ${track.kind} enabled=${track.enabled}`);
   }
 
-  // Create and send offer
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
+  const offer = await peer.pc.createOffer();
+  await peer.pc.setLocalDescription(offer);
   console.log(`[webrtc] Sending offer to ${remoteNick}`);
   sendSignal(remoteNick, { type: 'offer', sdp: offer.sdp });
 }
@@ -103,37 +98,67 @@ export async function handleSignal(fromNick: string, data: string) {
   console.log(`[webrtc] Signal from ${fromNick}: ${msg.type}`);
 
   if (msg.type === 'offer') {
-    // Incoming call — create peer connection and send answer
-    console.log(`[webrtc] Received offer from ${fromNick} — starting local audio and answering`);
+    console.log(`[webrtc] Received offer from ${fromNick}`);
+    // Capture mic FIRST, before creating peer (so ICE candidates don't race)
     if (!localStream) await startLocalAudio();
-    const pc = getOrCreatePeer(fromNick);
+
+    const peer = getOrCreatePeer(fromNick);
     for (const track of localStream!.getTracks()) {
-      pc.addTrack(track, localStream!);
+      peer.pc.addTrack(track, localStream!);
       console.log(`[webrtc] Added local track for answer to ${fromNick}: ${track.kind} enabled=${track.enabled}`);
     }
-    await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: msg.sdp }));
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
+    await peer.pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: msg.sdp }));
+
+    // Flush any buffered ICE candidates now that remote description is set
+    if (peer.pendingIce.length > 0) {
+      console.log(`[webrtc] Flushing ${peer.pendingIce.length} buffered ICE candidates for ${fromNick}`);
+      for (const candidate of peer.pendingIce) {
+        try { await peer.pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch {}
+      }
+      peer.pendingIce = [];
+    }
+
+    const answer = await peer.pc.createAnswer();
+    await peer.pc.setLocalDescription(answer);
     console.log(`[webrtc] Sending answer to ${fromNick}`);
     sendSignal(fromNick, { type: 'answer', sdp: answer.sdp });
+
   } else if (msg.type === 'answer') {
     console.log(`[webrtc] Received answer from ${fromNick}`);
     const peer = peers.get(fromNick);
     if (peer) {
       await peer.pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: msg.sdp }));
+      // Flush buffered ICE
+      if (peer.pendingIce.length > 0) {
+        console.log(`[webrtc] Flushing ${peer.pendingIce.length} buffered ICE candidates for ${fromNick}`);
+        for (const candidate of peer.pendingIce) {
+          try { await peer.pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch {}
+        }
+        peer.pendingIce = [];
+      }
     } else {
       console.warn(`[webrtc] No peer for answer from ${fromNick}`);
     }
+
   } else if (msg.type === 'ice') {
     const peer = peers.get(fromNick);
-    if (peer && msg.candidate) {
-      try {
-        await peer.pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
-      } catch (e: any) {
-        console.warn(`[webrtc] Failed to add ICE candidate from ${fromNick}:`, e.message);
+    if (peer) {
+      if (peer.pc.remoteDescription) {
+        try {
+          await peer.pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
+        } catch (e: any) {
+          console.warn(`[webrtc] Failed to add ICE candidate from ${fromNick}:`, e.message);
+        }
+      } else {
+        // Buffer ICE until remote description is set
+        peer.pendingIce.push(msg.candidate);
+        console.log(`[webrtc] Buffered ICE candidate from ${fromNick} (no remote desc yet, ${peer.pendingIce.length} buffered)`);
       }
-    } else if (!peer) {
-      console.warn(`[webrtc] ICE candidate from ${fromNick} but no peer connection yet — dropped`);
+    } else {
+      // Create peer entry to buffer ICE even before offer arrives
+      const newPeer = getOrCreatePeer(fromNick);
+      newPeer.pendingIce.push(msg.candidate);
+      console.log(`[webrtc] Buffered ICE candidate from ${fromNick} (peer created, ${newPeer.pendingIce.length} buffered)`);
     }
   }
 }
@@ -158,43 +183,35 @@ export function toggleMute(): boolean {
   const track = localStream.getAudioTracks()[0];
   if (track) {
     track.enabled = !track.enabled;
-    return !track.enabled; // true = muted
+    return !track.enabled;
   }
   return true;
 }
 
 // ── Internal ──
 
-function createPeerConnection(remoteNick: string): RTCPeerConnection {
+function getOrCreatePeer(remoteNick: string): PeerState {
   const existing = peers.get(remoteNick);
-  if (existing) return existing.pc;
-  return getOrCreatePeer(remoteNick);
-}
-
-function getOrCreatePeer(remoteNick: string): RTCPeerConnection {
-  const existing = peers.get(remoteNick);
-  if (existing) return existing.pc;
+  if (existing) return existing;
 
   const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
   const audioEl = document.createElement('audio');
   audioEl.autoplay = true;
 
-  peers.set(remoteNick, { pc, remoteNick, audioEl });
+  const peer: PeerState = { pc, remoteNick, audioEl, pendingIce: [] };
+  peers.set(remoteNick, peer);
 
-  // ICE candidates
   pc.onicecandidate = (e) => {
     if (e.candidate) {
       sendSignal(remoteNick, { type: 'ice', candidate: e.candidate.toJSON() });
     }
   };
 
-  // Remote audio
   pc.ontrack = (e) => {
     const stream = e.streams[0] || new MediaStream([e.track]);
     audioEl.srcObject = stream;
     console.log(`[webrtc] Audio track from ${remoteNick}, kind=${e.track.kind}, enabled=${e.track.enabled}, muted=${e.track.muted}, readyState=${e.track.readyState}`);
     console.log(`[webrtc] Audio element: paused=${audioEl.paused}, muted=${audioEl.muted}, volume=${audioEl.volume}`);
-    // Ensure playback starts (autoplay may be blocked)
     audioEl.play().then(() => {
       console.log(`[webrtc] Audio playback started for ${remoteNick}`);
     }).catch((err) => {
@@ -202,7 +219,6 @@ function getOrCreatePeer(remoteNick: string): RTCPeerConnection {
     });
   };
 
-  // Connection state
   pc.onconnectionstatechange = () => {
     console.log(`[webrtc] ${remoteNick}: ${pc.connectionState}`);
     if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
@@ -212,11 +228,15 @@ function getOrCreatePeer(remoteNick: string): RTCPeerConnection {
     }
   };
 
-  return pc;
+  return peer;
 }
 
 function sendSignal(target: string, data: any) {
   if (onSignalOut) {
-    onSignalOut(target, JSON.stringify(data));
+    const json = JSON.stringify(data);
+    console.log(`[webrtc] sendSignal to ${target}: ${data.type} (${json.length} bytes)`);
+    onSignalOut(target, json);
+  } else {
+    console.warn('[webrtc] sendSignal called but no callback set');
   }
 }
