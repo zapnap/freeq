@@ -127,7 +127,13 @@ export async function handleSignal(fromNick: string, data: string) {
   } else if (msg.type === 'ice') {
     const peer = peers.get(fromNick);
     if (peer && msg.candidate) {
-      await peer.pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
+      try {
+        await peer.pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
+      } catch (e: any) {
+        console.warn(`[webrtc] Failed to add ICE candidate from ${fromNick}:`, e.message);
+      }
+    } else if (!peer) {
+      console.warn(`[webrtc] ICE candidate from ${fromNick} but no peer connection yet — dropped`);
     }
   }
 }

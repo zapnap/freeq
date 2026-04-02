@@ -108,6 +108,15 @@ pub(super) fn handle_tagmsg(
         }
     }
 
+    // Log av-signal relay for debugging
+    if tags.contains_key("+freeq.at/av-signal") {
+        tracing::info!(
+            from = %conn.nick_or_star(),
+            target = %target,
+            "Relaying WebRTC signal TAGMSG"
+        );
+    }
+
     // ── AV session control (+freeq.at/av-*) ──
     // av-signal is a relay tag (WebRTC signaling) — must be forwarded, not consumed
     if let Some(av_tag) = tags.keys().find(|k| k.starts_with("+freeq.at/av-") && !k.contains("signal")) {
