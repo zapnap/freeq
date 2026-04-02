@@ -39,8 +39,8 @@ enum Command {
     },
     /// Connect to a freeq server, start/join an AV session, get iroh-live ticket
     Server {
-        /// Server WebSocket URL (e.g. ws://127.0.0.1:8081/irc)
-        #[arg(short, long, default_value = "ws://127.0.0.1:8081")]
+        /// Server host:port (e.g. irc.freeq.at:8081)
+        #[arg(short, long, default_value = "127.0.0.1:8081")]
         url: String,
         /// Channel to join
         #[arg(short, long, default_value = "#freeq")]
@@ -48,6 +48,9 @@ enum Command {
         /// Display name / nick
         #[arg(short, long, default_value = "freeq-av-user")]
         name: String,
+        /// Join existing session instead of starting a new one
+        #[arg(long)]
+        join: bool,
     },
 }
 
@@ -71,7 +74,7 @@ async fn main() -> Result<()> {
                 .map_err(|e| anyhow::anyhow!("Invalid room ticket: {e}"))?;
             run_room(name, Some(ticket)).await
         }
-        Command::Server { url, channel, name } => run_server_session(&url, &channel, &name).await,
+        Command::Server { url, channel, name, join } => run_server_session(&url, &channel, &name, join).await,
     }
 }
 
@@ -156,7 +159,7 @@ async fn run_room(display_name: String, existing_ticket: Option<RoomTicket>) -> 
 }
 
 /// Connect to a freeq server via IRC, start/join AV session, get iroh-live ticket.
-async fn run_server_session(url: &str, channel: &str, nick: &str) -> Result<()> {
+async fn run_server_session(url: &str, channel: &str, nick: &str, join_existing: bool) -> Result<()> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::TcpStream;
 
@@ -200,9 +203,14 @@ async fn run_server_session(url: &str, channel: &str, nick: &str) -> Result<()> 
             writer.write_all(format!("JOIN {channel}\r\n").as_bytes()).await?;
             println!("  Joined {channel}");
 
-            // Start AV session
-            writer.write_all(format!("@+freeq.at/av-start TAGMSG {channel}\r\n").as_bytes()).await?;
-            println!("  Starting AV session...");
+            // Start or join AV session
+            if join_existing {
+                writer.write_all(format!("@+freeq.at/av-join TAGMSG {channel}\r\n").as_bytes()).await?;
+                println!("  Joining AV session...");
+            } else {
+                writer.write_all(format!("@+freeq.at/av-start TAGMSG {channel}\r\n").as_bytes()).await?;
+                println!("  Starting AV session...");
+            }
         }
 
         // Look for AV ticket in NOTICE
