@@ -2,6 +2,7 @@
 //! IRC server with AT Protocol SASL authentication.
 
 pub mod av;
+pub mod av_artifacts;
 pub mod config;
 pub mod connection;
 pub mod crdt;
