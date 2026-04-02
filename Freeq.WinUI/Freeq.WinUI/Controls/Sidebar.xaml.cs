@@ -56,13 +56,26 @@ public sealed partial class Sidebar : UserControl
 
     private void UpdateStatusDot(ConnectionState state)
     {
-        StatusDot.Fill = state switch
+        // Stop pulse first; restart only for connecting states
+        PulseAnimation.Stop();
+        StatusDot.Opacity = 1.0;
+
+        switch (state)
         {
-            ConnectionState.Authenticated => new SolidColorBrush(ColorHelper.FromArgb(255, 0, 212, 170)),
-            ConnectionState.Connected or ConnectionState.Connecting or ConnectionState.Authenticating
-                => new SolidColorBrush(ColorHelper.FromArgb(255, 255, 181, 71)),
-            _ => new SolidColorBrush(ColorHelper.FromArgb(255, 85, 85, 112)),
-        };
+            case ConnectionState.Authenticated:
+                // Solid teal — connected and authenticated
+                StatusDot.Fill = new SolidColorBrush(ColorHelper.FromArgb(0xFF, 0x00, 0xD4, 0xAA));
+                break;
+            case ConnectionState.Connected or ConnectionState.Connecting or ConnectionState.Authenticating:
+                // Warning color + pulse — connecting in progress
+                StatusDot.Fill = new SolidColorBrush(ColorHelper.FromArgb(0xFF, 0xFF, 0xB5, 0x47));
+                PulseAnimation.Begin();
+                break;
+            default:
+                // Dim gray — disconnected
+                StatusDot.Fill = new SolidColorBrush(ColorHelper.FromArgb(0xFF, 0x55, 0x55, 0x70));
+                break;
+        }
     }
 
     private void OnChannelClick(object sender, ItemClickEventArgs e)

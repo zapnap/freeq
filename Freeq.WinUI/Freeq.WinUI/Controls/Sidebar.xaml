@@ -6,6 +6,22 @@
     xmlns:local="using:Freeq.WinUI.Controls"
     xmlns:models="using:Freeq.WinUI.Models">
 
+    <UserControl.Resources>
+        <!-- Pulse animation for the connection status dot (connecting state only) -->
+        <Storyboard x:Name="PulseAnimation" RepeatBehavior="Forever">
+            <DoubleAnimation
+                Storyboard.TargetName="StatusDot"
+                Storyboard.TargetProperty="Opacity"
+                From="1.0" To="0.25"
+                Duration="0:0:0.7"
+                AutoReverse="True">
+                <DoubleAnimation.EasingFunction>
+                    <SineEase EasingMode="EaseInOut" />
+                </DoubleAnimation.EasingFunction>
+            </DoubleAnimation>
+        </Storyboard>
+    </UserControl.Resources>
+
     <Grid Background="{StaticResource BgSecondaryBrush}" Width="256"
           BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,0,1,0">
         <Grid.RowDefinitions>

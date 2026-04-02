@@ -1,3 +1,5 @@
+using Microsoft.UI.Xaml.Media;
+
 namespace Freeq.WinUI.Models;
 
 public enum MemberRole
@@ -31,4 +33,8 @@ public class MemberModel
         MemberRole.Voiced => "+",
         _ => ""
     };
+
+    // Design system: hash-assigned nick color from the 5-hue palette
+    public SolidColorBrush NickBrush => NickColor.ForNick(Nick);
+    public SolidColorBrush AvatarBackgroundBrush => NickColor.AvatarBackgroundForNick(Nick);
 }

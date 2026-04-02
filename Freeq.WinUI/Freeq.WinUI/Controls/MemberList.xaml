@@ -34,12 +34,12 @@
                                         <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
 
-                                    <!-- Mini Avatar -->
+                                    <!-- Mini Avatar: nick-colored -->
                                     <Grid Grid.Column="0" Margin="0,0,8,0">
                                         <Border Width="32" Height="32" CornerRadius="16"
-                                                Background="{StaticResource SurfaceBrush}">
+                                                Background="{x:Bind AvatarBackgroundBrush}">
                                             <TextBlock Text="{x:Bind NickInitial}" FontSize="12" FontWeight="Bold"
-                                                       Foreground="{StaticResource AccentBrush}"
+                                                       Foreground="{x:Bind NickBrush}"
                                                        HorizontalAlignment="Center" VerticalAlignment="Center" />
                                         </Border>
                                         <!-- Online dot -->
@@ -55,17 +55,22 @@
                                                Foreground="{StaticResource SuccessBrush}"
                                                VerticalAlignment="Center" Margin="0,0,4,0" />
 
-                                    <!-- Nick -->
+                                    <!-- Nick: hash-colored -->
                                     <TextBlock Grid.Column="2" Text="{x:Bind Nick}"
                                                FontSize="{StaticResource BodyFontSize}"
-                                               Foreground="{StaticResource FgMutedBrush}"
+                                               Foreground="{x:Bind NickBrush}"
                                                VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
 
-                                    <!-- Verified -->
-                                    <TextBlock Grid.Column="3" Text="&#x2713;"
-                                               FontSize="11" Foreground="{StaticResource AccentBrush}"
-                                               VerticalAlignment="Center"
-                                               Visibility="{x:Bind local:MemberList.BoolToVis(IsVerified)}" />
+                                    <!-- Verified: teal circle badge -->
+                                    <Border Grid.Column="3"
+                                            Width="16" Height="16" CornerRadius="8"
+                                            Background="{StaticResource AccentDimBrush}"
+                                            VerticalAlignment="Center"
+                                            Visibility="{x:Bind local:MemberList.BoolToVis(IsVerified)}">
+                                        <TextBlock Text="&#x2713;" FontSize="9" FontWeight="SemiBold"
+                                                   Foreground="{StaticResource AccentBrush}"
+                                                   HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                    </Border>
                                 </Grid>
                             </DataTemplate>
                         </ListView.ItemTemplate>
@@ -96,9 +101,9 @@
                                     </Grid.ColumnDefinitions>
                                     <Grid Grid.Column="0" Margin="0,0,8,0">
                                         <Border Width="32" Height="32" CornerRadius="16"
-                                                Background="{StaticResource SurfaceBrush}">
+                                                Background="{x:Bind AvatarBackgroundBrush}">
                                             <TextBlock Text="{x:Bind NickInitial}" FontSize="12" FontWeight="Bold"
-                                                       Foreground="{StaticResource AccentBrush}"
+                                                       Foreground="{x:Bind NickBrush}"
                                                        HorizontalAlignment="Center" VerticalAlignment="Center" />
                                         </Border>
                                         <Ellipse Width="10" Height="10"
@@ -112,12 +117,17 @@
                                                VerticalAlignment="Center" Margin="0,0,4,0" />
                                     <TextBlock Grid.Column="2" Text="{x:Bind Nick}"
                                                FontSize="{StaticResource BodyFontSize}"
-                                               Foreground="{StaticResource FgMutedBrush}"
+                                               Foreground="{x:Bind NickBrush}"
                                                VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                                    <TextBlock Grid.Column="3" Text="&#x2713;"
-                                               FontSize="11" Foreground="{StaticResource AccentBrush}"
-                                               VerticalAlignment="Center"
-                                               Visibility="{x:Bind local:MemberList.BoolToVis(IsVerified)}" />
+                                    <Border Grid.Column="3"
+                                            Width="16" Height="16" CornerRadius="8"
+                                            Background="{StaticResource AccentDimBrush}"
+                                            VerticalAlignment="Center"
+                                            Visibility="{x:Bind local:MemberList.BoolToVis(IsVerified)}">
+                                        <TextBlock Text="&#x2713;" FontSize="9" FontWeight="SemiBold"
+                                                   Foreground="{StaticResource AccentBrush}"
+                                                   HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                    </Border>
                                 </Grid>
                             </DataTemplate>
                         </ListView.ItemTemplate>
@@ -147,9 +157,9 @@
                                     </Grid.ColumnDefinitions>
                                     <Grid Grid.Column="0" Margin="0,0,8,0">
                                         <Border Width="32" Height="32" CornerRadius="16"
-                                                Background="{StaticResource SurfaceBrush}">
+                                                Background="{x:Bind AvatarBackgroundBrush}">
                                             <TextBlock Text="{x:Bind NickInitial}" FontSize="12" FontWeight="Bold"
-                                                       Foreground="{StaticResource AccentBrush}"
+                                                       Foreground="{x:Bind NickBrush}"
                                                        HorizontalAlignment="Center" VerticalAlignment="Center" />
                                         </Border>
                                         <Ellipse Width="10" Height="10"
@@ -159,12 +169,17 @@
                                     </Grid>
                                     <TextBlock Grid.Column="1" Text="{x:Bind Nick}"
                                                FontSize="{StaticResource BodyFontSize}"
-                                               Foreground="{StaticResource FgMutedBrush}"
+                                               Foreground="{x:Bind NickBrush}"
                                                VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                                    <TextBlock Grid.Column="2" Text="&#x2713;"
-                                               FontSize="11" Foreground="{StaticResource AccentBrush}"
-                                               VerticalAlignment="Center"
-                                               Visibility="{x:Bind local:MemberList.BoolToVis(IsVerified)}" />
+                                    <Border Grid.Column="2"
+                                            Width="16" Height="16" CornerRadius="8"
+                                            Background="{StaticResource AccentDimBrush}"
+                                            VerticalAlignment="Center"
+                                            Visibility="{x:Bind local:MemberList.BoolToVis(IsVerified)}">
+                                        <TextBlock Text="&#x2713;" FontSize="9" FontWeight="SemiBold"
+                                                   Foreground="{StaticResource AccentBrush}"
+                                                   HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                    </Border>
                                 </Grid>
                             </DataTemplate>
                         </ListView.ItemTemplate>

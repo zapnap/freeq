@@ -24,28 +24,43 @@
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
 
-                        <!-- Avatar -->
+                        <!-- Avatar: tinted with nick color -->
                         <Border Grid.Column="0" Width="36" Height="36"
                                 CornerRadius="18" VerticalAlignment="Top"
                                 Margin="0,2,12,0"
-                                Background="{StaticResource SurfaceBrush}">
+                                Background="{x:Bind AvatarBackgroundBrush}">
                             <TextBlock Text="{x:Bind NickInitial}" FontSize="14" FontWeight="Bold"
-                                       Foreground="{StaticResource AccentBrush}"
+                                       Foreground="{x:Bind NickBrush}"
                                        HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
 
                         <!-- Content -->
                         <StackPanel Grid.Column="1">
-                            <StackPanel Orientation="Horizontal" Spacing="8">
-                                <!-- Nick -->
+                            <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                                <!-- Nick: hash-colored -->
                                 <TextBlock Text="{x:Bind Nick}" FontSize="14" FontWeight="SemiBold"
-                                           Foreground="{StaticResource AccentBrush}" />
+                                           Foreground="{x:Bind NickBrush}"
+                                           VerticalAlignment="Center" />
 
-                                <!-- Verified badge -->
-                                <TextBlock Text="&#x2713;" FontSize="11"
-                                           Foreground="{StaticResource AccentBrush}"
-                                           VerticalAlignment="Center"
-                                           Visibility="{x:Bind local:MessageList.BoolToVis(IsVerified)}" />
+                                <!-- Verified DID badge: pill chip with Cascadia Code DID string -->
+                                <Border Background="{StaticResource AccentDimBrush}"
+                                        BorderBrush="{StaticResource AccentDimBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="{StaticResource SmallRadius}"
+                                        Padding="5,2,5,2"
+                                        VerticalAlignment="Center"
+                                        Visibility="{x:Bind local:MessageList.BoolToVis(HasDid)}">
+                                    <StackPanel Orientation="Horizontal" Spacing="4">
+                                        <TextBlock Text="&#x2713;" FontSize="10" FontWeight="SemiBold"
+                                                   Foreground="{StaticResource AccentBrush}"
+                                                   VerticalAlignment="Center" />
+                                        <TextBlock Text="{x:Bind ShortDid}"
+                                                   FontFamily="Cascadia Code, Cascadia Mono, Consolas"
+                                                   FontSize="10"
+                                                   Foreground="{StaticResource AccentBrush}"
+                                                   VerticalAlignment="Center" />
+                                    </StackPanel>
+                                </Border>
 
                                 <!-- Timestamp -->
                                 <TextBlock Text="{x:Bind TimeString}" FontSize="{StaticResource TinyFontSize}"
