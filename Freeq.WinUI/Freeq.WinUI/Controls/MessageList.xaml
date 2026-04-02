@@ -44,8 +44,6 @@
 
                                 <!-- Verified DID badge: pill chip with Cascadia Code DID string -->
                                 <Border Background="{StaticResource AccentDimBrush}"
-                                        BorderBrush="{StaticResource AccentDimBrush}"
-                                        BorderThickness="1"
                                         CornerRadius="{StaticResource SmallRadius}"
                                         Padding="5,2,5,2"
                                         VerticalAlignment="Center"
