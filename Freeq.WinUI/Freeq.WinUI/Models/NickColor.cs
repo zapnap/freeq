@@ -21,22 +21,24 @@ internal static class NickColor
 
     public static SolidColorBrush ForNick(string nick)
     {
-        int hash = 0;
-        foreach (char c in nick.ToLowerInvariant())
-            hash = hash * 31 + c;
-
-        var (r, g, b) = Hues[Math.Abs(hash) % Hues.Length];
+        var (r, g, b) = Hues[HueIndex(nick)];
         return new SolidColorBrush(ColorHelper.FromArgb(0xFF, r, g, b));
     }
 
     /// <summary>A 12%-opacity tint of the nick color, used for avatar backgrounds.</summary>
     public static SolidColorBrush AvatarBackgroundForNick(string nick)
     {
+        var (r, g, b) = Hues[HueIndex(nick)];
+        return new SolidColorBrush(ColorHelper.FromArgb(0x1E, r, g, b)); // ~12% opacity
+    }
+
+    // Cast to uint before modulus: Math.Abs(int.MinValue) overflows and stays negative,
+    // making % return a negative index. uint modulus is always non-negative.
+    internal static int HueIndex(string nick)
+    {
         int hash = 0;
         foreach (char c in nick.ToLowerInvariant())
             hash = hash * 31 + c;
-
-        var (r, g, b) = Hues[Math.Abs(hash) % Hues.Length];
-        return new SolidColorBrush(ColorHelper.FromArgb(0x1E, r, g, b)); // ~12% opacity
+        return (int)((uint)hash % (uint)Hues.Length);
     }
 }
