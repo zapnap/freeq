@@ -37,6 +37,18 @@ enum Command {
         #[arg(short, long, default_value = "freeq-user")]
         name: String,
     },
+    /// Connect to a freeq server, start/join an AV session, get iroh-live ticket
+    Server {
+        /// Server WebSocket URL (e.g. ws://127.0.0.1:8081/irc)
+        #[arg(short, long, default_value = "ws://127.0.0.1:8081")]
+        url: String,
+        /// Channel to join
+        #[arg(short, long, default_value = "#freeq")]
+        channel: String,
+        /// Display name / nick
+        #[arg(short, long, default_value = "freeq-av-user")]
+        name: String,
+    },
 }
 
 #[tokio::main]
@@ -59,6 +71,7 @@ async fn main() -> Result<()> {
                 .map_err(|e| anyhow::anyhow!("Invalid room ticket: {e}"))?;
             run_room(name, Some(ticket)).await
         }
+        Command::Server { url, channel, name } => run_server_session(&url, &channel, &name).await,
     }
 }
 
@@ -139,5 +152,96 @@ async fn run_room(display_name: String, existing_ticket: Option<RoomTicket>) -> 
     }
 
     live.shutdown().await;
+    Ok(())
+}
+
+/// Connect to a freeq server via IRC, start/join AV session, get iroh-live ticket.
+async fn run_server_session(url: &str, channel: &str, nick: &str) -> Result<()> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::TcpStream;
+
+    // Parse host:port from URL
+    let addr = url.trim_start_matches("ws://")
+        .trim_start_matches("wss://")
+        .trim_start_matches("irc://")
+        .trim_end_matches("/irc")
+        .trim_end_matches('/');
+    let addr = if addr.contains(':') { addr.to_string() } else { format!("{addr}:6667") };
+
+    println!("  Connecting to {addr}...");
+    let stream = TcpStream::connect(&addr).await?;
+    let (reader, mut writer) = stream.into_split();
+    let mut lines = BufReader::new(reader).lines();
+
+    // IRC registration
+    writer.write_all(format!("NICK {nick}\r\n").as_bytes()).await?;
+    writer.write_all(format!("USER {nick} 0 * :freeq-av\r\n").as_bytes()).await?;
+
+    let mut registered = false;
+    let mut ticket: Option<String> = None;
+
+    // Read until registered, then join channel and start session
+    while let Some(line) = lines.next_line().await? {
+        tracing::debug!("< {line}");
+
+        // Respond to PING
+        if line.starts_with("PING") {
+            let pong = line.replace("PING", "PONG");
+            writer.write_all(format!("{pong}\r\n").as_bytes()).await?;
+            continue;
+        }
+
+        // 001 = RPL_WELCOME — registered
+        if !registered && line.contains(" 001 ") {
+            registered = true;
+            println!("  Connected as {nick}");
+
+            // Join channel
+            writer.write_all(format!("JOIN {channel}\r\n").as_bytes()).await?;
+            println!("  Joined {channel}");
+
+            // Start AV session
+            writer.write_all(format!("@+freeq.at/av-start TAGMSG {channel}\r\n").as_bytes()).await?;
+            println!("  Starting AV session...");
+        }
+
+        // Look for AV ticket in NOTICE
+        if line.contains("AV ticket:") {
+            if let Some(t) = line.split("AV ticket: ").nth(1) {
+                let t = t.trim();
+                println!("  Got iroh-live ticket: {t}");
+                ticket = Some(t.to_string());
+                break;
+            }
+        }
+
+        // Look for "AV session started" confirmation
+        if line.contains("AV session started:") {
+            println!("  Session created, waiting for ticket...");
+        }
+    }
+
+    if let Some(ticket_str) = ticket {
+        println!("  Joining iroh-live room...\n");
+        let room_ticket: RoomTicket = ticket_str.parse()
+            .map_err(|e| anyhow::anyhow!("Invalid room ticket from server: {e}"))?;
+
+        // Keep the IRC connection alive in background
+        let mut writer2 = writer;
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            loop {
+                interval.tick().await;
+                let _ = writer2.write_all(b"PING :keepalive\r\n").await;
+            }
+        });
+
+        // Join the iroh-live room
+        run_room(nick.to_string(), Some(room_ticket)).await?;
+    } else {
+        println!("  No ticket received — server may not have iroh-live enabled.");
+        println!("  You can still use 'freeq-av room' for standalone calls.");
+    }
+
     Ok(())
 }
