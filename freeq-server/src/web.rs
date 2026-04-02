@@ -207,7 +207,7 @@ pub fn router(state: Arc<SharedState>) -> Router {
         // AV sessions
         .route("/api/v1/sessions", get(api_sessions_list))
         .route("/api/v1/sessions/{id}", get(api_session_detail))
-        .route("/api/v1/sessions/{id}/artifacts", get(api_session_artifacts))
+        .route("/api/v1/sessions/{id}/artifacts", get(api_session_artifacts).post(api_create_artifact))
         .route("/api/v1/channels/{name}/sessions", get(api_channel_sessions))
         .route("/auth/mobile", get(auth_mobile_redirect))
         .route("/join/{channel}", get(channel_invite_page))
@@ -2982,6 +2982,69 @@ async fn api_session_artifacts(
         })
         .collect();
     Json(serde_json::json!({ "artifacts": items }))
+}
+
+/// POST /api/v1/sessions/{id}/artifacts — attach an artifact to a session.
+async fn api_create_artifact(
+    State(state): State<Arc<SharedState>>,
+    Path(id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    // Verify session exists
+    {
+        let mgr = state.av_sessions.lock();
+        if mgr.get(&id).is_none() {
+            return Err((axum::http::StatusCode::NOT_FOUND, "Session not found".to_string()));
+        }
+    }
+
+    let kind_str = body["kind"].as_str().unwrap_or("summary");
+    let kind: crate::av::ArtifactKind = serde_json::from_str(&format!("\"{kind_str}\""))
+        .unwrap_or(crate::av::ArtifactKind::Summary);
+    let content_ref = body["content_ref"].as_str().ok_or((
+        axum::http::StatusCode::BAD_REQUEST, "content_ref required".to_string(),
+    ))?;
+    let content_type = body["content_type"].as_str().unwrap_or("text/plain");
+    let visibility_str = body["visibility"].as_str().unwrap_or("participants");
+    let visibility: crate::av::ArtifactVisibility = serde_json::from_str(&format!("\"{visibility_str}\""))
+        .unwrap_or(crate::av::ArtifactVisibility::Participants);
+    let title = body["title"].as_str();
+    let created_by = body["created_by"].as_str();
+
+    let artifact = crate::av::AvArtifact {
+        id: ulid::Ulid::new().to_string(),
+        session_id: id.clone(),
+        kind,
+        created_at: chrono::Utc::now().timestamp(),
+        created_by: created_by.map(|s| s.to_string()),
+        content_ref: content_ref.to_string(),
+        content_type: content_type.to_string(),
+        visibility,
+        title: title.map(|s| s.to_string()),
+    };
+
+    state.with_db(|db| db.save_av_artifact(&artifact));
+
+    // If session is bound to a channel, post a notice about the new artifact
+    let channel = {
+        let mgr = state.av_sessions.lock();
+        mgr.get(&id).and_then(|s| s.channel.clone())
+    };
+    if let Some(channel) = channel {
+        let kind_label = kind_str;
+        let title_display = title.unwrap_or(kind_label);
+        crate::connection::messaging::broadcast_av_notice(
+            &state, &channel,
+            &format!("Session artifact available: {title_display} ({kind_label})"),
+        );
+    }
+
+    Ok(Json(serde_json::json!({
+        "id": artifact.id,
+        "session_id": artifact.session_id,
+        "kind": artifact.kind,
+        "created_at": artifact.created_at,
+    })))
 }
 
 /// GET /api/v1/channels/{name}/sessions — sessions in a channel (active + recent).
