@@ -85,13 +85,23 @@ async fn run_room(display_name: String, existing_ticket: Option<RoomTicket>) -> 
     let broadcast = LocalBroadcast::new();
     let audio_backend = AudioBackend::default();
 
+    // List available devices
+    let inputs = AudioBackend::list_inputs();
+    let outputs = AudioBackend::list_outputs();
+    println!("  Audio devices:");
+    for d in &inputs { println!("    Input:  {}", d.name); }
+    for d in &outputs { println!("    Output: {}", d.name); }
+    if inputs.is_empty() { println!("    WARNING: No input devices!"); }
+    if outputs.is_empty() { println!("    WARNING: No output devices!"); }
+
     // Publish microphone
     let mic = audio_backend.default_input().await?;
     broadcast.audio().set(mic, AudioCodec::Opus, [AudioPreset::Hq])?;
-
     handle.publish("audio", &broadcast).await?;
-    tracing::info!("Publishing audio from microphone");
-    println!("  Microphone active. Press Ctrl+C to leave.\n");
+    println!("  Microphone active (Opus). Press Ctrl+C to leave.\n");
+
+    // Keep track handles alive so playback doesn't stop
+    let mut _active_tracks: Vec<iroh_live::media::subscribe::MediaTracks> = Vec::new();
 
     // Event loop — handle incoming participants
     loop {
@@ -109,6 +119,8 @@ async fn run_room(display_name: String, existing_ticket: Option<RoomTicket>) -> 
                         tracing::info!(%remote, "Receiving audio");
                         println!("  ~ Receiving audio from {remote}");
                     }
+                    // Keep the tracks handle alive — dropping it stops playback
+                    _active_tracks.push(tracks);
                 }
                 RoomEvent::PeerLeft { remote } => {
                     println!("  - {remote} left");
