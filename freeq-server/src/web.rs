@@ -3102,5 +3102,6 @@ fn session_to_json(s: &crate::av::AvSession, mgr: &crate::av::AvSessionManager) 
         "participant_count": mgr.active_participant_count(&s.id),
         "media_backend": s.media_backend,
         "recording_enabled": s.recording_enabled,
+        "iroh_ticket": s.iroh_ticket,
     })
 }

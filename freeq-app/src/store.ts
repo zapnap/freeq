@@ -104,6 +104,7 @@ export interface AvSession {
   participants: Map<string, AvParticipant>;
   state: 'active' | 'ended';
   startedAt: Date;
+  irohTicket?: string;     // Room ticket for media transport
 }
 
 export interface AvParticipant {

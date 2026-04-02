@@ -831,6 +831,22 @@ async function handleLine(rawLine: string) {
       if (noticeActorClass && from && (target.startsWith('#') || target.startsWith('&'))) {
         store.addMember(target, { nick: from, actorClass: noticeActorClass });
       }
+      // Capture AV session ticket from server NOTICE
+      const ticketMatch = text.match(/^AV ticket: (.+)$/);
+      if (ticketMatch) {
+        const ticket = ticketMatch[1];
+        // Find the active session we're in and attach the ticket
+        const activeId = store.activeAvSession;
+        if (activeId) {
+          const session = store.avSessions.get(activeId);
+          if (session) {
+            store.updateAvSession({ ...session, irohTicket: ticket });
+          }
+        }
+        // Don't display this as a regular message
+        break;
+      }
+
       // Handle pin/unpin sync broadcasts (update local state, then show server's message)
       const pinMsgid = msg.tags?.['+freeq.at/pin'];
       const unpinMsgid = msg.tags?.['+freeq.at/unpin'];

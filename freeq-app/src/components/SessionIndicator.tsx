@@ -1,6 +1,9 @@
 import { useStore } from '../store';
 import { joinAvSession, leaveAvSession, endAvSession, startAvSession, getNick } from '../irc/client';
 
+// Relay port for WebTransport audio (iroh-live relay)
+const RELAY_PORT = 4443;
+
 /** Shows active AV session status in the channel header. */
 export function SessionIndicator({ channel }: { channel: string }) {
   const avSessions = useStore((s) => s.avSessions);
@@ -31,6 +34,26 @@ export function SessionIndicator({ channel }: { channel: string }) {
   const myNick = getNick();
   const isHost = session.createdByNick.toLowerCase() === myNick.toLowerCase();
 
+  const openAudio = () => {
+    if (session.irohTicket) {
+      // Open relay's built-in web app with the room ticket
+      const relayUrl = `https://${window.location.hostname}:${RELAY_PORT}/?name=${encodeURIComponent(session.irohTicket)}`;
+      window.open(relayUrl, `av-${session.id}`, 'width=400,height=300');
+    } else {
+      // Fetch ticket from REST API
+      fetch(`/api/v1/sessions/${session.id}`)
+        .then(r => r.json())
+        .then(data => {
+          if (data.iroh_ticket) {
+            const store = useStore.getState();
+            store.updateAvSession({ ...session, irohTicket: data.iroh_ticket });
+            const relayUrl = `https://${window.location.hostname}:${RELAY_PORT}/?name=${encodeURIComponent(data.iroh_ticket)}`;
+            window.open(relayUrl, `av-${session.id}`, 'width=400,height=300');
+          }
+        });
+    }
+  };
+
   return (
     <div className="flex items-center gap-2">
       <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium ${
@@ -52,6 +75,14 @@ export function SessionIndicator({ channel }: { channel: string }) {
 
       {isInSession && (
         <div className="flex items-center gap-1">
+          <button
+            onClick={openAudio}
+            className="text-xs px-2.5 py-1 rounded-lg bg-success/15 text-success hover:bg-success/25 font-medium flex items-center gap-1"
+            title="Open audio connection"
+          >
+            <MicIcon />
+            Audio
+          </button>
           <button
             onClick={() => leaveAvSession(channel, session.id)}
             className="text-xs px-2 py-1 rounded-lg bg-danger/10 text-danger hover:bg-danger/20 font-medium"
@@ -77,6 +108,15 @@ function PhoneIcon() {
   return (
     <svg className="w-3.5 h-3.5" viewBox="0 0 16 16" fill="currentColor">
       <path d="M3.654 1.328a.678.678 0 0 0-1.015-.063L1.605 2.3c-.483.484-.661 1.169-.45 1.77a17.568 17.568 0 0 0 4.168 6.608 17.569 17.569 0 0 0 6.608 4.168c.601.211 1.286.033 1.77-.45l1.034-1.034a.678.678 0 0 0-.063-1.015l-2.307-1.794a.678.678 0 0 0-.58-.122l-2.19.547a1.745 1.745 0 0 1-1.657-.459L5.482 8.062a1.745 1.745 0 0 1-.46-1.657l.548-2.19a.678.678 0 0 0-.122-.58L3.654 1.328zM1.884.511a1.745 1.745 0 0 1 2.612.163L6.29 2.98c.329.423.445.974.315 1.494l-.547 2.19a.678.678 0 0 0 .178.643l2.457 2.457a.678.678 0 0 0 .644.178l2.189-.547a1.745 1.745 0 0 1 1.494.315l2.306 1.794c.829.645.905 1.87.163 2.611l-1.034 1.034c-.74.74-1.846 1.065-2.877.702a18.634 18.634 0 0 1-7.01-4.42 18.634 18.634 0 0 1-4.42-7.009c-.362-1.03-.037-2.137.703-2.877L1.885.511z"/>
+    </svg>
+  );
+}
+
+function MicIcon() {
+  return (
+    <svg className="w-3 h-3" viewBox="0 0 16 16" fill="currentColor">
+      <path d="M3.5 6.5A.5.5 0 0 1 4 7v1a4 4 0 0 0 8 0V7a.5.5 0 0 1 1 0v1a5 5 0 0 1-4.5 4.975V15h3a.5.5 0 0 1 0 1h-7a.5.5 0 0 1 0-1h3v-2.025A5 5 0 0 1 3 8V7a.5.5 0 0 1 .5-.5z"/>
+      <path d="M10 8a2 2 0 1 1-4 0V3a2 2 0 1 1 4 0v5zM8 0a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V3a3 3 0 0 0-3-3z"/>
     </svg>
   );
 }
