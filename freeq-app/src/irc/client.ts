@@ -1335,6 +1335,15 @@ function handleAvSessionState(
         if (actorNick.toLowerCase() === nick.toLowerCase()) {
           store.setActiveAvSession(existing.id);
         }
+        // If we're already in this session with audio active, connect to the new participant
+        if (store.activeAvSession === existing.id && actorNick.toLowerCase() !== nick.toLowerCase()) {
+          import('../lib/webrtc-audio').then(({ isAudioActive, connectToPeer }) => {
+            if (isAudioActive()) {
+              console.log(`[av] New participant ${actorNick} — connecting WebRTC`);
+              connectToPeer(actorNick);
+            }
+          });
+        }
       }
       break;
     }

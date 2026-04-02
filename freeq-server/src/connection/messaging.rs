@@ -109,9 +109,10 @@ pub(super) fn handle_tagmsg(
     }
 
     // ── AV session control (+freeq.at/av-*) ──
-    if let Some(av_tag) = tags.keys().find(|k| k.starts_with("+freeq.at/av-")) {
+    // av-signal is a relay tag (WebRTC signaling) — must be forwarded, not consumed
+    if let Some(av_tag) = tags.keys().find(|k| k.starts_with("+freeq.at/av-") && !k.contains("signal")) {
         handle_av_tagmsg(conn, target, tags, av_tag, state);
-        return; // AV tags are control messages; don't relay as generic TAGMSG
+        return; // AV control tags are consumed server-side; don't relay
     }
 
     // ── Persist reactions (+react with +reply) ──
