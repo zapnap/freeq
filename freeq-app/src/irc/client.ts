@@ -911,8 +911,8 @@ async function handleLine(rawLine: string) {
       const avSignal = msg.tags['+freeq.at/av-signal'];
       if (avSignal && from) {
         const chunkInfo = msg.tags['+freeq.at/av-chunk'];
+        let signalData: string | null = null;
         if (chunkInfo) {
-          // Chunked signal — reassemble
           const [id, idx, total] = chunkInfo.split(':');
           const key = `${from}:${id}`;
           if (!signalChunks.has(key)) signalChunks.set(key, new Array(parseInt(total)));
@@ -920,12 +920,18 @@ async function handleLine(rawLine: string) {
           chunks[parseInt(idx)] = avSignal;
           if (chunks.every(c => c !== undefined)) {
             signalChunks.delete(key);
-            const full = decodeURIComponent(chunks.join(''));
-            import('../lib/webrtc-audio').then(({ handleSignal }) => handleSignal(from, full));
+            signalData = decodeURIComponent(chunks.join(''));
           }
         } else {
-          import('../lib/webrtc-audio').then(({ handleSignal }) => {
-            handleSignal(from, decodeURIComponent(avSignal));
+          signalData = decodeURIComponent(avSignal);
+        }
+        if (signalData) {
+          const sigFrom = from;
+          const sigData = signalData;
+          // Set callback + handle signal in one import to avoid race
+          import('../lib/webrtc-audio').then(({ setSignalCallback, handleSignal }) => {
+            setSignalCallback((target, data) => sendAvSignal(target, data));
+            handleSignal(sigFrom, sigData);
           });
         }
       }
