@@ -7553,3 +7553,66 @@ async fn s2s_dm_s2s1_bidirectional_dm() {
     let _ = ha.quit(Some("done")).await;
     let _ = hb.quit(Some("done")).await;
 }
+
+// ── PIN-S2S-1: Pin visible cross-server ──
+
+#[tokio::test]
+async fn s2s_pin1_pin_visible_cross_server() {
+    let Some((local, remote)) = get_servers() else {
+        return;
+    };
+    let channel = test_channel("pin1");
+    let nick_a = test_nick("pin1", "a");
+    let nick_b = test_nick("pin1", "b");
+
+    let (ha, mut ea) = connect_guest(&local, &nick_a).await;
+    wait_registered(&mut ea).await;
+    ha.join(&channel).await.unwrap();
+    wait_joined(&mut ea, &channel).await;
+
+    let (hb, mut eb) = connect_guest(&remote, &nick_b).await;
+    wait_registered(&mut eb).await;
+    hb.join(&channel).await.unwrap();
+    wait_joined(&mut eb, &channel).await;
+
+    tokio::time::sleep(S2S_SETTLE).await;
+    drain(&mut ea).await;
+    drain(&mut eb).await;
+
+    // A sends a message to pin
+    let msg_text = format!("pin-target-{}", rand::random::<u16>());
+    ha.privmsg(&channel, &msg_text).await.unwrap();
+    let evt = wait_message_event_containing(&mut eb, &msg_text).await;
+    let msgid = if let Event::Message { tags, .. } = &evt {
+        tags.get("msgid").cloned().unwrap_or_default()
+    } else {
+        String::new()
+    };
+    assert!(!msgid.is_empty(), "Message should have a msgid");
+
+    // A is op (created channel), A pins the message
+    ha.pin(&channel, &msgid).await.unwrap();
+
+    // B should see the pin notification via S2S (NOTICE with +freeq.at/pin tag or ACTION text)
+    let pin_evt = timeout(S2S_TIMEOUT, async {
+        loop {
+            if let Some(evt) = eb.recv().await {
+                match &evt {
+                    Event::Message { text, tags, .. }
+                        if text.contains("pinned") || tags.get("+freeq.at/pin").is_some() =>
+                    {
+                        return evt;
+                    }
+                    _ => continue,
+                }
+            }
+        }
+    })
+    .await;
+
+    assert!(pin_evt.is_ok(), "B should receive A's pin via S2S");
+    eprintln!("  ✓ PIN-S2S-1: pin visible cross-server");
+
+    let _ = ha.quit(Some("done")).await;
+    let _ = hb.quit(Some("done")).await;
+}

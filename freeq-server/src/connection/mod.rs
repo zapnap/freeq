@@ -934,6 +934,18 @@ where
                                 irc::escape_tag_value(msgid)
                             );
                             helpers::broadcast_to_channel(&state, &channel, &notice);
+                            // Broadcast to S2S peers
+                            helpers::s2s_broadcast(
+                                &state,
+                                crate::s2s::S2sMessage::Pin {
+                                    event_id: helpers::s2s_next_event_id(&state),
+                                    channel: channel.clone(),
+                                    msgid: msgid.to_string(),
+                                    pinned_by: nick.to_string(),
+                                    adding: true,
+                                    origin: state.server_iroh_id.lock().clone().unwrap_or_default(),
+                                },
+                            );
                         }
                     } else {
                         let before = ch.pins.len();
@@ -950,6 +962,18 @@ where
                                 irc::escape_tag_value(msgid)
                             );
                             helpers::broadcast_to_channel(&state, &channel, &notice);
+                            // Broadcast to S2S peers
+                            helpers::s2s_broadcast(
+                                &state,
+                                crate::s2s::S2sMessage::Pin {
+                                    event_id: helpers::s2s_next_event_id(&state),
+                                    channel: channel.clone(),
+                                    msgid: msgid.to_string(),
+                                    pinned_by: nick.to_string(),
+                                    adding: false,
+                                    origin: state.server_iroh_id.lock().clone().unwrap_or_default(),
+                                },
+                            );
                         } else {
                             let reply = Message::from_server(
                                 &server_name,

@@ -1772,6 +1772,9 @@ pub(crate) async fn process_s2s_message(
         S2sMessage::Tagmsg {
             event_id, origin, ..
         } => (event_id.clone(), origin.clone()),
+        S2sMessage::Pin {
+            event_id, origin, ..
+        } => (event_id.clone(), origin.clone()),
         S2sMessage::Join {
             event_id, origin, ..
         } => (event_id.clone(), origin.clone()),
@@ -1834,6 +1837,7 @@ pub(crate) async fn process_s2s_message(
         // Readonly peers cannot originate any events
         (S2sMessage::Privmsg { .. }
         | S2sMessage::Tagmsg { .. }
+        | S2sMessage::Pin { .. }
         | S2sMessage::Join { .. }
         | S2sMessage::Part { .. }
         | S2sMessage::Quit { .. }
@@ -2130,6 +2134,64 @@ pub(crate) async fn process_s2s_message(
                     state.with_db(|db| {
                         db.insert_message(&dm_key, &from, &text, timestamp, &tags, Some(&msgid), sender_did.as_deref())
                     });
+                }
+            }
+        }
+
+        S2sMessage::Pin {
+            channel,
+            msgid,
+            pinned_by,
+            adding,
+            ..
+        } => {
+            let channel = sanitize_s2s_str(&channel, 200).to_lowercase();
+            let msgid = sanitize_s2s_str(&msgid, 100);
+            let pinned_by = sanitize_s2s_str(&pinned_by, 64);
+
+            let mut channels = state.channels.lock();
+            if let Some(ch) = channels.get_mut(&channel) {
+                if adding {
+                    if !ch.pins.iter().any(|p| p.msgid == msgid) {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        ch.pins.insert(0, crate::server::PinnedMessage {
+                            msgid: msgid.clone(),
+                            pinned_by: pinned_by.clone(),
+                            pinned_at: now,
+                        });
+                        ch.pins.truncate(50);
+                        drop(channels);
+                        state.with_db(|db| db.store_pin(&channel, &msgid, &pinned_by, now));
+                    } else {
+                        drop(channels);
+                    }
+                } else {
+                    ch.pins.retain(|p| p.msgid != msgid);
+                    drop(channels);
+                    state.with_db(|db| db.remove_pin(&channel, &msgid));
+                }
+
+                // Notify local members
+                let tag = if adding { "+freeq.at/pin" } else { "+freeq.at/unpin" };
+                let action = if adding { "pinned" } else { "unpinned" };
+                let notice = format!(
+                    "@{tag}={} :{pinned_by}!~u@s2s NOTICE {channel} :\x01ACTION {action} a message\x01\r\n",
+                    crate::irc::escape_tag_value(&msgid)
+                );
+                let members: Vec<String> = state
+                    .channels
+                    .lock()
+                    .get(&channel)
+                    .map(|ch| ch.members.iter().cloned().collect())
+                    .unwrap_or_default();
+                let conns = state.connections.lock();
+                for sid in &members {
+                    if let Some(tx) = conns.get(sid) {
+                        let _ = tx.try_send(notice.clone());
+                    }
                 }
             }
         }

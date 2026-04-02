@@ -186,6 +186,22 @@ pub enum S2sMessage {
         sig: Option<String>,
     },
 
+    /// A PIN/UNPIN relayed between servers.
+    #[serde(rename = "pin")]
+    Pin {
+        #[serde(default)]
+        event_id: String,
+        channel: String,
+        /// The ULID msgid of the pinned/unpinned message.
+        msgid: String,
+        /// Who pinned/unpinned it.
+        pinned_by: String,
+        /// true = pin added, false = pin removed.
+        #[serde(default)]
+        adding: bool,
+        origin: String,
+    },
+
     /// A TAGMSG relayed between servers (reactions, typing, etc.).
     #[serde(rename = "tagmsg")]
     Tagmsg {
