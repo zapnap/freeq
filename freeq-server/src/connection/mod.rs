@@ -1108,6 +1108,12 @@ where
                     continue;
                 }
                 if let Some(target) = msg.params.first() {
+                    tracing::info!(
+                        nick = %conn.nick_or_star(),
+                        target = %target,
+                        tags = ?msg.tags.keys().collect::<Vec<_>>(),
+                        "TAGMSG received"
+                    );
                     handle_tagmsg(&conn, target, &msg.tags, &state);
                 }
             }
