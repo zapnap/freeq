@@ -1,8 +1,8 @@
 # freeq staging — IRC server + web client in one image
 
 # ── Rust build ──
-FROM rust:1.89-slim AS builder
-RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+FROM rust:1.93-slim AS builder
+RUN apt-get update && apt-get install -y pkg-config libssl-dev cmake clang libasound2-dev && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY freeq-sdk/ freeq-sdk/
