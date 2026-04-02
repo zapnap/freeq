@@ -47,8 +47,9 @@ iroh-quinn = { workspace = true }
 parking_lot = { version = "0.12", features = ["deadlock_detection"] }
 automerge = { workspace = true }
 ulid = "1"
-iroh-live = { git = "https://github.com/n0-computer/iroh-live", default-features = false, features = ["opus"] }
-# iroh-live-relay deferred — too large for Miren build (disk space). Using WebRTC for browser audio.
+# iroh-live deferred — dep tree too large for Miren builder (disk space).
+# AV sessions use WebRTC for browser audio instead. iroh-live rooms will be
+# re-enabled when running on a larger build server or when iroh-live slims down.
 toml = "0.8"
 
 [dev-dependencies]

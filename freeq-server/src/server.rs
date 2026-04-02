@@ -1148,17 +1148,11 @@ impl Server {
             tracing::error!("S2S requires iroh transport (--iroh)");
         }
 
-        // Initialize iroh-live media backend for AV sessions
-        if let Some(ref endpoint) = iroh_endpoint {
-            match crate::av_media::IrohLiveBackend::new(endpoint.clone()).await {
-                Ok(backend) => {
-                    *state.av_media.lock() = Some(Arc::new(backend));
-                    tracing::info!("iroh-live AV media backend initialized");
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to init iroh-live media backend: {e} (AV sessions will have no audio)");
-                }
-            }
+        // Initialize AV media backend (WebRTC signaling — actual audio is peer-to-peer in browser)
+        {
+            let backend = crate::av_media::IrohLiveBackend::new();
+            *state.av_media.lock() = Some(Arc::new(backend));
+            tracing::info!("AV media backend initialized (WebRTC signaling)");
         }
 
         // Store iroh endpoint in shared state to keep it alive
