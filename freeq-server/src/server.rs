@@ -1769,6 +1769,9 @@ pub(crate) async fn process_s2s_message(
         S2sMessage::Privmsg {
             event_id, origin, ..
         } => (event_id.clone(), origin.clone()),
+        S2sMessage::Tagmsg {
+            event_id, origin, ..
+        } => (event_id.clone(), origin.clone()),
         S2sMessage::Join {
             event_id, origin, ..
         } => (event_id.clone(), origin.clone()),
@@ -1830,6 +1833,7 @@ pub(crate) async fn process_s2s_message(
     match (&msg, peer_trust) {
         // Readonly peers cannot originate any events
         (S2sMessage::Privmsg { .. }
+        | S2sMessage::Tagmsg { .. }
         | S2sMessage::Join { .. }
         | S2sMessage::Part { .. }
         | S2sMessage::Quit { .. }
@@ -2126,6 +2130,63 @@ pub(crate) async fn process_s2s_message(
                     state.with_db(|db| {
                         db.insert_message(&dm_key, &from, &text, timestamp, &tags, Some(&msgid), sender_did.as_deref())
                     });
+                }
+            }
+        }
+
+        S2sMessage::Tagmsg {
+            from,
+            target,
+            tags,
+            ..
+        } => {
+            let from = sanitize_s2s_str(&from, 512);
+            let target = sanitize_s2s_str(&target, 200);
+
+            // Persist reactions
+            if let (Some(emoji), Some(target_msgid)) = (tags.get("+react"), tags.get("+reply")) {
+                let nick = from.split('!').next().unwrap_or(&from).to_string();
+                let did = state.nick_owners.lock().get(&nick.to_lowercase()).cloned();
+                let ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let emoji = emoji.clone();
+                let target_msgid = target_msgid.clone();
+                let channel = target.clone();
+                state.with_db(|db| db.store_reaction(&target_msgid, &channel, &nick, did.as_deref(), &emoji, ts));
+            }
+
+            // Deliver to local channel members
+            if target.starts_with('#') || target.starts_with('&') {
+                let tag_msg = crate::irc::Message {
+                    tags: tags.clone(),
+                    prefix: Some(from.clone()),
+                    command: "TAGMSG".to_string(),
+                    params: vec![target.clone()],
+                };
+                let tagged_line = format!("{tag_msg}\r\n");
+
+                let plain_fallback = tags.get("+react").map(|emoji| {
+                    format!(":{from} PRIVMSG {target} :\x01ACTION reacted with {emoji}\x01\r\n")
+                });
+
+                let members: Vec<String> = state
+                    .channels
+                    .lock()
+                    .get(&target.to_lowercase())
+                    .map(|ch| ch.members.iter().cloned().collect())
+                    .unwrap_or_default();
+                let tag_caps = state.cap_message_tags.lock();
+                let conns = state.connections.lock();
+                for sid in &members {
+                    if let Some(tx) = conns.get(sid) {
+                        if tag_caps.contains(sid) {
+                            let _ = tx.try_send(tagged_line.clone());
+                        } else if let Some(ref fallback) = plain_fallback {
+                            let _ = tx.try_send(fallback.clone());
+                        }
+                    }
                 }
             }
         }
@@ -3771,6 +3832,44 @@ mod s2s_adversarial_tests {
         }
         assert!(count <= 100,
             "S2S rate limit breached: received {count} messages (limit 100/sec)");
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // S2S TAGMSG: reaction delivery to local users
+    // ═══════════════════════════════════════════════════════════
+
+    #[tokio::test]
+    async fn s2s_tagmsg_reaction_delivered_to_local_user() {
+        let state = test_state();
+        let mgr = test_manager();
+        setup_authenticated_peer(&state, &mgr).await;
+        setup_channel(&state, "#react-test");
+
+        let (tx, mut rx) = mpsc::channel(16);
+        state.connections.lock().insert("react-sess".to_string(), tx);
+        state.nick_to_session.lock().insert("reactor", "react-sess");
+        state.channels.lock().get_mut("#react-test").unwrap()
+            .members.insert("react-sess".to_string());
+        state.cap_message_tags.lock().insert("react-sess".to_string());
+
+        let mut tags = HashMap::new();
+        tags.insert("+react".to_string(), "👍".to_string());
+        tags.insert("+reply".to_string(), "msg001".to_string());
+
+        process_s2s_message(&state, &mgr, PEER, S2sMessage::Tagmsg {
+            event_id: format!("{PEER}:tag1"),
+            from: "alice!a@remote".to_string(),
+            target: "#react-test".to_string(),
+            tags,
+            origin: PEER.to_string(),
+        }).await;
+
+        let msg = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            rx.recv()
+        ).await.expect("timeout").expect("channel closed");
+        assert!(msg.contains("TAGMSG"), "Should be TAGMSG, got: {msg}");
+        assert!(msg.contains("+react="), "Should contain reaction, got: {msg}");
     }
 
     // ═══════════════════════════════════════════════════════════

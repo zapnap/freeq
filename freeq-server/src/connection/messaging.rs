@@ -225,6 +225,18 @@ pub(super) fn handle_tagmsg(
                 }
             }
         }
+
+        // Broadcast channel TAGMSG to S2S peers
+        super::helpers::s2s_broadcast(
+            state,
+            crate::s2s::S2sMessage::Tagmsg {
+                event_id: super::helpers::s2s_next_event_id(state),
+                from: conn.hostmask(),
+                target: target.to_string(),
+                tags: tags.clone(),
+                origin: state.server_iroh_id.lock().clone().unwrap_or_default(),
+            },
+        );
     } else {
         // TAGMSG to a nick — route through federation layer.
         use super::routing::{RouteResult, relay_to_nick};
