@@ -488,6 +488,8 @@ pub struct SharedState {
     pub iroh_endpoint: Mutex<Option<iroh::Endpoint>>,
     /// AV session manager (voice/video/screen sharing).
     pub av_sessions: Mutex<crate::av::AvSessionManager>,
+    /// AV media backend (iroh-live rooms).
+    pub av_media: Mutex<Option<Arc<crate::av_media::IrohLiveBackend>>>,
     /// S2S manager (if clustering is active).
     pub s2s_manager: Mutex<Option<Arc<crate::s2s::S2sManager>>>,
     /// CRDT document for cluster state convergence.
@@ -949,6 +951,7 @@ impl Server {
             server_iroh_id: Mutex::new(None),
             iroh_endpoint: Mutex::new(None),
             av_sessions: Mutex::new(crate::av::AvSessionManager::new()),
+            av_media: Mutex::new(None),
             s2s_manager: Mutex::new(None),
             cluster_doc: crate::crdt::ClusterDoc::new(&self.config.server_name),
             db: db.map(Mutex::new),
@@ -1143,6 +1146,19 @@ impl Server {
             }
         } else if !self.config.s2s_peers.is_empty() {
             tracing::error!("S2S requires iroh transport (--iroh)");
+        }
+
+        // Initialize iroh-live media backend for AV sessions
+        if let Some(ref endpoint) = iroh_endpoint {
+            match crate::av_media::IrohLiveBackend::new(endpoint.clone()).await {
+                Ok(backend) => {
+                    *state.av_media.lock() = Some(Arc::new(backend));
+                    tracing::info!("iroh-live AV media backend initialized");
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to init iroh-live media backend: {e} (AV sessions will have no audio)");
+                }
+            }
         }
 
         // Store iroh endpoint in shared state to keep it alive
@@ -3412,6 +3428,7 @@ mod s2s_adversarial_tests {
             server_iroh_id: Mutex::new(Some("test-server-id".to_string())),
             iroh_endpoint: Mutex::new(None),
             av_sessions: Mutex::new(crate::av::AvSessionManager::new()),
+            av_media: Mutex::new(None),
             s2s_manager: Mutex::new(None),
             cluster_doc: crate::crdt::ClusterDoc::new("test-server-id"),
             db: None,
@@ -3929,6 +3946,7 @@ mod s2s_adversarial_tests {
             server_iroh_id: Mutex::new(Some("test-server-id".to_string())),
             iroh_endpoint: Mutex::new(None),
             av_sessions: Mutex::new(crate::av::AvSessionManager::new()),
+            av_media: Mutex::new(None),
             s2s_manager: Mutex::new(None),
             cluster_doc: crate::crdt::ClusterDoc::new("test-server-id"),
             db: Some(Mutex::new(db)),
