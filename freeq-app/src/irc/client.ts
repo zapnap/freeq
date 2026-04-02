@@ -1292,6 +1292,10 @@ function handleAvSessionState(
         startedAt: new Date(),
       };
       store.updateAvSession(session);
+      // If we started it, mark us as in the session
+      if (actorNick.toLowerCase() === nick.toLowerCase()) {
+        store.setActiveAvSession(sessionId);
+      }
       break;
     }
     case 'joined': {
@@ -1304,6 +1308,9 @@ function handleAvSessionState(
           joinedAt: new Date(),
         });
         store.updateAvSession(updated);
+        if (actorNick.toLowerCase() === nick.toLowerCase()) {
+          store.setActiveAvSession(existing.id);
+        }
       }
       break;
     }
