@@ -189,6 +189,22 @@ If something feels “too clever,” it’s probably wrong.
 
 ---
 
+## Hotspot Analysis
+
+Run `./scripts/hotspots.sh` at session start to identify high-risk files. Focus adversarial testing, careful review, and iterative refactoring on files with high gamma scores. Files with low gamma can be changed quickly.
+
+**Current hotspots (updated 2026-03-31):**
+- `server.rs` (gamma 334) — heavily tested, 116 unit/integration tests
+- `web.rs` (gamma 275) — 41 tests (broker + upload + REST)
+- `irc/client.ts` (gamma 133) — **UNDERTESTED** — needs dedicated unit tests
+- `MessageList.tsx` (gamma 103) — **UNDERTESTED** — only Playwright coverage
+- `sdk/client.rs` (gamma 104) — **ZERO unit tests** on connection state machine
+- `store.ts` (gamma 43) — well tested (397 vitest)
+
+When modifying a high-gamma file, write tests FIRST.
+
+---
+
 ## TODO
 
 ### P0 — Critical (do next)

@@ -21,15 +21,15 @@ export default defineConfig({
       '/irc': {
         target: FREEQ_WEB,
         ws: true,
-        changeOrigin: false, // preserve browser Host header
+        changeOrigin: false, // preserve browser Host so server builds localhost redirect URIs
       },
       '/api': {
         target: FREEQ_WEB,
-        changeOrigin: true, // required for HTTPS targets
+        changeOrigin: false,
       },
       '/auth': {
         target: FREEQ_WEB,
-        changeOrigin: false, // server needs browser Host for redirect_uri
+        changeOrigin: false,
       },
     },
   },

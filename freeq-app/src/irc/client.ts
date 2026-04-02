@@ -42,14 +42,6 @@ function saveJoinedChannels() {
   } catch { /* quota exceeded, etc */ }
 }
 
-function loadSavedChannels(): string[] {
-  try {
-    const stored = localStorage.getItem(SAVED_CHANNELS_KEY);
-    if (stored) return JSON.parse(stored);
-  } catch { /* corrupted */ }
-  return [];
-}
-
 // Background WHOIS lookups (suppress output for these)
 const backgroundWhois = new Set<string>();
 
@@ -379,6 +371,13 @@ export function sendReaction(target: string, emoji: string, msgId?: string) {
   const tags: Record<string, string> = { '+react': emoji };
   if (msgId) tags['+reply'] = msgId;
   raw(format('TAGMSG', [target], tags));
+
+  // Optimistic local echo — show the reaction immediately.
+  // If the server echoes it back (echo-message cap), addReaction uses a Set
+  // so the duplicate is harmlessly ignored.
+  if (msgId) {
+    useStore.getState().addReaction(target, msgId, emoji, nick);
+  }
 }
 
 export function joinChannel(channel: string) {
@@ -609,7 +608,7 @@ async function handleLine(rawLine: string) {
 
     case 'NICK': {
       const newNick = msg.params[0];
-      if (from === nick) {
+      if (from.toLowerCase() === nick.toLowerCase()) {
         nick = newNick;
         store.setNick(nick);
       }
@@ -620,7 +619,7 @@ async function handleLine(rawLine: string) {
     case 'JOIN': {
       const channel = msg.params[0];
       const account = msg.params[1]; // extended-join
-      if (from === nick) {
+      if (from.toLowerCase() === nick.toLowerCase()) {
         store.addChannel(channel);
         store.clearMembers(channel); // Clear stale members before NAMES reply arrives
         // Only auto-switch if no saved channel preference or still on server tab
@@ -649,7 +648,7 @@ async function handleLine(rawLine: string) {
 
     case 'PART': {
       const channel = msg.params[0];
-      if (from === nick) {
+      if (from.toLowerCase() === nick.toLowerCase()) {
         store.removeChannel(channel);
         joinedChannels.delete(channel.toLowerCase());
         saveJoinedChannels();
@@ -764,13 +763,33 @@ async function handleLine(rawLine: string) {
         isStreaming: msg.tags['+freeq.at/streaming'] === '1',
       };
 
+      // Parse persisted reactions from CHATHISTORY
+      const reactionsTag = msg.tags['+freeq.at/reactions'];
+      if (reactionsTag && message.id) {
+        // Format: emoji1:nick1,nick2;emoji2:nick3
+        for (const part of reactionsTag.split(';')) {
+          const [emoji, nicks] = part.split(':');
+          if (emoji && nicks) {
+            for (const n of nicks.split(',')) {
+              if (n) {
+                message.reactions = message.reactions || new Map();
+                const set = message.reactions.get(emoji) || new Set();
+                set.add(n);
+                message.reactions.set(emoji, set);
+              }
+            }
+          }
+        }
+      }
+
       // Ensure DM buffer exists
       if (!isChannel && !useStore.getState().channels.has(bufName.toLowerCase())) {
         useStore.getState().addChannel(bufName);
       }
 
       // Background WHOIS for DM partners to learn their DID (enables E2EE)
-      if (!isChannel && !isSelf && !didForNick(from) && !backgroundWhois.has(from.toLowerCase())) {
+      // Cap at 500 to prevent unbounded memory growth on unreliable servers
+      if (!isChannel && !isSelf && !didForNick(from) && !backgroundWhois.has(from.toLowerCase()) && backgroundWhois.size < 500) {
         backgroundWhois.add(from.toLowerCase());
         raw(`WHOIS ${from}`);
       }
@@ -928,10 +947,20 @@ async function handleLine(rawLine: string) {
     case 'MODE': {
       const target = msg.params[0];
       if (target.startsWith('#') || target.startsWith('&')) {
-        const mode = msg.params[1] || '';
-        const arg = msg.params[2];
-        store.handleMode(target, mode, arg, from);
-        store.addSystemMessage(target, `${from} set mode ${mode}${arg ? ' ' + arg : ''}`);
+        const modeStr = msg.params[1] || '';
+        // Parse compound mode string: "+ov alice bob" → [+o alice, +v bob]
+        // Modes that take an argument: o, h, v, k, b
+        const argsWithParam = new Set(['o', 'h', 'v', 'k', 'b']);
+        let adding = true;
+        let argIdx = 2; // msg.params index for next arg
+        for (const ch of modeStr) {
+          if (ch === '+') { adding = true; continue; }
+          if (ch === '-') { adding = false; continue; }
+          const modeArg = argsWithParam.has(ch) ? msg.params[argIdx++] : undefined;
+          store.handleMode(target, `${adding ? '+' : '-'}${ch}`, modeArg, from);
+        }
+        const allArgs = msg.params.slice(2).join(' ');
+        store.addSystemMessage(target, `${from} set mode ${modeStr}${allArgs ? ' ' + allArgs : ''}`);
       }
       break;
     }
@@ -1075,12 +1104,12 @@ async function handleLine(rawLine: string) {
     }
     case '330': { // RPL_WHOISACCOUNT (DID)
       const whoisNick = msg.params[1] || '';
-      const did = msg.params[2] || '';
+      const did = msg.params[2]?.trim() || undefined;
       store.updateWhois(whoisNick, { did });
       if (!backgroundWhois.has(whoisNick.toLowerCase())) {
         store.addSystemMessage('server', `  DID: ${did}`);
       }
-      if (whoisNick) {
+      if (whoisNick && did) {
         store.updateMemberDid(whoisNick, did);
       }
       if (did) {
@@ -1108,7 +1137,7 @@ async function handleLine(rawLine: string) {
     }
     case '671': { // AT handle
       const whoisNick = msg.params[1] || '';
-      const handle = msg.params[2] || '';
+      const handle = msg.params[2]?.trim() || undefined;
       store.updateWhois(whoisNick, { handle });
       if (!backgroundWhois.has(whoisNick.toLowerCase())) {
         store.addSystemMessage('server', `  Handle: ${handle}`);

@@ -141,7 +141,7 @@ export function ConnectScreen() {
     if (stored) return stored;
     if (isTauri) return 'https://auth.freeq.at';
     const host = window.location.host;
-    if (host.endsWith('freeq.at')) return 'https://auth.freeq.at';
+    if (host === 'irc.freeq.at') return 'https://auth.freeq.at';
     return webOrigin;
   });
   const [error, setError] = useState('');

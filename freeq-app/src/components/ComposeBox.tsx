@@ -394,7 +394,7 @@ export function ComposeBox() {
           e.preventDefault();
           // Get the filtered list and pick the selected one
           const filter = slashCmd.filter.toLowerCase();
-          const COMMANDS = ['join','part','topic','invite','kick','op','deop','voice','mode','msg','me','md','whois','away','encrypt','decrypt','policy','raw','help'];
+          const COMMANDS = ['join','part','topic','invite','kick','op','deop','voice','mode','msg','me','md','whois','away','encrypt','decrypt','pins','policy','raw','help'];
           const filtered = filter ? COMMANDS.filter(c => c.startsWith(filter)) : COMMANDS;
           if (filtered[slashCmd.selected]) {
             setText(`/${filtered[slashCmd.selected]} `);
@@ -846,6 +846,25 @@ function handleCommand(text: string, activeChannel: string) {
     case 'md': case 'markdown':
       if (args && target) sendMarkdown(target, args);
       break;
+    case 'pins': {
+      if (!target) break;
+      const chanName = target.startsWith('#') ? target.slice(1) : target;
+      fetch(`${window.location.origin}/api/v1/channels/${encodeURIComponent(chanName)}/pins`)
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+          const pins = data?.pins || [];
+          if (pins.length === 0) {
+            store.addSystemMessage(activeChannel, `No pinned messages in ${target}`);
+          } else {
+            store.addSystemMessage(activeChannel, `── Pinned messages in ${target} (${pins.length}) ──`);
+            for (const p of pins) {
+              store.addSystemMessage(activeChannel, `📌 ${p.from}: ${p.text}`);
+            }
+          }
+        })
+        .catch(() => store.addSystemMessage(activeChannel, `Failed to fetch pins for ${target}`));
+      break;
+    }
     case 'me': case 'action':
       if (target) rawCommand(`PRIVMSG ${target} :\x01ACTION ${args}\x01`);
       break;
@@ -856,6 +875,7 @@ function handleCommand(text: string, activeChannel: string) {
       store.addSystemMessage(activeChannel, '── Commands ──');
       store.addSystemMessage(activeChannel, '/join #channel  ·  /part  ·  /topic text');
       store.addSystemMessage(activeChannel, '/kick user  ·  /op user  ·  /voice user  ·  /invite user');
+      store.addSystemMessage(activeChannel, '/pins  — list pinned messages');
       store.addSystemMessage(activeChannel, '/whois user  ·  /away reason  ·  /me action');
       store.addSystemMessage(activeChannel, '/msg user text  ·  /mode +o user  ·  /raw IRC_LINE');
       store.addSystemMessage(activeChannel, '/md **bold** text  — send as rendered markdown');
