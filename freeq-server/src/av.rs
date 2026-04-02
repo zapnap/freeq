@@ -158,7 +158,7 @@ impl AvSessionManager {
         creator_did: &str,
         creator_nick: &str,
         title: Option<&str>,
-    ) -> Result<&AvSession, String> {
+    ) -> Result<AvSession, String> {
         // Check: only one active session per channel
         if let Some(ch) = channel {
             if let Some(existing_id) = self.channel_sessions.get(&ch.to_lowercase()) {
@@ -210,7 +210,7 @@ impl AvSessionManager {
                 .insert(ch.to_lowercase(), id.clone());
         }
 
-        Ok(self.sessions.get(&id).unwrap())
+        Ok(self.sessions.get(&id).unwrap().clone())
     }
 
     /// Join an existing session. Returns updated session or error.
@@ -219,7 +219,7 @@ impl AvSessionManager {
         session_id: &str,
         did: &str,
         nick: &str,
-    ) -> Result<&AvSession, String> {
+    ) -> Result<AvSession, String> {
         let session = self
             .sessions
             .get_mut(session_id)
@@ -260,7 +260,7 @@ impl AvSessionManager {
             );
         }
 
-        Ok(self.sessions.get(session_id).unwrap())
+        Ok(self.sessions.get(session_id).unwrap().clone())
     }
 
     /// Leave a session. Returns (session, should_end) — session ends if no active participants remain.

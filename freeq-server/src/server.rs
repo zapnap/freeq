@@ -1805,6 +1805,10 @@ pub(crate) async fn process_s2s_message(
         S2sMessage::PolicySync {
             event_id, origin, ..
         } => (event_id.clone(), origin.clone()),
+        S2sMessage::AvSessionCreated { event_id, origin, .. } => (event_id.clone(), origin.clone()),
+        S2sMessage::AvSessionJoined { event_id, origin, .. } => (event_id.clone(), origin.clone()),
+        S2sMessage::AvSessionLeft { event_id, origin, .. } => (event_id.clone(), origin.clone()),
+        S2sMessage::AvSessionEnded { event_id, origin, .. } => (event_id.clone(), origin.clone()),
         S2sMessage::CrdtSync { origin, .. } => (String::new(), origin.clone()),
         S2sMessage::PeerDisconnected { .. } => (String::new(), String::new()),
         S2sMessage::Hello { .. }
@@ -1842,7 +1846,11 @@ pub(crate) async fn process_s2s_message(
         | S2sMessage::Kick { .. }
         | S2sMessage::Ban { .. }
         | S2sMessage::Invite { .. }
-        | S2sMessage::ChannelCreated { .. }, crate::s2s::TrustLevel::Readonly) => {
+        | S2sMessage::ChannelCreated { .. }
+        | S2sMessage::AvSessionCreated { .. }
+        | S2sMessage::AvSessionJoined { .. }
+        | S2sMessage::AvSessionLeft { .. }
+        | S2sMessage::AvSessionEnded { .. }, crate::s2s::TrustLevel::Readonly) => {
             tracing::warn!(
                 peer = %authenticated_peer_id,
                 trust = "readonly",
@@ -3119,6 +3127,68 @@ pub(crate) async fn process_s2s_message(
                     tracing::warn!(peer = %authenticated_peer_id, "CRDT sync base64 decode error: {e}");
                 }
             }
+        }
+
+        // ── AV session federation ───────────────────────────────────
+
+        S2sMessage::AvSessionCreated {
+            session_id, channel, created_by_did, created_by_nick, title, iroh_ticket, ..
+        } => {
+            let ch = if channel.is_empty() { None } else { Some(channel.as_str()) };
+            state.av_sessions.lock().apply_remote_session_created(
+                &session_id, ch, &created_by_did, &created_by_nick,
+                title.as_deref(), iroh_ticket.as_deref(),
+                chrono::Utc::now().timestamp(),
+            );
+            // Notify local channel members
+            if !channel.is_empty() {
+                let title_str = title.as_deref().unwrap_or("voice session");
+                let count = state.av_sessions.lock().active_participant_count(&session_id);
+                crate::connection::messaging::broadcast_av_notice(
+                    state, &channel, &format!("{created_by_nick} started a voice session: {title_str} ({count} participant(s))"),
+                );
+            }
+            tracing::info!(session_id = %session_id, channel = %channel, "S2S: AV session created");
+        }
+
+        S2sMessage::AvSessionJoined { session_id, did, nick, .. } => {
+            state.av_sessions.lock().apply_remote_session_joined(&session_id, &did, &nick);
+            let mgr = state.av_sessions.lock();
+            if let Some(session) = mgr.get(&session_id) {
+                if let Some(ref ch) = session.channel {
+                    let count = mgr.active_participant_count(&session_id);
+                    let ch = ch.clone();
+                    drop(mgr);
+                    crate::connection::messaging::broadcast_av_notice(
+                        state, &ch, &format!("{nick} joined the voice session ({count} participant(s))"),
+                    );
+                }
+            }
+        }
+
+        S2sMessage::AvSessionLeft { session_id, did, .. } => {
+            let mgr_ref = &state.av_sessions;
+            let nick = mgr_ref.lock().get(&session_id)
+                .and_then(|s| s.participants.get(&did).map(|p| p.nick.clone()))
+                .unwrap_or_default();
+            mgr_ref.lock().apply_remote_session_left(&session_id, &did);
+            let mgr = mgr_ref.lock();
+            if let Some(session) = mgr.get(&session_id) {
+                if let Some(ref ch) = session.channel {
+                    let count = mgr.active_participant_count(&session_id);
+                    let ch = ch.clone();
+                    drop(mgr);
+                    crate::connection::messaging::broadcast_av_notice(
+                        state, &ch, &format!("{nick} left the voice session ({count} participant(s))"),
+                    );
+                }
+            }
+        }
+
+        S2sMessage::AvSessionEnded { session_id, ended_by, .. } => {
+            state.av_sessions.lock().apply_remote_session_ended(&session_id, ended_by.as_deref());
+            // Notification already sent by the originating server
+            tracing::info!(session_id = %session_id, "S2S: AV session ended");
         }
 
         S2sMessage::PeerDisconnected { peer_id } => {

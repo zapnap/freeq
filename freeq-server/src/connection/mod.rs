@@ -20,7 +20,7 @@ mod cap;
 mod channel;
 pub(crate) mod login;
 pub mod helpers;
-mod messaging;
+pub(crate) mod messaging;
 mod policy_cmd;
 mod queries;
 mod registration;
