@@ -35,21 +35,35 @@ export function SessionIndicator({ channel }: { channel: string }) {
 
   const handleJoinWithAudio = async () => {
     joinAvSession(channel, session.id);
-    // Small delay for the server to process the join before starting audio
+    // Small delay for server to process join, then fetch ticket and start audio
     setTimeout(async () => {
+      // Refresh session data to get ticket
       try {
-        await startSessionAudio(channel);
-        setAudioActive(true);
-      } catch (e: any) {
-        useStore.getState().addSystemMessage(channel, `Audio failed: ${e.message}`);
-      }
-    }, 500);
+        const resp = await fetch(`/api/v1/sessions/${session.id}`);
+        if (resp.ok) {
+          const data = await resp.json();
+          if (data.iroh_ticket) {
+            useStore.getState().updateAvSession({ ...session, irohTicket: data.iroh_ticket });
+          }
+        }
+      } catch {}
+      await handleStartAudio();
+    }, 1000);
   };
 
   const handleStartAudio = async () => {
     try {
-      await startSessionAudio(channel);
-      setAudioActive(true);
+      // Try iroh-live relay first (if ticket available), fall back to WebRTC
+      if (session.irohTicket && !session.irohTicket.startsWith('webrtc://')) {
+        const relayPort = 4443;
+        const relayUrl = `https://${window.location.hostname}:${relayPort}/?name=${encodeURIComponent(session.irohTicket)}`;
+        window.open(relayUrl, `av-${session.id}`, 'width=500,height=350');
+        setAudioActive(true);
+        useStore.getState().addSystemMessage(channel, 'Audio: opened iroh-live relay window');
+      } else {
+        await startSessionAudio(channel);
+        setAudioActive(true);
+      }
     } catch (e: any) {
       useStore.getState().addSystemMessage(channel, `Audio failed: ${e.message}`);
     }

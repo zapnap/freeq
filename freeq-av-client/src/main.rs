@@ -213,6 +213,13 @@ async fn run_server_session(url: &str, channel: &str, nick: &str, join_existing:
             }
         }
 
+        // Print all server NOTICEs (includes errors and session info)
+        if line.contains("NOTICE") && !line.starts_with("PING") {
+            if let Some(notice_text) = line.split(" :").nth(1) {
+                println!("  [server] {notice_text}");
+            }
+        }
+
         // Look for AV ticket in NOTICE
         if line.contains("AV ticket:") {
             if let Some(t) = line.split("AV ticket: ").nth(1) {

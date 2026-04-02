@@ -48,11 +48,13 @@ parking_lot = { version = "0.12", features = ["deadlock_detection"] }
 automerge = { workspace = true }
 ulid = "1"
 iroh-live = { git = "https://github.com/n0-computer/iroh-live", default-features = false, features = ["opus"], optional = true }
+iroh-live-relay = { git = "https://github.com/n0-computer/iroh-live", optional = true }
+rustls = { version = "0.23", features = ["aws-lc-rs"], default-features = false, optional = true }
 toml = "0.8"
 
 [features]
 default = []
-av-native = ["iroh-live"]  # Enable iroh-live for native client audio (large dep tree)
+av-native = ["iroh-live", "iroh-live-relay", "rustls"]  # Enable iroh-live + relay for browser WebTransport
 
 [dev-dependencies]
 freeq-sdk = { path = "../freeq-sdk" }

@@ -1635,18 +1635,9 @@ fn handle_av_tagmsg(
     state: &Arc<SharedState>,
 ) {
     let nick = conn.nick_or_star().to_string();
-    let did = match &conn.authenticated_did {
-        Some(d) => d.clone(),
-        None => {
-            let reply = Message::from_server(
-                &state.server_name,
-                "NOTICE",
-                vec![&nick, "AV sessions require authentication (DID)"],
-            );
-            send_to(state, &conn.id, format!("{reply}\r\n"));
-            return;
-        }
-    };
+    // Use DID if authenticated, otherwise use nick as fallback identity
+    let did = conn.authenticated_did.clone()
+        .unwrap_or_else(|| format!("guest:{nick}"));
 
     let session_id = tags.get("+freeq.at/av-id").cloned().unwrap_or_default();
 
