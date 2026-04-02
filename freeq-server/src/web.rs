@@ -204,6 +204,11 @@ pub fn router(state: Arc<SharedState>) -> Router {
         .route("/api/v1/agents/spawned", get(api_spawned_agents))
         .route("/api/v1/channels/{name}/budget", get(api_channel_budget))
         .route("/api/v1/channels/{name}/spend", get(api_channel_spend))
+        // AV sessions
+        .route("/api/v1/sessions", get(api_sessions_list))
+        .route("/api/v1/sessions/{id}", get(api_session_detail))
+        .route("/api/v1/sessions/{id}/artifacts", get(api_session_artifacts))
+        .route("/api/v1/channels/{name}/sessions", get(api_channel_sessions))
         .route("/auth/mobile", get(auth_mobile_redirect))
         .route("/join/{channel}", get(channel_invite_page))
         .layer(axum::extract::DefaultBodyLimit::max(12 * 1024 * 1024)) // 12MB
@@ -2922,4 +2927,117 @@ async fn security_headers(
         );
     }
     resp
+}
+
+// ── AV Sessions REST API ────────────────────────────────────────────
+
+/// GET /api/v1/sessions — list all active sessions.
+async fn api_sessions_list(
+    State(state): State<Arc<SharedState>>,
+) -> Json<serde_json::Value> {
+    let mgr = state.av_sessions.lock();
+    let sessions: Vec<serde_json::Value> = mgr
+        .active_sessions()
+        .into_iter()
+        .map(|s| session_to_json(s, &mgr))
+        .collect();
+    Json(serde_json::json!({ "sessions": sessions }))
+}
+
+/// GET /api/v1/sessions/{id} — session details.
+async fn api_session_detail(
+    State(state): State<Arc<SharedState>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    let mgr = state.av_sessions.lock();
+    let session = mgr.get(&id).ok_or((
+        axum::http::StatusCode::NOT_FOUND,
+        "Session not found".to_string(),
+    ))?;
+    Ok(Json(session_to_json(session, &mgr)))
+}
+
+/// GET /api/v1/sessions/{id}/artifacts — list session artifacts.
+async fn api_session_artifacts(
+    State(state): State<Arc<SharedState>>,
+    Path(id): Path<String>,
+) -> Json<serde_json::Value> {
+    let artifacts = state
+        .with_db(|db| db.list_av_artifacts(&id))
+        .unwrap_or_default();
+    let items: Vec<serde_json::Value> = artifacts
+        .iter()
+        .map(|a| {
+            serde_json::json!({
+                "id": a.id,
+                "session_id": a.session_id,
+                "kind": a.kind,
+                "created_at": a.created_at,
+                "created_by": a.created_by,
+                "content_ref": a.content_ref,
+                "content_type": a.content_type,
+                "visibility": a.visibility,
+                "title": a.title,
+            })
+        })
+        .collect();
+    Json(serde_json::json!({ "artifacts": items }))
+}
+
+/// GET /api/v1/channels/{name}/sessions — sessions in a channel (active + recent).
+async fn api_channel_sessions(
+    State(state): State<Arc<SharedState>>,
+    Path(name): Path<String>,
+) -> Json<serde_json::Value> {
+    let mgr = state.av_sessions.lock();
+
+    // Active session (if any)
+    let active = mgr.active_session_for_channel(&name).map(|s| session_to_json(s, &mgr));
+
+    // Recent ended sessions from DB
+    let recent = state
+        .with_db(|db| db.list_channel_av_sessions(&name, 20))
+        .unwrap_or_default();
+    let recent_json: Vec<serde_json::Value> = recent
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "id": s.id,
+                "created_by": s.created_by,
+                "created_at": s.created_at,
+                "state": s.state,
+                "title": s.title,
+            })
+        })
+        .collect();
+
+    Json(serde_json::json!({
+        "active": active,
+        "recent": recent_json,
+    }))
+}
+
+fn session_to_json(s: &crate::av::AvSession, mgr: &crate::av::AvSessionManager) -> serde_json::Value {
+    let participants: Vec<serde_json::Value> = s.participants.values()
+        .filter(|p| p.left_at.is_none())
+        .map(|p| serde_json::json!({
+            "did": p.did,
+            "nick": p.nick,
+            "role": p.role,
+            "joined_at": p.joined_at,
+        }))
+        .collect();
+    serde_json::json!({
+        "id": s.id,
+        "channel": s.channel,
+        "created_by": s.created_by,
+        "created_by_nick": s.created_by_nick,
+        "created_at": s.created_at,
+        "state": s.state,
+        "title": s.title,
+        "participants": participants,
+        "participant_count": mgr.active_participant_count(&s.id),
+        "media_backend": s.media_backend,
+        "recording_enabled": s.recording_enabled,
+    })
 }
