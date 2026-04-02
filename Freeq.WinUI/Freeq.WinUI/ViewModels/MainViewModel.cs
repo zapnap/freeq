@@ -114,15 +114,21 @@ public partial class MainViewModel : ObservableObject
 
         _irc.SendMessage(SelectedChannel.Name, ComposeText);
 
-        var msg = new MessageModel
+        // When echo-message is acked, the server will echo back our message with the real
+        // server-assigned msgid. Let that echo drive the display so history IDs are correct.
+        // When echo-message is not acked, add a local message immediately (server won't echo).
+        if (!_irc.IsEchoMessageAcked)
         {
-            Id = Guid.NewGuid().ToString(),
-            Nick = _irc.Nick,
-            Content = ComposeText,
-            Timestamp = DateTimeOffset.Now,
-        };
+            var msg = new MessageModel
+            {
+                Id = Guid.NewGuid().ToString(),
+                Nick = _irc.Nick,
+                Content = ComposeText,
+                Timestamp = DateTimeOffset.Now,
+            };
+            AddMessage(SelectedChannel.Name, msg);
+        }
 
-        AddMessage(SelectedChannel.Name, msg);
         ComposeText = "";
     }
 
@@ -226,7 +232,7 @@ public partial class MainViewModel : ObservableObject
         });
     }
 
-    private void OnMessageReceived(string channel, string nick, string message)
+    private void OnMessageReceived(string channel, string nick, string message, string? msgid, DateTimeOffset? serverTime)
     {
         _dispatcher.TryEnqueue(() =>
         {
@@ -234,15 +240,15 @@ public partial class MainViewModel : ObservableObject
 
             var msg = new MessageModel
             {
-                Id = Guid.NewGuid().ToString(),
+                Id = msgid ?? Guid.NewGuid().ToString(),
                 Nick = nick,
                 Content = message,
-                Timestamp = DateTimeOffset.Now,
+                Timestamp = serverTime ?? DateTimeOffset.Now,
             };
 
             AddMessage(channel, msg);
 
-            if (!SelectedChannel?.Name.Equals(channel, StringComparison.OrdinalIgnoreCase) == true)
+            if (SelectedChannel?.Name.Equals(channel, StringComparison.OrdinalIgnoreCase) != true)
             {
                 var ch = FindChannel(channel);
                 if (ch != null)
@@ -466,11 +472,12 @@ public partial class MainViewModel : ObservableObject
     {
         var role = MemberRole.Regular;
         var nick = raw.TrimStart('@', '%', '+');
+        var prefix = raw[..^nick.Length]; // prefix chars only, never the nick itself
 
         // Highest prefix wins (multi-prefix: @+nick means op+voice → op)
-        if (raw.Contains('@')) role = MemberRole.Operator;
-        else if (raw.Contains('%')) role = MemberRole.HalfOp;
-        else if (raw.Contains('+') && nick != raw) role = MemberRole.Voiced;
+        if (prefix.Contains('@')) role = MemberRole.Operator;
+        else if (prefix.Contains('%')) role = MemberRole.HalfOp;
+        else if (prefix.Contains('+')) role = MemberRole.Voiced;
 
         return (role, nick);
     }

@@ -31,8 +31,10 @@ public class IrcClient : IDisposable
     private string? _saslPdsUrl;
     private string? _saslMethod;
 
+    public bool IsEchoMessageAcked => _ackedCaps.Contains("echo-message");
+
     public event Action<ConnectionState>? StateChanged;
-    public event Action<string, string, string>? MessageReceived; // channel, nick, message
+    public event Action<string, string, string, string?, DateTimeOffset?>? MessageReceived; // channel, nick, message, msgid, serverTime
     public event Action<string, string>? JoinReceived; // channel, nick
     public event Action<string, string, string>? PartReceived; // channel, nick, reason
     public event Action<string, string>? QuitReceived; // nick, reason
@@ -257,9 +259,13 @@ public class IrcClient : IDisposable
                 if (msg.Params.Length >= 2)
                 {
                     var nick = msg.Prefix?.Split('!')[0] ?? "unknown";
-                    if (_ackedCaps.Contains("echo-message") && nick.Equals(Nick, StringComparison.OrdinalIgnoreCase))
+                    // When echo-message is acked, let server echoes through — they carry the real msgid.
+                    // When echo-message is not acked, drop self-messages (shouldn't arrive, but defensive).
+                    if (!_ackedCaps.Contains("echo-message") && nick.Equals(Nick, StringComparison.OrdinalIgnoreCase))
                         break;
-                    MessageReceived?.Invoke(msg.Params[0], nick, msg.Params[1]);
+                    var msgid = msg.Tags.TryGetValue("msgid", out var mid) ? mid : null;
+                    DateTimeOffset? serverTime = msg.Tags.TryGetValue("time", out var timeStr) && DateTimeOffset.TryParse(timeStr, null, System.Globalization.DateTimeStyles.RoundtripKind, out var dto) ? dto : null;
+                    MessageReceived?.Invoke(msg.Params[0], nick, msg.Params[1], msgid, serverTime);
                 }
                 break;
 
@@ -358,9 +364,13 @@ public class IrcClient : IDisposable
                 AccountChanged?.Invoke("*", null); // Signal refresh
                 break;
 
-            case "366": // RPL_ENDOFNAMES — send WHO to discover accounts
+            case "366": // RPL_ENDOFNAMES — send WHO to discover accounts, request history
                 if (msg.Params.Length >= 2)
+                {
                     Send($"WHO {msg.Params[1]}");
+                    if (_ackedCaps.Contains("draft/chathistory"))
+                        Send($"CHATHISTORY LATEST {msg.Params[1]} * 50");
+                }
                 break;
 
             case "NICK":
@@ -507,7 +517,7 @@ public class IrcClient : IDisposable
         }
     }
 
-    private static IrcMessage ParseIrcMessage(string line)
+    internal static IrcMessage ParseIrcMessage(string line)
     {
         var tags = new Dictionary<string, string>();
         var pos = 0;

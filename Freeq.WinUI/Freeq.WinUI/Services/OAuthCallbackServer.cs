@@ -70,13 +70,8 @@ public class OAuthCallbackServer : IDisposable
     /// </summary>
     public void StartLogin(string handle)
     {
-        _port = FindFreePort();
+        _listener = StartHttpListener();
         OAuthLog.Write($"StartLogin: port={_port}, callback={CallbackUrl}");
-
-        _listener = new HttpListener();
-        _listener.Prefixes.Add($"http://127.0.0.1:{_port}/");
-        _listener.Start();
-        OAuthLog.Write("HttpListener started");
 
         var authUrl = $"{BrokerBase}/auth/login?handle={Uri.EscapeDataString(handle)}&return_to={Uri.EscapeDataString(CallbackUrl)}";
         OAuthLog.Write($"Opening browser: {authUrl}");
@@ -224,7 +219,7 @@ if(h && h.indexOf('oauth=')!==-1){
         response.Close();
     }
 
-    private static OAuthResult? DecodeOAuthPayload(string base64UrlPayload)
+    internal static OAuthResult? DecodeOAuthPayload(string base64UrlPayload)
     {
         try
         {
@@ -243,6 +238,27 @@ if(h && h.indexOf('oauth=')!==-1){
         {
             return null;
         }
+    }
+
+    private HttpListener StartHttpListener()
+    {
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            _port = FindFreePort();
+            var listener = new HttpListener();
+            listener.Prefixes.Add($"http://127.0.0.1:{_port}/");
+            try
+            {
+                listener.Start();
+                return listener;
+            }
+            catch (HttpListenerException ex)
+            {
+                OAuthLog.Write($"Port {_port} bind failed (attempt {attempt + 1}): {ex.Message}");
+                listener.Close();
+            }
+        }
+        throw new InvalidOperationException("Could not bind to a free port after 3 attempts");
     }
 
     private static int FindFreePort()
