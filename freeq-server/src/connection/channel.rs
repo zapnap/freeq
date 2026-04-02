@@ -933,6 +933,17 @@ pub(super) fn handle_mode(
                     let entry = BanEntry::new(mask.to_string(), conn.hostmask());
                     let mut channels = state.channels.lock();
                     if let Some(chan) = channels.get_mut(channel) {
+                        // Per-channel ban limit to prevent resource exhaustion
+                        const MAX_BANS_PER_CHANNEL: usize = 500;
+                        if chan.bans.len() >= MAX_BANS_PER_CHANNEL {
+                            drop(channels);
+                            let reply = Message::from_server(
+                                server_name, "478",
+                                vec![nick, channel, "Channel ban list is full"],
+                            );
+                            send(state, session_id, format!("{reply}\r\n"));
+                            return;
+                        }
                         // Don't duplicate
                         if !chan.bans.iter().any(|b| b.mask == mask) {
                             chan.bans.push(entry.clone());
@@ -1304,14 +1315,17 @@ pub(super) fn handle_invite(
         NetworkTarget::Local {
             session_id: target_sid,
         } => {
-            // Add invite by session ID + DID
+            // Add invite by session ID + DID (with limit)
             let s2s_invitee = {
                 let mut channels = state.channels.lock();
                 let did = state.session_dids.lock().get(&target_sid).cloned();
                 if let Some(ch) = channels.get_mut(channel) {
-                    ch.invites.insert(target_sid.clone());
-                    if let Some(ref d) = did {
-                        ch.invites.insert(d.clone());
+                    const MAX_INVITES: usize = 500;
+                    if ch.invites.len() < MAX_INVITES {
+                        ch.invites.insert(target_sid.clone());
+                        if let Some(ref d) = did {
+                            ch.invites.insert(d.clone());
+                        }
                     }
                 }
                 // For S2S, prefer DID over nick-based token

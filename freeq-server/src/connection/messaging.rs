@@ -108,6 +108,20 @@ pub(super) fn handle_tagmsg(
         }
     }
 
+    // ── Persist reactions (+react with +reply) ──
+    if let (Some(emoji), Some(target_msgid)) = (tags.get("+react"), tags.get("+reply")) {
+        let nick = conn.nick_or_star().to_string();
+        let did = conn.authenticated_did.clone();
+        let channel = target.to_string();
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let emoji = emoji.clone();
+        let target_msgid = target_msgid.clone();
+        state.with_db(|db| db.store_reaction(&target_msgid, &channel, &nick, did.as_deref(), &emoji, ts));
+    }
+
     let hostmask = conn.hostmask();
 
     let timestamp = std::time::SystemTime::now()
@@ -537,7 +551,27 @@ pub(super) fn handle_privmsg(
         let from_nick = conn.nick.as_deref().unwrap_or("*").to_string();
         match relay_to_nick(state, &from_nick, target, text, s2s_next_event_id(state)) {
             RouteResult::Local(ref session) => {
-                // Target is local — deliver to ALL sessions for target's DID (multi-device)
+                // Target is local — deliver to ALL sessions for target's DID (multi-device).
+                // Also relay via S2S so the DM is visible on other federated servers
+                // (e.g. sender logged into multiple servers).
+                {
+                    let has_s2s = state.s2s_manager.lock().is_some();
+                    if has_s2s {
+                        let origin = state.server_iroh_id.lock().clone().unwrap_or_default();
+                        let sig = pm_tags.get("+freeq.at/sig").cloned();
+                        if let Some(m) = state.s2s_manager.lock().clone() {
+                            m.broadcast(crate::s2s::S2sMessage::Privmsg {
+                                event_id: s2s_next_event_id(state),
+                                from: conn.hostmask(),
+                                target: target.to_string(),
+                                text: text.to_string(),
+                                origin,
+                                msgid: Some(pm_msgid.clone()),
+                                sig,
+                            });
+                        }
+                    }
+                }
                 // Send RPL_AWAY if target is away
                 if let Some(away_msg) = state.session_away.lock().get(session) {
                     let nick = conn.nick_or_star();
@@ -891,6 +925,12 @@ pub(super) fn handle_chathistory(
         );
     }
 
+    // Fetch reactions for all messages in this batch
+    let msgids: Vec<&str> = messages.iter().filter_map(|r| r.msgid.as_deref()).collect();
+    let reactions: std::collections::HashMap<String, Vec<crate::db::ReactionRow>> =
+        state.with_db(|db| db.get_reactions_for_messages(&msgids))
+            .unwrap_or_default();
+
     for row in &messages {
         let mut tags = if has_tags {
             row.tags.clone()
@@ -901,6 +941,20 @@ pub(super) fn handle_chathistory(
         if has_tags {
             if let Some(ref mid) = row.msgid {
                 tags.insert("msgid".to_string(), mid.clone());
+                // Include reactions as +freeq.at/reactions tag
+                // Format: emoji1:nick1,nick2;emoji2:nick3
+                if let Some(reaction_rows) = reactions.get(mid) {
+                    let mut by_emoji: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
+                    for r in reaction_rows {
+                        by_emoji.entry(&r.emoji).or_default().push(&r.reactor_nick);
+                    }
+                    let encoded: Vec<String> = by_emoji.iter().map(|(emoji, nicks)| {
+                        format!("{}:{}", emoji, nicks.join(","))
+                    }).collect();
+                    if !encoded.is_empty() {
+                        tags.insert("+freeq.at/reactions".to_string(), encoded.join(";"));
+                    }
+                }
             }
             if let Some(ref replaces) = row.replaces_msgid {
                 tags.entry("+draft/edit".to_string())

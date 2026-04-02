@@ -17,6 +17,8 @@ export function Sidebar({ onOpenSettings }: SidebarProps) {
   const authDid = useStore((s) => s.authDid);
   const [joinInput, setJoinInput] = useState('');
   const [showJoin, setShowJoin] = useState(false);
+  const [channelsCollapsed, setChannelsCollapsed] = useState(() => localStorage.getItem('freeq-channels-collapsed') === 'true');
+  const [dmsCollapsed, setDmsCollapsed] = useState(() => localStorage.getItem('freeq-dms-collapsed') === 'true');
 
   const favorites = useStore((s) => s.favorites);
   useStore((s) => s.mutedChannels); // subscribe for re-render
@@ -72,10 +74,17 @@ export function Sidebar({ onOpenSettings }: SidebarProps) {
         </button>
 
         {/* Channels */}
-        <div className="mt-3 mb-1 px-2 flex items-center justify-between">
-          <span className="text-xs uppercase tracking-wider text-fg-dim font-bold">
+        <div className="sticky top-0 z-10 bg-bg-secondary mt-3 mb-1 px-2 flex items-center justify-between">
+          <button
+            onClick={() => { const v = !channelsCollapsed; setChannelsCollapsed(v); localStorage.setItem('freeq-channels-collapsed', String(v)); }}
+            className="text-xs uppercase tracking-wider text-fg-dim font-bold flex items-center gap-1 hover:text-fg-muted"
+            aria-expanded={!channelsCollapsed}
+          >
+            <svg className={`w-3 h-3 transition-transform ${channelsCollapsed ? '-rotate-90' : ''}`} viewBox="0 0 16 16" fill="currentColor">
+              <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
             Channels
-          </span>
+          </button>
           <div className="flex items-center gap-0.5">
             <button
               onClick={() => useStore.getState().setChannelListOpen(true)}
@@ -107,36 +116,47 @@ export function Sidebar({ onOpenSettings }: SidebarProps) {
           </div>
         )}
 
-        {/* Favorites */}
-        {favList.length > 0 && (
+        {!channelsCollapsed && (
           <>
-            <div className="mt-3 mb-1 px-2">
-              <span className="text-xs uppercase tracking-wider text-fg-dim font-bold flex items-center gap-1">
-                <span className="text-warning text-[10px]">★</span> Favorites
-              </span>
-            </div>
-            {favList.map((ch) => <ChannelButton key={ch.name} ch={ch as any} isActive={activeChannel.toLowerCase() === ch.name.toLowerCase()} onSelect={setActive} icon="#" />)}
+            {/* Favorites */}
+            {favList.length > 0 && (
+              <>
+                <div className="mt-3 mb-1 px-2">
+                  <span className="text-xs uppercase tracking-wider text-fg-dim font-bold flex items-center gap-1">
+                    <span className="text-warning text-[10px]">★</span> Favorites
+                  </span>
+                </div>
+                {favList.map((ch) => <ChannelButton key={ch.name} ch={ch as any} isActive={activeChannel.toLowerCase() === ch.name.toLowerCase()} onSelect={setActive} icon="#" />)}
+              </>
+            )}
+
+            {chanList.map((ch) => <ChannelButton key={ch.name} ch={ch as any} isActive={activeChannel.toLowerCase() === ch.name.toLowerCase()} onSelect={setActive} icon="#" />)}
           </>
         )}
-
-        {chanList.map((ch) => <ChannelButton key={ch.name} ch={ch as any} isActive={activeChannel.toLowerCase() === ch.name.toLowerCase()} onSelect={setActive} icon="#" />)}
 
         {/* DMs */}
         {dmList.length > 0 && (() => {
           const dmUnread = dmList.reduce((s, ch) => s + ch.unreadCount, 0);
           return (
           <>
-            <div className="mt-3 mb-1 px-2 flex items-center justify-between">
-              <span className="text-xs uppercase tracking-wider text-fg-dim font-bold">
+            <div className="sticky top-7 z-10 bg-bg-secondary mt-3 mb-1 px-2 flex items-center justify-between">
+              <button
+                onClick={() => { const v = !dmsCollapsed; setDmsCollapsed(v); localStorage.setItem('freeq-dms-collapsed', String(v)); }}
+                className="text-xs uppercase tracking-wider text-fg-dim font-bold flex items-center gap-1 hover:text-fg-muted"
+                aria-expanded={!dmsCollapsed}
+              >
+                <svg className={`w-3 h-3 transition-transform ${dmsCollapsed ? '-rotate-90' : ''}`} viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
                 Messages
-              </span>
+              </button>
               {dmUnread > 0 && (
                 <span className="bg-danger text-white text-[10px] min-w-[16px] text-center px-1 py-0.5 rounded-full font-bold leading-none">
                   {dmUnread}
                 </span>
               )}
             </div>
-            {dmList.map((ch) => <ChannelButton key={ch.name} ch={ch as any} isActive={activeChannel.toLowerCase() === ch.name.toLowerCase()} onSelect={setActive} icon="@" showPreview />)}
+            {!dmsCollapsed && dmList.map((ch) => <ChannelButton key={ch.name} ch={ch as any} isActive={activeChannel.toLowerCase() === ch.name.toLowerCase()} onSelect={setActive} icon="@" showPreview />)}
           </>
           );
         })()}

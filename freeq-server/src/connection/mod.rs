@@ -916,6 +916,18 @@ where
                             // Cap at 50 pins
                             ch.pins.truncate(50);
                             drop(channels);
+                            // Persist to DB (ensure channel exists first)
+                            let ch_name = channel.clone();
+                            let mid = msgid.to_string();
+                            let pinner = nick.to_string();
+                            {
+                                let channels = state.channels.lock();
+                                if let Some(ch) = channels.get(&ch_name) {
+                                    let ch_clone = ch.clone();
+                                    state.with_db(|db| db.save_channel(&ch_name, &ch_clone));
+                                }
+                            }
+                            state.with_db(|db| db.store_pin(&ch_name, &mid, &pinner, now));
                             // Notify channel with tag for clients to update cache
                             let notice = format!(
                                 "@+freeq.at/pin={} :{nick}!~u@host NOTICE {channel} :\x01ACTION pinned a message\x01\r\n",
@@ -928,6 +940,10 @@ where
                         ch.pins.retain(|p| p.msgid != *msgid);
                         if ch.pins.len() < before {
                             drop(channels);
+                            // Persist to DB
+                            let ch_name = channel.clone();
+                            let mid = msgid.to_string();
+                            state.with_db(|db| db.remove_pin(&ch_name, &mid));
                             // Notify channel with tag for clients to update cache
                             let notice = format!(
                                 "@+freeq.at/unpin={} :{nick}!~u@host NOTICE {channel} :\x01ACTION unpinned a message\x01\r\n",
