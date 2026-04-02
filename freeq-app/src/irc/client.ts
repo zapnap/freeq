@@ -1332,9 +1332,16 @@ function handleAvSessionState(
 
 /// Start an AV session in a channel.
 export function startAvSession(channel: string, title?: string) {
+  const store = useStore.getState();
+  if (!store.authDid) {
+    store.addSystemMessage(channel, 'You must be signed in with AT Protocol to start a voice session.');
+    return;
+  }
   const tags: Record<string, string> = { '+freeq.at/av-start': '' };
   if (title) tags['+freeq.at/av-title'] = title;
-  raw(format('TAGMSG', [channel], tags));
+  const line = format('TAGMSG', [channel], tags);
+  console.log('[av] startAvSession:', line);
+  raw(line);
 }
 
 /// Join an AV session (by ID or channel's active session).

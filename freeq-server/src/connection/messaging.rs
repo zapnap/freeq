@@ -1881,7 +1881,7 @@ fn broadcast_av_state(
 
     let tag_msg = super::super::irc::Message {
         tags,
-        prefix: Some(format!("{} NOTICE", state.server_name)),
+        prefix: Some(state.server_name.clone()),
         command: "TAGMSG".to_string(),
         params: vec![target.to_string()],
     };
