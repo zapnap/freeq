@@ -97,11 +97,11 @@ PID_B=$(cat "$PID_FILE_B")
 IROH_ID_A=""
 IROH_ID_B=""
 for i in $(seq 1 30); do
-    if [ -z "$IROH_ID_A" ] && grep -q "Iroh ready" "$DIR_A/server.log" 2>/dev/null; then
-        IROH_ID_A=$(grep "Iroh ready" "$DIR_A/server.log" | grep -oE '[0-9a-f]{64}' | head -1)
+    if [ -z "$IROH_ID_A" ] && grep -q "Iroh endpoint ID" "$DIR_A/server.log" 2>/dev/null; then
+        IROH_ID_A=$(grep "Iroh endpoint ID" "$DIR_A/server.log" | grep -oE '[0-9a-f]{64}' | head -1)
     fi
-    if [ -z "$IROH_ID_B" ] && grep -q "Iroh ready" "$DIR_B/server.log" 2>/dev/null; then
-        IROH_ID_B=$(grep "Iroh ready" "$DIR_B/server.log" | grep -oE '[0-9a-f]{64}' | head -1)
+    if [ -z "$IROH_ID_B" ] && grep -q "Iroh endpoint ID" "$DIR_B/server.log" 2>/dev/null; then
+        IROH_ID_B=$(grep "Iroh endpoint ID" "$DIR_B/server.log" | grep -oE '[0-9a-f]{64}' | head -1)
     fi
     if [ -n "$IROH_ID_A" ] && [ -n "$IROH_ID_B" ]; then
         break

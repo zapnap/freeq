@@ -2205,6 +2205,17 @@ pub(crate) async fn process_s2s_message(
             let from = sanitize_s2s_str(&from, 512);
             let target = sanitize_s2s_str(&target, 200);
 
+            // Normalize draft tags
+            let mut tags = tags.clone();
+            for (draft, canonical) in [
+                ("+draft/react", "+react"),
+                ("+draft/reply", "+reply"),
+            ] {
+                if let Some(v) = tags.remove(draft) {
+                    tags.entry(canonical.to_string()).or_insert(v);
+                }
+            }
+
             // Persist reactions
             if let (Some(emoji), Some(target_msgid)) = (tags.get("+react"), tags.get("+reply")) {
                 let nick = from.split('!').next().unwrap_or(&from).to_string();
@@ -3932,6 +3943,43 @@ mod s2s_adversarial_tests {
         ).await.expect("timeout").expect("channel closed");
         assert!(msg.contains("TAGMSG"), "Should be TAGMSG, got: {msg}");
         assert!(msg.contains("+react="), "Should contain reaction, got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn s2s_tagmsg_draft_tags_normalized() {
+        let state = test_state();
+        let mgr = test_manager();
+        setup_authenticated_peer(&state, &mgr).await;
+        setup_channel(&state, "#draft-test");
+
+        let (tx, mut rx) = mpsc::channel(16);
+        state.connections.lock().insert("draft-sess".to_string(), tx);
+        state.nick_to_session.lock().insert("drafter", "draft-sess");
+        state.channels.lock().get_mut("#draft-test").unwrap()
+            .members.insert("draft-sess".to_string());
+        state.cap_message_tags.lock().insert("draft-sess".to_string());
+
+        // Send with +draft/ prefixed tags
+        let mut tags = HashMap::new();
+        tags.insert("+draft/react".to_string(), "❤️".to_string());
+        tags.insert("+draft/reply".to_string(), "msg999".to_string());
+
+        process_s2s_message(&state, &mgr, PEER, S2sMessage::Tagmsg {
+            event_id: format!("{PEER}:draft1"),
+            from: "bob!b@remote".to_string(),
+            target: "#draft-test".to_string(),
+            tags,
+            origin: PEER.to_string(),
+        }).await;
+
+        let msg = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            rx.recv()
+        ).await.expect("timeout").expect("channel closed");
+        assert!(msg.contains("TAGMSG"), "Should be TAGMSG, got: {msg}");
+        // Should be normalized to +react, not +draft/react
+        assert!(msg.contains("+react="), "Should contain normalized +react, got: {msg}");
+        assert!(!msg.contains("+draft/react"), "Should NOT contain draft prefix, got: {msg}");
     }
 
     // ═══════════════════════════════════════════════════════════

@@ -67,6 +67,19 @@ pub(super) fn handle_tagmsg(
         return; // TAGMSG with no tags is meaningless
     }
 
+    // Normalize IRCv3 draft tags to their canonical forms so all downstream
+    // code (persistence, relay, fallback) only needs to check one name.
+    let mut tags = tags.clone();
+    for (draft, canonical) in [
+        ("+draft/react", "+react"),
+        ("+draft/reply", "+reply"),
+    ] {
+        if let Some(v) = tags.remove(draft) {
+            tags.entry(canonical.to_string()).or_insert(v);
+        }
+    }
+    let tags = &tags;
+
     // ── Message deletion (+draft/delete=<msgid>) ──
     if let Some(original_msgid) = tags.get("+draft/delete") {
         handle_delete(conn, target, original_msgid, state);
@@ -108,7 +121,7 @@ pub(super) fn handle_tagmsg(
         }
     }
 
-    // ── Persist reactions (+react with +reply) ──
+    // ── Persist reactions ──
     if let (Some(emoji), Some(target_msgid)) = (tags.get("+react"), tags.get("+reply")) {
         let nick = conn.nick_or_star().to_string();
         let did = conn.authenticated_did.clone();
