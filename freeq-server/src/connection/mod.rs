@@ -1206,7 +1206,7 @@ where
                     irc::RPL_VERSION,
                     vec![
                         nick,
-                        "freeq-0.1.0",
+                        &format!("freeq-{}-{}", env!("CARGO_PKG_VERSION"), env!("GIT_HASH")),
                         &server_name,
                         "AT Protocol SASL, IRCv3, iroh QUIC, S2S federation",
                     ],
