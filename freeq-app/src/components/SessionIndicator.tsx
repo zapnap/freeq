@@ -3,7 +3,7 @@ import { useStore } from '../store';
 import { joinAvSession, leaveAvSession, endAvSession, startAvSession, getNick } from '../irc/client';
 
 // iroh-live relay (serves WebTransport + built-in audio web app)
-// On staging, the relay runs on the VPS alongside the server
+// Relay runs on :4443 alongside the main server. Override with VITE_RELAY_URL.
 const RELAY_URL = import.meta.env.VITE_RELAY_URL || `${window.location.protocol}//${window.location.hostname}:4443`;
 
 /** Shows active AV session status in the channel header. */
