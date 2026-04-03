@@ -13,6 +13,7 @@ COPY freeq-bot-id/ freeq-bot-id/
 COPY freeq-sdk-ffi/ freeq-sdk-ffi/
 COPY freeq-windows-core/ freeq-windows-core/
 COPY freeq-tui/ freeq-tui/
+COPY freeq-av-client/ freeq-av-client/
 RUN cargo build --release --package freeq-server --features av-native
 
 # ── Web client build ──
