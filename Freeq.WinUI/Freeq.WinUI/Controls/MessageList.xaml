@@ -20,7 +20,7 @@
             <ListView.ItemTemplate>
                 <DataTemplate x:DataType="models:MessageModel">
                     <!-- Tag="{x:Bind}" makes the MessageModel accessible from RightTapped -->
-                    <Grid Padding="16,6,16,6" Tag="{x:Bind}">
+                    <Grid Padding="{x:Bind local:MessageList.GetMessagePadding(), Mode=OneWay}" Tag="{x:Bind}">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
@@ -30,7 +30,10 @@
                         <Border Grid.Column="0" Width="36" Height="36"
                                 CornerRadius="18" VerticalAlignment="Top"
                                 Margin="0,2,12,0"
-                                Background="{x:Bind AvatarBackgroundBrush}">
+                            Background="{x:Bind AvatarBackgroundBrush}"
+                            Tapped="OnUserTapped"
+                            Tag="{x:Bind}"
+                            Visibility="{x:Bind local:MessageList.GetAvatarVisibility(), Mode=OneWay}">
                             <TextBlock Text="{x:Bind NickInitial}" FontSize="14" FontWeight="Bold"
                                        Foreground="{x:Bind NickBrush}"
                                        HorizontalAlignment="Center" VerticalAlignment="Center" />
@@ -42,7 +45,9 @@
                                 <!-- Nick: hash-colored -->
                                 <TextBlock Text="{x:Bind Nick}" FontSize="14" FontWeight="SemiBold"
                                            Foreground="{x:Bind NickBrush}"
-                                           VerticalAlignment="Center" />
+                                           VerticalAlignment="Center"
+                                           Tapped="OnUserTapped"
+                                           Tag="{x:Bind}" />
 
                                 <!-- Verified DID badge -->
                                 <Border Background="{StaticResource AccentDimBrush}"
@@ -74,13 +79,12 @@
                                            Visibility="{x:Bind local:MessageList.BoolToVis(IsEdited), Mode=OneWay}" />
                             </StackPanel>
 
-                            <!-- Normal message text — Mode=OneWay so edits propagate -->
-                            <TextBlock Text="{x:Bind Content, Mode=OneWay}"
-                                       FontSize="{StaticResource BodyFontSize}"
-                                       Foreground="{StaticResource FgBrush}"
-                                       TextWrapping="Wrap" Margin="0,2,0,0"
-                                       IsTextSelectionEnabled="True"
-                                       Visibility="{x:Bind local:MessageList.BoolToVisInverse(IsDeleted), Mode=OneWay}" />
+                            <!-- Markdown/media aware message renderer -->
+                            <local:MessageContentView Message="{x:Bind, Mode=OneWay}"
+                                                     ServerUrl="{x:Bind local:MessageList.GetServerUrl(), Mode=OneWay}"
+                                                     AutoLoadExternalMedia="{x:Bind local:MessageList.GetAutoLoadExternalMedia(), Mode=OneWay}"
+                                                     Margin="0,2,0,0"
+                                                     Visibility="{x:Bind local:MessageList.BoolToVisInverse(IsDeleted), Mode=OneWay}" />
 
                             <!-- Deleted message placeholder — Mode=OneWay -->
                             <TextBlock Text="This message was deleted."
@@ -89,6 +93,32 @@
                                        FontStyle="Italic"
                                        Margin="0,2,0,0"
                                        Visibility="{x:Bind local:MessageList.BoolToVis(IsDeleted), Mode=OneWay}" />
+
+                            <!-- Reactions -->
+                            <ItemsControl ItemsSource="{x:Bind Reactions, Mode=OneWay}"
+                                          Visibility="{x:Bind local:MessageList.BoolToVis(HasReactions), Mode=OneWay}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <ItemsWrapGrid Orientation="Horizontal" />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate x:DataType="models:ReactionSummary">
+                                        <Border Background="{StaticResource BgTertiaryBrush}"
+                                                BorderBrush="{StaticResource BorderBrush}"
+                                                BorderThickness="1"
+                                                CornerRadius="999"
+                                                Margin="0,6,6,0"
+                                                Padding="8,2"
+                                                Tapped="OnReactionTapped"
+                                                Tag="{x:Bind}">
+                                            <TextBlock Text="{x:Bind Label}"
+                                                       FontSize="{StaticResource TinyFontSize}"
+                                                       Foreground="{StaticResource FgBrush}" />
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
                         </StackPanel>
                     </Grid>
                 </DataTemplate>

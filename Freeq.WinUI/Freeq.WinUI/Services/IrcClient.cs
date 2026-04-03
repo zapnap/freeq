@@ -37,7 +37,10 @@ public class IrcClient : IDisposable
     public event Action<string, string, string, string?, DateTimeOffset?>? MessageReceived; // channel, nick, message, msgid, serverTime
     public event Action<string, string, string, DateTimeOffset?>? MessageEdited;            // channel, originalMsgId, newContent, serverTime
     public event Action<string, string>? MessageDeleted;                                    // channel, msgId
+    public event Action<string, string, string, string?>? ReactionReceived;                 // channel, nick, emoji, targetMsgId
     public event Action<string, string, bool>? TypingChanged;                              // channel, nick, isTyping
+    public event Action<string, bool, string?>? AwayChanged;                               // nick, isAway, message
+    public event Action<bool, string?>? SelfAwayStateChanged;                              // isAway, message
     public event Action<string, string>? JoinReceived; // channel, nick
     public event Action<string, string, string>? PartReceived; // channel, nick, reason
     public event Action<string, string>? QuitReceived; // nick, reason
@@ -53,6 +56,8 @@ public class IrcClient : IDisposable
     public event Action? ListEndReceived;
     /// <summary>Fired for each PINS response line: channel, msgid, pinnedBy, pinnedAt.</summary>
     public event Action<string, string, string, long>? PinEntryReceived;
+    /// <summary>Fired once when MOTD (375/372/376) is completed for this session.</summary>
+    public event Action<string>? MotdReceived;
 
     // Nick → account (DID) mapping, populated from extended-join and ACCOUNT messages
     private readonly ConcurrentDictionary<string, string> _accounts = new(StringComparer.OrdinalIgnoreCase);
@@ -72,6 +77,7 @@ public class IrcClient : IDisposable
     ];
 
     private readonly HashSet<string> _ackedCaps = new();
+    private readonly List<string> _motdLines = [];
 
     public string? GetAccount(string nick) =>
         _accounts.TryGetValue(nick, out var account) ? account : null;
@@ -177,8 +183,10 @@ public class IrcClient : IDisposable
         _saslDid = null;
         _saslPdsUrl = null;
         _saslMethod = null;
+        Did = null;
         _ackedCaps.Clear();
         _accounts.Clear();
+        _motdLines.Clear();
         _cts?.Cancel();
         _ws?.Dispose();
         _ws = null;
@@ -368,6 +376,18 @@ public class IrcClient : IDisposable
                 HandleNotice(msg);
                 break;
 
+            case "AWAY":
+            {
+                // away-notify: :nick!user@host AWAY [:reason]
+                var awayNick = msg.Prefix?.Split('!')[0] ?? "";
+                if (!string.IsNullOrWhiteSpace(awayNick))
+                {
+                    var awayMessage = msg.Params.Length >= 1 ? msg.Params[0] : null;
+                    AwayChanged?.Invoke(awayNick, !string.IsNullOrWhiteSpace(awayMessage), awayMessage);
+                }
+                break;
+            }
+
             case "332": // RPL_TOPIC
                 if (msg.Params.Length >= 3)
                     TopicReceived?.Invoke(msg.Params[1], msg.Params[2]);
@@ -408,6 +428,14 @@ public class IrcClient : IDisposable
             case "315": // RPL_ENDOFWHO
                 // Refresh member list to pick up newly discovered accounts
                 AccountChanged?.Invoke("*", null); // Signal refresh
+                break;
+
+            case "305": // RPL_UNAWAY
+                SelfAwayStateChanged?.Invoke(false, null);
+                break;
+
+            case "306": // RPL_NOWAWAY
+                SelfAwayStateChanged?.Invoke(true, null);
                 break;
 
             case "366": // RPL_ENDOFNAMES — send WHO to discover accounts, request history
@@ -458,6 +486,26 @@ public class IrcClient : IDisposable
                 Send("CAP END");
                 ErrorReceived?.Invoke("SASL authentication failed");
                 break;
+
+            case "375": // RPL_MOTDSTART
+                _motdLines.Clear();
+                break;
+
+            case "372": // RPL_MOTD
+                if (msg.Params.Length >= 2)
+                {
+                    var motdLine = msg.Params[1].TrimStart('-', ' ');
+                    if (!string.IsNullOrWhiteSpace(motdLine))
+                        _motdLines.Add(motdLine);
+                }
+                break;
+
+            case "376": // RPL_ENDOFMOTD
+            case "422": // ERR_NOMOTD
+                if (_motdLines.Count > 0)
+                    MotdReceived?.Invoke(string.Join("\n", _motdLines));
+                _motdLines.Clear();
+                break;
         }
     }
 
@@ -505,6 +553,13 @@ public class IrcClient : IDisposable
         if (msg.Tags.TryGetValue("+draft/delete", out var deleteMsgId))
         {
             MessageDeleted?.Invoke(target, deleteMsgId);
+        }
+
+        // Reactions: @+react=<emoji>[;+reply=<msgid>] TAGMSG <target> :
+        if (msg.Tags.TryGetValue("+react", out var emoji))
+        {
+            msg.Tags.TryGetValue("+reply", out var targetMsgId);
+            ReactionReceived?.Invoke(target, nick, emoji, targetMsgId);
         }
     }
 

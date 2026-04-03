@@ -47,6 +47,9 @@ public sealed partial class Sidebar : UserControl
                 case nameof(MainViewModel.ConnectionStatus):
                     UserStatus.Text = vm.ConnectionStatus;
                     break;
+                case nameof(MainViewModel.IsAway):
+                    UpdateAwayButton(vm.IsAway);
+                    break;
             }
         };
 
@@ -55,6 +58,16 @@ public sealed partial class Sidebar : UserControl
             FavoritesSection.Visibility = vm.FavoriteChannels.Count > 0
                 ? Visibility.Visible : Visibility.Collapsed;
         };
+
+        UpdateAwayButton(vm.IsAway);
+    }
+
+    private void UpdateAwayButton(bool isAway)
+    {
+        AwayButton.Foreground = new SolidColorBrush(isAway
+            ? ColorHelper.FromArgb(0xFF, 0xFF, 0xB5, 0x47)
+            : ColorHelper.FromArgb(0xFF, 0x88, 0x8B, 0x96));
+        ToolTipService.SetToolTip(AwayButton, isAway ? "Set Back" : "Set Away");
     }
 
     private void UpdateStatusDot(ConnectionState state)
@@ -216,6 +229,31 @@ public sealed partial class Sidebar : UserControl
     private void OnDisconnectClick(object sender, RoutedEventArgs e)
     {
         DisconnectRequested?.Invoke();
+    }
+
+    private async void OnAwayClick(object sender, RoutedEventArgs e)
+    {
+        if (ViewModel == null) return;
+
+        if (ViewModel.IsAway)
+        {
+            ViewModel.ToggleAwayStatus();
+            return;
+        }
+
+        var input = new TextBox { PlaceholderText = "Away message (optional)", Text = "Away" };
+        var dialog = new ContentDialog
+        {
+            Title = "Set Away",
+            PrimaryButtonText = "Set Away",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = this.XamlRoot,
+            Content = input,
+        };
+
+        if (await dialog.ShowAsync() == ContentDialogResult.Primary)
+            ViewModel.ToggleAwayStatus(input.Text);
     }
 
     public static Visibility IntToVisibility(int value)

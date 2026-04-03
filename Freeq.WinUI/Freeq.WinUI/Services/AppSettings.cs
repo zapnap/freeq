@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Freeq.WinUI.Models;
 
 namespace Freeq.WinUI.Services;
 
@@ -19,6 +20,53 @@ public class AppSettings
     }
 
     public HashSet<string> MutedChannels => _data.MutedChannels;
+    public string ThemeMode
+    {
+        get => _data.ThemeMode;
+        set => _data.ThemeMode = value;
+    }
+
+    public string MessageDensity
+    {
+        get => _data.MessageDensity;
+        set => _data.MessageDensity = value;
+    }
+
+    public bool ShowJoinPartMessages
+    {
+        get => _data.ShowJoinPartMessages;
+        set => _data.ShowJoinPartMessages = value;
+    }
+
+    public bool AutoLoadExternalMedia
+    {
+        get => _data.AutoLoadExternalMedia;
+        set => _data.AutoLoadExternalMedia = value;
+    }
+
+    public bool EnableWindowsNotifications
+    {
+        get => _data.EnableWindowsNotifications;
+        set => _data.EnableWindowsNotifications = value;
+    }
+
+    public bool EnableNotificationSounds
+    {
+        get => _data.EnableNotificationSounds;
+        set => _data.EnableNotificationSounds = value;
+    }
+
+    public string? ApiBearerToken
+    {
+        get => _data.ApiBearerToken;
+        set => _data.ApiBearerToken = value;
+    }
+
+    public List<BookmarkEntry> Bookmarks
+    {
+        get => _data.Bookmarks;
+        set => _data.Bookmarks = value;
+    }
 
     public void Save()
     {
@@ -50,5 +98,13 @@ public class AppSettings
     private class SettingsData
     {
         public HashSet<string> MutedChannels { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+        public string ThemeMode { get; set; } = "System";
+        public string MessageDensity { get; set; } = "Default";
+        public bool ShowJoinPartMessages { get; set; } = true;
+        public bool AutoLoadExternalMedia { get; set; } = true;
+        public bool EnableWindowsNotifications { get; set; } = true;
+        public bool EnableNotificationSounds { get; set; } = false;
+        public string? ApiBearerToken { get; set; }
+        public List<BookmarkEntry> Bookmarks { get; set; } = [];
     }
 }

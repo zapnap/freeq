@@ -60,105 +60,105 @@ Grouped by priority. Web reference files are relative to `freeq-app/src/`.
 
 ## P2 — User Experience
 
-- [ ] **User profile popover** — Clicking a nick or avatar should open a popover showing: nick, DID (if authenticated), Bluesky handle, "Open on Bluesky" link, and op/voice actions for channel ops.
+- [x] **User profile popover** — Clicking a nick or avatar opens a profile dialog with nick, DID, Bluesky handle/link, plus op/deop/voice/devoice actions when the current user is an operator.
   - Web: `UserPopover.tsx`
 
-- [ ] **Message reactions** — Support IRCv3 reactions: send `TAGMSG <target> +react=<emoji>`; render emoji reaction bubbles beneath messages with counts and click-to-react.
+- [x] **Message reactions** — Supports IRCv3 reactions via `TAGMSG` with `+react` and optional `+reply`; renders reaction bubbles under messages and supports click-to-react/context-menu reactions.
   - Web: `MessageList.tsx`, `EmojiPicker.tsx`, `store.ts`
 
-- [ ] **Message search** — Ctrl+F opens a search dialog/panel. Query the server or local message cache; display results with channel context and click-to-jump.
+- [x] **Message search** — Ctrl+F opens a search dialog over local message cache with channel context and jump-to-message behavior.
   - Web: `SearchModal.tsx`
 
-- [ ] **Message context menu** — Right-click (or long-press) on a message shows a context menu with: Copy text, Copy message ID, Edit (own messages), Delete (own/ops), React, Bookmark, Share to Bluesky.
+- [x] **Message context menu** — Right-click menu includes copy text, copy message ID, edit/delete, quick reactions, bookmark, and share-to-Bluesky actions.
   - Web: `MessageContextMenu.tsx`
 
-- [ ] **Reconnect / identity-loss banner** — Show a dismissible banner at the top of the message list when: (a) reconnecting, (b) reconnected as guest after a previously authenticated session.
+- [x] **Reconnect / identity-loss banner** — Dismissible reconnect/identity-loss banner added at top of window.
   - Web: `ReconnectBanner.tsx`
 
-- [ ] **MOTD display** — Show server Message of the Day in the server buffer on connect (or in a dismissible banner). Suppress after first display per session.
+- [x] **MOTD display** — MOTD is parsed from numerics, shown in dismissible banner, and mirrored to server buffer once per session.
   - Web: `MotdBanner.tsx`
 
-- [ ] **Away status UI** — Add a button in the sidebar footer (or slash command) to toggle `/away [message]` / `/back`. Display away status on members in the member list.
+- [x] **Away status UI** — Sidebar footer away toggle implemented with optional message; member list shows away markers from `away-notify` updates.
   - Web: `SlashCommands.tsx`, `MemberList.tsx`
 
-- [ ] **Toast / snackbar notifications** — Show brief in-app toasts for actions like "Message copied", "Channel joined", "Kicked user X", etc.
+- [x] **Toast / snackbar notifications** — In-app toast/snackbar added for message and moderation actions.
   - Web: `Toast.tsx`
 
-- [ ] **Windows toast notifications** — Fire WinRT `ToastNotification` on @mention when the app is not the foreground window.
+- [x] **Windows toast notifications** — Mention toasts added when app window is not foreground, with AppNotification fallback path.
   - Web: `lib/notifications.ts` (browser Notification API equivalent)
 
-- [ ] **Taskbar badge** — Show unread mention count on the taskbar icon using `BadgeNotification` / `BadgeUpdater`.
+- [x] **Taskbar badge** — Mention count updates window title and attempts badge updates via `BadgeNotification`/`BadgeUpdater` with safe fallback for unpackaged runtime.
 
 ---
 
 ## P3 — Rich Media & Content
 
-- [ ] **File / image upload** — Support drag-and-drop files and Ctrl+V paste of images into ComposeBox. Upload to server, send URL in message.
+- [x] **File / image upload** — ComposeBox supports attach button, drag-and-drop, and clipboard file paste; uploads to `/api/v1/upload` and sends resulting URL.
   - Web: `ComposeBox.tsx`, `FileDropOverlay.tsx`
 
-- [ ] **Image lightbox** — Click any inline image to open it full-size in an overlay with zoom support.
+- [x] **Image lightbox** — Inline image previews open a full-size dialog with zoom slider.
   - Web: `ImageLightbox.tsx`
 
-- [ ] **Link previews** — Fetch OpenGraph metadata for URLs in messages (via server proxy) and render a compact preview card below the message.
+- [x] **Link previews** — Fetches OpenGraph metadata from `/api/v1/og` and renders compact preview cards.
   - Web: `LinkPreview.tsx`
 
-- [ ] **Bluesky post embeds** — Detect Bluesky post URLs (`bsky.app/profile/…/post/…`) in messages and render an embedded post card.
+- [x] **Bluesky post embeds** — Detects `bsky.app/profile/.../post/...` links and renders lightweight embedded post cards.
   - Web: `BlueskyEmbed.tsx`
 
-- [ ] **Markdown rendering** — Parse and render `**bold**`, `*italic*`, `` `code` ``, `~~strikethrough~~`, ` ```code blocks``` `, and `[links](url)` in message content.
+- [x] **Markdown rendering** — Message renderer parses markdown syntax (bold, italic, inline code, fenced code, links) and renders rich text.
   - Web: `MarkdownRenderer.tsx`
 
-- [ ] **Rich text compose toolbar** — Add a formatting toolbar above/below ComposeBox with Bold, Italic, Code, and Link buttons that wrap selected text.
+- [x] **Rich text compose toolbar** — ComposeBox has Bold/Italic/Code/Link formatting controls that wrap selected text.
   - Web: `FormatToolbar.tsx`
 
-- [ ] **Audio / video / voice message playback** — Detect audio/video file URLs and render an inline player instead of a plain link.
+- [x] **Audio / video / voice message playback** — Detects media URLs and renders inline `MediaPlayerElement` playback controls.
   - Web: `MessageList.tsx`
 
 ---
 
 ## P4 — Settings & Preferences
 
-- [ ] **Settings panel** — Wire the existing gear icon in TopBar to open a real settings dialog containing all preferences below.
+- [x] **Settings panel** — TopBar gear opens a settings dialog with persisted preferences.
   - Web: `SettingsPanel.tsx`
 
-- [ ] **Theme toggle** — Add light/dark/system theme option. Currently the app is dark-only.
+- [x] **Theme toggle** — Added light/dark/system theme options with runtime resource-dictionary switching.
   - Web: `SettingsPanel.tsx`, `store.ts`
 
-- [ ] **Message density** — Cozy (large avatars, extra spacing) / Default / Compact (dense, no avatars) display modes.
+- [x] **Message density** — Cozy/Default/Compact modes now alter message spacing and compact avatar visibility.
   - Web: `SettingsPanel.tsx`, `store.ts`
 
-- [ ] **Show/hide join-part messages** — Toggle system messages (join, part, quit) per-channel or globally.
+- [x] **Show/hide join-part messages** — Global toggle implemented; join/part system lines can be suppressed.
   - Web: `SettingsPanel.tsx`, `store.ts`
 
-- [ ] **External media loading** — Toggle to disable automatic image/media loading (privacy / bandwidth control).
+- [x] **External media loading** — Global toggle controls automatic inline loading of external media and previews.
   - Web: `SettingsPanel.tsx`, `store.ts`
 
-- [ ] **Notification preferences** — Enable/disable Windows notifications; enable/disable notification sounds per event type.
+- [x] **Notification preferences** — Settings now control mention Windows toasts and notification sounds.
   - Web: `SettingsPanel.tsx`
 
-- [ ] **Keyboard shortcuts reference** — Ctrl+/ opens a help overlay listing all keyboard shortcuts.
+- [x] **Keyboard shortcuts reference** — `Ctrl+/` opens a keyboard shortcut overlay.
   - Web: `KeyboardShortcuts.tsx`
 
 ---
 
 ## P5 — Moderation & Advanced IRC
 
-- [ ] **Channel settings panel** — Ops can open a panel (from TopBar) to manage: topic, modes, join policy, bans, invites.
+- [x] **Channel settings panel** — Ops can open a panel (from TopBar) to manage: topic, modes, join policy, bans, invites.
   - Web: `ChannelSettingsPanel.tsx`
 
-- [ ] **Audit timeline** — View a chronological log of governance events (kicks, bans, mode changes, pins) for a channel.
+- [x] **Audit timeline** — View a chronological log of governance events (kicks, bans, mode changes, pins) for a channel.
   - Web: `AuditTimeline.tsx`
 
-- [ ] **Ban / invite management** — UI to view, add, and remove channel bans (`+b`) and invite exceptions (`+I`).
+- [x] **Ban / invite management** — UI to view, add, and remove channel bans (`+b`) and invite exceptions (`+I`).
   - Web: `ChannelSettingsPanel.tsx`
 
-- [ ] **Message bookmarks** — Bookmark any message; view bookmarks in a panel. Store bookmarks locally.
+- [x] **Message bookmarks** — Bookmark any message; view bookmarks in a panel. Store bookmarks locally.
   - Web: `BookmarksPanel.tsx`, `MessageContextMenu.tsx`
 
-- [ ] **Coordination cards** — Render structured task/event messages (those carrying coordination metadata) as rich cards instead of plain text.
+- [x] **Coordination cards** — Render structured task/event messages (those carrying coordination metadata) as rich cards instead of plain text.
   - Web: `CoordinationCards.tsx`
 
-- [ ] **E2EE indicators** — Show a lock icon in TopBar for encrypted channels (+E mode). Show E2EE status in DM headers. Offer safety number comparison in user popover.
+- [x] **E2EE indicators** — Show a lock icon in TopBar for encrypted channels (+E mode). Show E2EE status in DM headers. Offer safety number comparison in user popover.
   - Web: `TopBar.tsx`, `UserPopover.tsx`
 
 ---

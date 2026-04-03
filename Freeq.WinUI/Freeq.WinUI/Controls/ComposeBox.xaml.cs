@@ -4,6 +4,10 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using System.Collections.ObjectModel;
+using System.Linq;
+using Windows.ApplicationModel.DataTransfer;
+using Windows.Storage;
+using Windows.Storage.Pickers;
 using Windows.System;
 using Windows.UI.Core;
 
@@ -147,6 +151,31 @@ public sealed partial class ComposeBox : UserControl
         Send();
     }
 
+    private void OnBoldClick(object sender, RoutedEventArgs e) => WrapSelection("**", "**");
+    private void OnItalicClick(object sender, RoutedEventArgs e) => WrapSelection("*", "*");
+    private void OnCodeClick(object sender, RoutedEventArgs e) => WrapSelection("`", "`");
+
+    private async void OnLinkClick(object sender, RoutedEventArgs e)
+    {
+        var input = new TextBox { PlaceholderText = "https://example.com" };
+        var dialog = new ContentDialog
+        {
+            Title = "Insert link",
+            PrimaryButtonText = "Insert",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = XamlRoot,
+            Content = input,
+        };
+
+        if (await dialog.ShowAsync() == ContentDialogResult.Primary)
+        {
+            var selected = MessageInput.SelectedText;
+            var label = string.IsNullOrWhiteSpace(selected) ? "link" : selected;
+            WrapSelection($"[{label}](", ")", replacement: input.Text.Trim());
+        }
+    }
+
     private void Send()
     {
         if (_vm == null) return;
@@ -155,6 +184,18 @@ public sealed partial class ComposeBox : UserControl
         MessageInput.Text = "";
         _acActive = false;
         ResetAutocomplete();
+        MessageInput.Focus(FocusState.Programmatic);
+    }
+
+    private void WrapSelection(string prefix, string suffix, string? replacement = null)
+    {
+        var start = MessageInput.SelectionStart;
+        var length = MessageInput.SelectionLength;
+        var selected = replacement ?? MessageInput.Text.Substring(start, length);
+        var wrapped = prefix + selected + suffix;
+        MessageInput.Text = MessageInput.Text.Remove(start, length).Insert(start, wrapped);
+        MessageInput.SelectionStart = start + wrapped.Length;
+        MessageInput.SelectionLength = 0;
         MessageInput.Focus(FocusState.Programmatic);
     }
 
@@ -245,6 +286,83 @@ public sealed partial class ComposeBox : UserControl
         catch
         {
             return false;
+        }
+    }
+
+    private async void OnAttachClick(object sender, RoutedEventArgs e)
+    {
+        if (_vm == null) return;
+
+        var picker = new FileOpenPicker();
+        if (App.MainWindowInstance == null) return;
+        var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(App.MainWindowInstance);
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, hwnd);
+        picker.FileTypeFilter.Add("*");
+        var file = await picker.PickSingleFileAsync();
+        if (file == null) return;
+
+        try
+        {
+            await _vm.UploadAndSendFileAsync(file.Path, MessageInput.Text.Trim());
+            MessageInput.Text = "";
+        }
+        catch (Exception ex)
+        {
+            _vm.ShowToast($"Upload failed: {ex.Message}");
+        }
+    }
+
+    private void OnInputDragOver(object sender, DragEventArgs e)
+    {
+        e.AcceptedOperation = Windows.ApplicationModel.DataTransfer.DataPackageOperation.Copy;
+    }
+
+    private void OnInputDragLeave(object sender, DragEventArgs e)
+    {
+        e.Handled = true;
+    }
+
+    private async void OnInputDrop(object sender, DragEventArgs e)
+    {
+        if (_vm == null) return;
+        if (e.DataView.Contains(StandardDataFormats.StorageItems))
+        {
+            var items = await e.DataView.GetStorageItemsAsync();
+            if (items.FirstOrDefault() is StorageFile file)
+            {
+                try
+                {
+                    await _vm.UploadAndSendFileAsync(file.Path, MessageInput.Text.Trim());
+                    MessageInput.Text = "";
+                }
+                catch (Exception ex)
+                {
+                    _vm.ShowToast($"Upload failed: {ex.Message}");
+                }
+            }
+        }
+    }
+
+    private async void OnInputPaste(object sender, TextControlPasteEventArgs e)
+    {
+        if (_vm == null) return;
+        var content = Windows.ApplicationModel.DataTransfer.Clipboard.GetContent();
+        if (content.Contains(StandardDataFormats.StorageItems))
+        {
+            var items = await content.GetStorageItemsAsync();
+            if (items.FirstOrDefault() is StorageFile file)
+            {
+                e.Handled = true;
+                try
+                {
+                    await _vm.UploadAndSendFileAsync(file.Path, MessageInput.Text.Trim());
+                    MessageInput.Text = "";
+                }
+                catch (Exception ex)
+                {
+                    _vm.ShowToast($"Upload failed: {ex.Message}");
+                }
+            }
         }
     }
 }

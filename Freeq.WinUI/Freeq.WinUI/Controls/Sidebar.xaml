@@ -220,12 +220,20 @@
             </StackPanel>
 
             <!-- Settings/Disconnect -->
-            <Button Grid.Column="2" x:Name="DisconnectButton"
+                <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4">
+                <Button x:Name="AwayButton"
+                    Content="&#xE7BA;" FontFamily="Segoe MDL2 Assets" FontSize="14"
+                    Background="Transparent" Foreground="{StaticResource FgDimBrush}"
+                    Padding="8" MinWidth="0" MinHeight="0"
+                    ToolTipService.ToolTip="Set Away"
+                    Click="OnAwayClick" />
+                <Button x:Name="DisconnectButton"
                     Content="&#xE7E8;" FontFamily="Segoe MDL2 Assets" FontSize="16"
                     Background="Transparent" Foreground="{StaticResource FgDimBrush}"
                     Padding="8" MinWidth="0" MinHeight="0"
                     ToolTipService.ToolTip="Disconnect"
                     Click="OnDisconnectClick" />
+                </StackPanel>
         </Grid>
     </Grid>
 </UserControl>

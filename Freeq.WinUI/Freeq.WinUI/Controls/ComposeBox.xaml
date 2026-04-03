@@ -10,6 +10,7 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
         <!-- Typing indicator: "Alice is typing…" — hidden when empty -->
@@ -48,10 +49,21 @@
             </Button>
         </Grid>
 
-        <!-- Compose row: input + send button -->
-        <Grid Grid.Row="2" Padding="16,12">
+        <!-- Compose formatting toolbar -->
+        <Grid Grid.Row="2" Padding="16,8,16,0">
+            <StackPanel Orientation="Horizontal" Spacing="6">
+                <Button x:Name="BoldButton" Content="B" FontWeight="Bold" Padding="8,2" Click="OnBoldClick" />
+                <Button x:Name="ItalicButton" Content="I" FontStyle="Italic" Padding="8,2" Click="OnItalicClick" />
+                <Button x:Name="CodeButton" Content="&lt;/&gt;" Padding="8,2" Click="OnCodeClick" />
+                <Button x:Name="LinkButton" Content="Link" Padding="8,2" Click="OnLinkClick" />
+            </StackPanel>
+        </Grid>
+
+        <!-- Compose row: input + actions + send button -->
+        <Grid Grid.Row="3" Padding="16,8,16,12">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
 
@@ -82,6 +94,7 @@
             <TextBox Grid.Column="0" x:Name="MessageInput"
                      PlaceholderText="Message #channel"
                      AcceptsReturn="True"
+                     AllowDrop="True"
                      MaxHeight="120"
                      TextWrapping="Wrap"
                      FontSize="{StaticResource BodyFontSize}"
@@ -92,10 +105,27 @@
                      CornerRadius="{StaticResource MediumRadius}"
                      Padding="12,10"
                      KeyDown="OnInputKeyDown"
-                     TextChanged="OnInputTextChanged" />
+                         TextChanged="OnInputTextChanged"
+                         Paste="OnInputPaste"
+                         DragOver="OnInputDragOver"
+                         DragLeave="OnInputDragLeave"
+                         Drop="OnInputDrop" />
+
+                    <Button Grid.Column="1" x:Name="AttachButton"
+                        Margin="8,0,0,0" Padding="10,10"
+                        CornerRadius="{StaticResource MediumRadius}"
+                        MinWidth="0" MinHeight="0"
+                        Background="{StaticResource BgTertiaryBrush}"
+                        Foreground="{StaticResource FgBrush}"
+                        Click="OnAttachClick"
+                        VerticalAlignment="Bottom"
+                        ToolTipService.ToolTip="Attach file">
+                    <TextBlock Text="&#xE898;" FontFamily="Segoe MDL2 Assets" FontSize="14"
+                           VerticalAlignment="Center" />
+                    </Button>
 
             <!-- Send button -->
-            <Button Grid.Column="1" x:Name="SendButton"
+                    <Button Grid.Column="2" x:Name="SendButton"
                     Margin="8,0,0,0" Padding="12,10"
                     CornerRadius="{StaticResource MediumRadius}"
                     MinWidth="0" MinHeight="0"
