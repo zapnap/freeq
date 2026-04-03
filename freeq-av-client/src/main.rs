@@ -100,6 +100,8 @@ async fn run_room(display_name: String, existing_ticket: Option<RoomTicket>) -> 
     // Set up audio
     let broadcast = LocalBroadcast::new();
     let audio_backend = AudioBackend::default();
+    // Disable echo cancellation — sonora-aec3 has a slice bounds bug that crashes
+    audio_backend.set_aec_enabled(false);
 
     // List available devices
     let inputs = AudioBackend::list_inputs();
