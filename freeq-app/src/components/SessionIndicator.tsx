@@ -2,8 +2,9 @@ import { useState, useRef } from 'react';
 import { useStore } from '../store';
 import { joinAvSession, leaveAvSession, endAvSession, startAvSession, getNick } from '../irc/client';
 
-// iroh-live relay port (serves WebTransport + built-in audio web app)
-const RELAY_PORT = 4443;
+// iroh-live relay (serves WebTransport + built-in audio web app)
+// On staging, the relay runs on the VPS alongside the server
+const RELAY_URL = import.meta.env.VITE_RELAY_URL || `${window.location.protocol}//${window.location.hostname}:4443`;
 
 /** Shows active AV session status in the channel header. */
 export function SessionIndicator({ channel }: { channel: string }) {
@@ -54,8 +55,7 @@ export function SessionIndicator({ channel }: { channel: string }) {
 
     if (ticket && !ticket.startsWith('webrtc://')) {
       // Open iroh-live relay page with the room ticket
-      const relayOrigin = `${window.location.protocol}//${window.location.hostname}:${RELAY_PORT}`;
-      const relayUrl = `${relayOrigin}/?name=${encodeURIComponent(ticket)}`;
+      const relayUrl = `${RELAY_URL}/?name=${encodeURIComponent(ticket)}`;
       audioWindowRef.current = window.open(relayUrl, `av-${session.id}`, 'width=500,height=400');
       setAudioActive(true);
       useStore.getState().addSystemMessage(channel, 'Audio: connecting via iroh-live relay...');
