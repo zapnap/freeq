@@ -1394,13 +1394,30 @@ function handleAvSessionState(
   }
 }
 
-/// Start an AV session in a channel.
-export function startAvSession(channel: string, title?: string) {
+/// Start or join an AV session in a channel.
+/// If a session already exists, joins it instead of starting a new one.
+export async function startAvSession(channel: string, title?: string) {
   const store = useStore.getState();
   if (!store.authDid) {
     store.addSystemMessage(channel, 'You must be signed in with AT Protocol to start a voice session.');
     return;
   }
+
+  // Check if there's already an active session in this channel
+  try {
+    const resp = await fetch(`/api/v1/channels/${encodeURIComponent(channel)}/sessions`);
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data.active) {
+        // Session exists — join it instead
+        console.log('[av] Session already exists, joining:', data.active.id);
+        joinAvSession(channel, data.active.id);
+        return;
+      }
+    }
+  } catch {}
+
+  // No active session — start a new one
   const tags: Record<string, string> = { '+freeq.at/av-start': '' };
   if (title) tags['+freeq.at/av-title'] = title;
   const line = format('TAGMSG', [channel], tags);
