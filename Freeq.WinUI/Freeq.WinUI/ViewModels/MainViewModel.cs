@@ -26,6 +26,13 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private bool _isMemberListVisible = true;
     [ObservableProperty] private string? _errorMessage;
 
+    // Edit mode: non-null when the user is editing an existing message
+    [ObservableProperty] private string? _editingMessageId;
+    [ObservableProperty] private bool _isEditing;
+
+    // Typing indicator text shown above compose box, e.g. "Alice is typing…"
+    [ObservableProperty] private string _typingText = "";
+
     public ObservableCollection<ChannelModel> Channels { get; } = [];
     public ObservableCollection<ChannelModel> FavoriteChannels { get; } = [];
     public ObservableCollection<ChannelModel> DirectMessages { get; } = [];
@@ -39,12 +46,22 @@ public partial class MainViewModel : ObservableObject
     private readonly List<string> _pendingJoinChannels = [];
     private string? _desiredNickname;
 
+    // Tracks who is currently typing per channel: channel → (nick → expiry timer)
+    private readonly Dictionary<string, Dictionary<string, System.Threading.Timer>> _typingTimers = new(StringComparer.OrdinalIgnoreCase);
+
+    // Outbound typing: timer to send "done" after 10 s of no input
+    private System.Threading.Timer? _outboundTypingTimer;
+    private bool _outboundTypingActive;
+
     public MainViewModel(DispatcherQueue dispatcher)
     {
         _dispatcher = dispatcher;
 
         _irc.StateChanged += OnStateChanged;
         _irc.MessageReceived += OnMessageReceived;
+        _irc.MessageEdited += OnMessageEdited;
+        _irc.MessageDeleted += OnMessageDeleted;
+        _irc.TypingChanged += OnTypingChanged;
         _irc.JoinReceived += OnJoinReceived;
         _irc.PartReceived += OnPartReceived;
         _irc.QuitReceived += OnQuitReceived;
@@ -71,6 +88,9 @@ public partial class MainViewModel : ObservableObject
 
         value.UnreadCount = 0;
         value.MentionCount = 0;
+
+        // Cancel any edit in progress when switching channels
+        CancelEdit();
     }
 
     [RelayCommand]
@@ -84,7 +104,6 @@ public partial class MainViewModel : ObservableObject
 
         ErrorMessage = null;
         _desiredNickname = Nickname;
-        // Don't hide dialog yet — wait for Authenticated state in OnStateChanged
         await _irc.ConnectAsync(ServerUrl, Nickname);
     }
 
@@ -102,9 +121,11 @@ public partial class MainViewModel : ObservableObject
         _messagesByChannel.Clear();
         _membersByChannel.Clear();
         _pendingJoinChannels.Clear();
+        _typingTimers.Clear();
         SelectedChannel = null;
         ShowConnectDialog = true;
         IsConnected = false;
+        CancelEdit();
     }
 
     [RelayCommand]
@@ -112,24 +133,227 @@ public partial class MainViewModel : ObservableObject
     {
         if (string.IsNullOrWhiteSpace(ComposeText) || SelectedChannel == null) return;
 
-        _irc.SendMessage(SelectedChannel.Name, ComposeText);
+        var text = ComposeText.Trim();
 
-        // When echo-message is acked, the server will echo back our message with the real
-        // server-assigned msgid. Let that echo drive the display so history IDs are correct.
-        // When echo-message is not acked, add a local message immediately (server won't echo).
+        // Stop outbound typing indicator
+        StopOutboundTyping();
+
+        // Editing an existing message
+        if (IsEditing && EditingMessageId != null)
+        {
+            _irc.SendEditMessage(SelectedChannel.Name, EditingMessageId, text);
+            CancelEdit();
+            return;
+        }
+
+        // Slash commands
+        if (text.StartsWith('/'))
+        {
+            HandleSlashCommand(text);
+            ComposeText = "";
+            return;
+        }
+
+        // Regular message
+        _irc.SendMessage(SelectedChannel.Name, text);
+
+        // When echo-message is acked, the server echoes back with the real msgid.
+        // When not acked, add a local message immediately.
         if (!_irc.IsEchoMessageAcked)
         {
             var msg = new MessageModel
             {
                 Id = Guid.NewGuid().ToString(),
                 Nick = _irc.Nick,
-                Content = ComposeText,
+                Content = text,
                 Timestamp = DateTimeOffset.Now,
             };
             AddMessage(SelectedChannel.Name, msg);
         }
 
         ComposeText = "";
+    }
+
+    /// <summary>Called by ComposeBox on every keystroke to send outbound typing indicators.</summary>
+    public void NotifyTyping()
+    {
+        if (SelectedChannel == null) return;
+
+        if (!_outboundTypingActive)
+        {
+            _outboundTypingActive = true;
+            _irc.SendTyping(SelectedChannel.Name, true);
+        }
+
+        // Reset the 10-second done timer
+        _outboundTypingTimer?.Dispose();
+        _outboundTypingTimer = new System.Threading.Timer(_ =>
+        {
+            StopOutboundTyping();
+        }, null, TimeSpan.FromSeconds(10), Timeout.InfiniteTimeSpan);
+    }
+
+    private void StopOutboundTyping()
+    {
+        _outboundTypingTimer?.Dispose();
+        _outboundTypingTimer = null;
+        if (_outboundTypingActive && SelectedChannel != null)
+        {
+            _outboundTypingActive = false;
+            _irc.SendTyping(SelectedChannel.Name, false);
+        }
+    }
+
+    /// <summary>Load a sent message into the compose box for editing.</summary>
+    public void BeginEditMessage(MessageModel msg)
+    {
+        EditingMessageId = msg.Id;
+        IsEditing = true;
+        ComposeText = msg.Content;
+    }
+
+    [RelayCommand]
+    public void CancelEdit()
+    {
+        EditingMessageId = null;
+        IsEditing = false;
+        ComposeText = "";
+    }
+
+    /// <summary>Send a soft-delete request for a message.</summary>
+    public void DeleteMessage(MessageModel msg)
+    {
+        if (SelectedChannel == null) return;
+        _irc.SendDeleteMessage(SelectedChannel.Name, msg.Id);
+    }
+
+    /// <summary>Returns all nicks in the current channel for Tab autocomplete.</summary>
+    public IEnumerable<string> GetCurrentChannelNicks()
+    {
+        return Operators.Select(m => m.Nick)
+            .Concat(Voiced.Select(m => m.Nick))
+            .Concat(Members.Select(m => m.Nick));
+    }
+
+    /// <summary>Returns the last message sent by the current user in the active channel.</summary>
+    public MessageModel? GetLastOwnMessage()
+    {
+        if (SelectedChannel == null) return null;
+        if (!_messagesByChannel.TryGetValue(SelectedChannel.Name, out var msgs)) return null;
+        return msgs.LastOrDefault(m =>
+            m.Nick.Equals(_irc.Nick, StringComparison.OrdinalIgnoreCase) && !m.IsDeleted);
+    }
+
+    private void HandleSlashCommand(string text)
+    {
+        var space = text.IndexOf(' ');
+        var cmd = (space < 0 ? text[1..] : text[1..space]).ToLowerInvariant();
+        var args = space >= 0 ? text[(space + 1)..].Trim() : "";
+
+        switch (cmd)
+        {
+            case "me":
+                if (!string.IsNullOrWhiteSpace(args) && SelectedChannel != null)
+                    _irc.Send($"PRIVMSG {SelectedChannel.Name} :\x01ACTION {args}\x01");
+                break;
+
+            case "join":
+                if (!string.IsNullOrWhiteSpace(args))
+                    JoinChannelCommand.Execute(args.Split(' ')[0]);
+                break;
+
+            case "part":
+                if (SelectedChannel != null)
+                    _irc.PartChannel(SelectedChannel.Name, string.IsNullOrWhiteSpace(args) ? null : args);
+                break;
+
+            case "topic":
+                if (!string.IsNullOrWhiteSpace(args) && SelectedChannel != null)
+                    _irc.Send($"TOPIC {SelectedChannel.Name} :{args}");
+                break;
+
+            case "invite":
+            {
+                var parts = args.Split(' ', 2);
+                if (parts.Length >= 1 && SelectedChannel != null)
+                {
+                    var target = parts.Length >= 2 ? parts[1] : SelectedChannel.Name;
+                    _irc.Send($"INVITE {parts[0]} {target}");
+                }
+                break;
+            }
+
+            case "kick":
+            {
+                var parts = args.Split(' ', 2);
+                if (parts.Length >= 1 && SelectedChannel != null)
+                {
+                    var reason = parts.Length >= 2 ? parts[1] : "";
+                    _irc.Send(string.IsNullOrEmpty(reason)
+                        ? $"KICK {SelectedChannel.Name} {parts[0]}"
+                        : $"KICK {SelectedChannel.Name} {parts[0]} :{reason}");
+                }
+                break;
+            }
+
+            case "op":
+                if (!string.IsNullOrWhiteSpace(args) && SelectedChannel != null)
+                    _irc.Send($"MODE {SelectedChannel.Name} +o {args}");
+                break;
+
+            case "deop":
+                if (!string.IsNullOrWhiteSpace(args) && SelectedChannel != null)
+                    _irc.Send($"MODE {SelectedChannel.Name} -o {args}");
+                break;
+
+            case "voice":
+                if (!string.IsNullOrWhiteSpace(args) && SelectedChannel != null)
+                    _irc.Send($"MODE {SelectedChannel.Name} +v {args}");
+                break;
+
+            case "mode":
+                if (!string.IsNullOrWhiteSpace(args) && SelectedChannel != null)
+                    _irc.Send($"MODE {SelectedChannel.Name} {args}");
+                break;
+
+            case "msg":
+            {
+                var parts = args.Split(' ', 2);
+                if (parts.Length >= 2)
+                    _irc.Send($"PRIVMSG {parts[0]} :{parts[1]}");
+                break;
+            }
+
+            case "whois":
+                if (!string.IsNullOrWhiteSpace(args))
+                    _irc.Send($"WHOIS {args}");
+                break;
+
+            case "away":
+                _irc.Send(string.IsNullOrWhiteSpace(args) ? "AWAY" : $"AWAY :{args}");
+                break;
+
+            case "pins":
+                if (SelectedChannel != null)
+                    _irc.RequestPins(SelectedChannel.Name);
+                break;
+
+            case "raw":
+                if (!string.IsNullOrWhiteSpace(args))
+                    _irc.Send(args);
+                break;
+
+            case "help":
+                if (SelectedChannel != null)
+                    AddSystemMessage(SelectedChannel.Name,
+                        "Commands: /me /join /part /topic /invite /kick /op /deop /voice /mode /msg /whois /away /pins /raw /help");
+                break;
+
+            default:
+                if (SelectedChannel != null)
+                    AddSystemMessage(SelectedChannel.Name, $"Unknown command: /{cmd}");
+                break;
+        }
     }
 
     /// <summary>
@@ -205,20 +429,15 @@ public partial class MainViewModel : ObservableObject
 
             if (state == ConnectionState.Authenticated)
             {
-                // If the server assigned a different nick than desired, request a change
                 if (!string.IsNullOrEmpty(_desiredNickname) &&
                     !_irc.Nick.Equals(_desiredNickname, StringComparison.OrdinalIgnoreCase))
                 {
                     _irc.Send($"NICK {_desiredNickname}");
                 }
 
-                // Update nickname to what the server currently has
                 Nickname = _irc.Nick;
-
-                // NOW hide the connect dialog — registration is complete
                 ShowConnectDialog = false;
 
-                // Flush pending channels — snapshot and clear atomically
                 var toJoin = _pendingJoinChannels.ToList();
                 _pendingJoinChannels.Clear();
                 foreach (var ch in toJoin)
@@ -228,6 +447,8 @@ public partial class MainViewModel : ObservableObject
             {
                 ShowConnectDialog = true;
                 _pendingJoinChannels.Clear();
+                _typingTimers.Clear();
+                TypingText = "";
             }
         });
     }
@@ -261,6 +482,95 @@ public partial class MainViewModel : ObservableObject
         });
     }
 
+    private void OnMessageEdited(string channel, string originalMsgId, string newContent, DateTimeOffset? serverTime)
+    {
+        _dispatcher.TryEnqueue(() =>
+        {
+            if (!_messagesByChannel.TryGetValue(channel, out var msgs)) return;
+            var msg = msgs.FirstOrDefault(m => m.Id == originalMsgId);
+            if (msg != null)
+            {
+                msg.Content = newContent;
+                msg.IsEdited = true;
+            }
+        });
+    }
+
+    private void OnMessageDeleted(string channel, string msgId)
+    {
+        _dispatcher.TryEnqueue(() =>
+        {
+            if (!_messagesByChannel.TryGetValue(channel, out var msgs)) return;
+            var msg = msgs.FirstOrDefault(m => m.Id == msgId);
+            if (msg != null)
+                msg.IsDeleted = true;
+        });
+    }
+
+    private void OnTypingChanged(string channel, string nick, bool isTyping)
+    {
+        // Ignore echoes of our own typing
+        if (nick.Equals(_irc.Nick, StringComparison.OrdinalIgnoreCase)) return;
+
+        _dispatcher.TryEnqueue(() =>
+        {
+            if (!_typingTimers.ContainsKey(channel))
+                _typingTimers[channel] = new Dictionary<string, System.Threading.Timer>(StringComparer.OrdinalIgnoreCase);
+
+            var channelTimers = _typingTimers[channel];
+
+            if (isTyping)
+            {
+                if (channelTimers.TryGetValue(nick, out var existing))
+                    existing.Dispose();
+
+                channelTimers[nick] = new System.Threading.Timer(_ =>
+                {
+                    _dispatcher.TryEnqueue(() =>
+                    {
+                        RemoveTypingNick(channel, nick);
+                        UpdateTypingText(channel);
+                    });
+                }, null, TimeSpan.FromSeconds(10), Timeout.InfiniteTimeSpan);
+            }
+            else
+            {
+                RemoveTypingNick(channel, nick);
+            }
+
+            UpdateTypingText(channel);
+        });
+    }
+
+    private void RemoveTypingNick(string channel, string nick)
+    {
+        if (!_typingTimers.TryGetValue(channel, out var timers)) return;
+        if (timers.TryGetValue(nick, out var t))
+        {
+            t.Dispose();
+            timers.Remove(nick);
+        }
+    }
+
+    private void UpdateTypingText(string channel)
+    {
+        if (SelectedChannel?.Name.Equals(channel, StringComparison.OrdinalIgnoreCase) != true) return;
+
+        if (!_typingTimers.TryGetValue(channel, out var timers) || timers.Count == 0)
+        {
+            TypingText = "";
+            return;
+        }
+
+        var nicks = timers.Keys.ToList();
+        TypingText = nicks.Count switch
+        {
+            1 => $"{nicks[0]} is typing…",
+            2 => $"{nicks[0]} and {nicks[1]} are typing…",
+            _ => "Several people are typing…"
+        };
+    }
+
     private void OnJoinReceived(string channel, string nick)
     {
         _dispatcher.TryEnqueue(() =>
@@ -269,12 +579,10 @@ public partial class MainViewModel : ObservableObject
 
             if (nick.Equals(_irc.Nick, StringComparison.OrdinalIgnoreCase))
             {
-                // We joined — select this channel
                 var ch = FindChannel(channel);
                 if (ch != null)
                     SelectedChannel = ch;
 
-                // Also add ourselves to the member list
                 AddMemberToChannel(channel, nick);
             }
             else
@@ -347,7 +655,6 @@ public partial class MainViewModel : ObservableObject
             foreach (var nick in nicks)
             {
                 var bare = nick.TrimStart('@', '%', '+');
-                // Remove any existing entry for this nick (may have different prefix)
                 list.RemoveAll(n => n.TrimStart('@', '%', '+').Equals(bare, StringComparison.OrdinalIgnoreCase));
                 list.Add(nick);
             }
@@ -361,7 +668,6 @@ public partial class MainViewModel : ObservableObject
     {
         _dispatcher.TryEnqueue(() =>
         {
-            // Refresh member list to update verified badge
             if (SelectedChannel != null)
                 RefreshMemberList(SelectedChannel.Name);
         });
@@ -371,7 +677,6 @@ public partial class MainViewModel : ObservableObject
     {
         _dispatcher.TryEnqueue(() =>
         {
-            // Update our displayed nick if it's us
             if (oldNick.Equals(Nickname, StringComparison.OrdinalIgnoreCase))
                 Nickname = newNick;
 
@@ -397,12 +702,8 @@ public partial class MainViewModel : ObservableObject
         _dispatcher.TryEnqueue(() =>
         {
             ErrorMessage = error;
-            // If we haven't transitioned to main view yet, the dialog is still visible.
-            // If we have (shouldn't happen since we wait for Authenticated), re-show it.
             if (!ShowConnectDialog)
-            {
                 ShowConnectDialog = true;
-            }
         });
     }
 
@@ -472,9 +773,8 @@ public partial class MainViewModel : ObservableObject
     {
         var role = MemberRole.Regular;
         var nick = raw.TrimStart('@', '%', '+');
-        var prefix = raw[..^nick.Length]; // prefix chars only, never the nick itself
+        var prefix = raw[..^nick.Length];
 
-        // Highest prefix wins (multi-prefix: @+nick means op+voice → op)
         if (prefix.Contains('@')) role = MemberRole.Operator;
         else if (prefix.Contains('%')) role = MemberRole.HalfOp;
         else if (prefix.Contains('+')) role = MemberRole.Voiced;

@@ -32,28 +32,28 @@ Grouped by priority. Web reference files are relative to `freeq-app/src/`.
 
 ## P1 — Channel & Navigation
 
-- [ ] **Channel browser** — Add a button/command to LIST channels on the server and display them in a dialog with name, topic, and member count. Allow joining from the list.
-  - Web: `ChannelListModal.tsx`
+- [x] **Channel browser** — Sidebar `+` flyout → Browse Channels: sends LIST, opens dialog with name/member count/topic, fuzzy filter, join from list.
+  - `Controls/Sidebar.xaml.cs`, `Services/IrcClient.cs`, `ViewModels/MainViewModel.cs`, `Models/ChannelListEntry.cs`
 
-- [ ] **Channel creation** — Add a "Create channel" option in the sidebar `+` menu. Send `JOIN #newchannel` (server auto-creates).
-  - Web: `ChannelListModal.tsx`
+- [x] **Channel creation** — Sidebar `+` flyout → New Channel: prompts for name, sends JOIN (server auto-creates).
+  - `Controls/Sidebar.xaml`, `Controls/Sidebar.xaml.cs`
 
-- [ ] **Channel muting** — Allow muting a channel so its messages don't trigger unread badges or notifications. Store mute list in app settings.
-  - Web: `Sidebar.tsx`, `store.ts`
+- [x] **Channel muting** — Right-click channel in sidebar → Mute/Unmute. Suppresses unread badges. Persisted to `%LOCALAPPDATA%\Freeq\settings.json`.
+  - `Controls/Sidebar.xaml`, `Controls/Sidebar.xaml.cs`, `Services/AppSettings.cs`, `ViewModels/MainViewModel.cs`
 
-- [ ] **Pinned messages** — Implement `/pins` slash command; display pinned messages in a panel or dialog accessible from TopBar.
-  - Web: `MessageContextMenu.tsx`, `store.ts`
+- [x] **Pinned messages** — Pins button (📌) in TopBar opens dialog; sends `PINS #channel` to server; shows pinned message IDs, pinned-by, and timestamp.
+  - `Controls/TopBar.xaml`, `Controls/TopBar.xaml.cs`, `Services/IrcClient.cs`, `Models/PinEntry.cs`
 
-- [ ] **Quick switcher** — Ctrl+K opens a fuzzy-search dialog over all joined channels and DMs for instant navigation.
-  - Web: `QuickSwitcher.tsx`
+- [x] **Quick switcher** — Ctrl+K opens fuzzy-search dialog over all joined channels and DMs; Enter or double-click to navigate.
+  - `MainWindow.xaml.cs`
 
-- [ ] **Keyboard channel switching**
+- [x] **Keyboard channel switching**
   - Alt+1…9, Alt+0 → jump to nth channel in sidebar
   - Alt+Up / Alt+Down → previous/next channel
-  - Web: `App.tsx`
+  - `MainWindow.xaml.cs`, `ViewModels/MainViewModel.cs`
 
-- [ ] **Channel topic setting** — TopBar shows the topic read-only. Allow ops to click it (or use `/topic`) to edit and send a new TOPIC command.
-  - Web: `TopBar.tsx`, `SlashCommands.tsx`
+- [x] **Channel topic setting** — TopBar topic text is now a clickable button; opens an edit dialog and sends `TOPIC #channel :new topic`.
+  - `Controls/TopBar.xaml`, `Controls/TopBar.xaml.cs`
 
 ---
 

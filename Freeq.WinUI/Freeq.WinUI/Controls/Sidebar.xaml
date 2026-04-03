@@ -101,11 +101,19 @@
                                    CharacterSpacing="120" />
                         <Button Grid.Column="1" Content="+" FontSize="14"
                                 Background="Transparent" Foreground="{StaticResource FgDimBrush}"
-                                Padding="6,2" MinWidth="0" MinHeight="0"
-                                Click="OnJoinChannelClick" />
+                                Padding="6,2" MinWidth="0" MinHeight="0">
+                            <Button.Flyout>
+                                <MenuFlyout>
+                                    <MenuFlyoutItem Text="Join Channel" Click="OnJoinChannelClick" />
+                                    <MenuFlyoutItem Text="New Channel" Click="OnCreateChannelClick" />
+                                    <MenuFlyoutItem Text="Browse Channels" Click="OnBrowseChannelsClick" />
+                                </MenuFlyout>
+                            </Button.Flyout>
+                        </Button>
                     </Grid>
                     <ListView x:Name="ChannelsList" SelectionMode="Single"
-                              ItemClick="OnChannelClick" IsItemClickEnabled="True">
+                              ItemClick="OnChannelClick" IsItemClickEnabled="True"
+                              RightTapped="OnChannelRightTapped">
                         <ListView.ItemContainerStyle>
                             <Style TargetType="ListViewItem">
                                 <Setter Property="Padding" Value="0" />
