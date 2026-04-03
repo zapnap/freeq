@@ -4,7 +4,8 @@ import { joinAvSession, leaveAvSession, endAvSession, startAvSession, getNick } 
 
 // iroh-live relay (serves WebTransport + built-in audio web app)
 // Relay runs on :4443 inside container, exposed on :30443 via node_port.
-const RELAY_URL = import.meta.env.VITE_RELAY_URL || `${window.location.protocol}//${window.location.hostname}:30443`;
+// Use HTTP for relay — it serves the web page over HTTP, WebTransport over QUIC (separate)
+const RELAY_URL = import.meta.env.VITE_RELAY_URL || `http://${window.location.hostname}:30443`;
 
 /** Shows active AV session status in the channel header. */
 export function SessionIndicator({ channel }: { channel: string }) {
