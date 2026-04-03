@@ -14,7 +14,7 @@ echo "Preparing staging deploy in $TMPDIR..."
 cp "$REPO_ROOT/Cargo.toml" "$REPO_ROOT/Cargo.lock" "$TMPDIR/"
 
 # Copy all workspace members needed for 'cargo build -p freeq-server'
-for dir in freeq-sdk freeq-server freeq-auth-broker freeq-bots freeq-bot-id freeq-sdk-ffi freeq-windows-core; do
+for dir in freeq-sdk freeq-server freeq-auth-broker freeq-bots freeq-bot-id freeq-sdk-ffi freeq-windows-core freeq-av-client; do
     cp -r "$REPO_ROOT/$dir" "$TMPDIR/"
 done
 
@@ -37,6 +37,18 @@ name = 'freeq-staging'
 post_import = ''
 env = []
 include = []
+
+[[services.web.ports]]
+name = "sfu-tcp"
+port = 4443
+node_port = 30443
+protocol = "tcp"
+
+[[services.web.ports]]
+name = "sfu-udp"
+port = 4443
+node_port = 30443
+protocol = "udp"
 EOF
 
 # Procfile — Miren needs explicit service definition; $PORT is set by Miren
@@ -49,10 +61,10 @@ find "$TMPDIR" -mindepth 2 -name ".miren" -type d -exec rm -rf {} + 2>/dev/null 
 
 cd "$TMPDIR"
 echo "Deploying from $TMPDIR..."
-miren deploy -f
+miren deploy -f -C blueyard-projects
 
 echo "Setting route..."
-miren route set staging.freeq.at freeq-staging 2>/dev/null || true
+miren route set staging.freeq.at freeq-staging -C blueyard-projects 2>/dev/null || true
 
 # Cleanup
 rm -rf "$TMPDIR"

@@ -2,11 +2,10 @@ import { useState, useRef } from 'react';
 import { useStore } from '../store';
 import { joinAvSession, leaveAvSession, endAvSession, startAvSession, getNick } from '../irc/client';
 
-// iroh-live relay (serves WebTransport + built-in audio web app)
-// Relay runs on :4443 inside container, exposed on :30443 via node_port.
 // SFU serves call page via HTTP on the same port as WebTransport (QUIC).
-// Use IP to bypass HSTS. Override with VITE_SFU_URL.
-const SFU_URL = import.meta.env.VITE_SFU_URL || 'http://34.27.122.56:30443';
+// Runs on :4443 inside container, exposed on :30443 via node_port.
+// Derive from current hostname so it works on any cluster. Override with VITE_SFU_URL.
+const SFU_URL = import.meta.env.VITE_SFU_URL || `http://${window.location.hostname}:30443`;
 
 /** Shows active AV session status in the channel header. */
 export function SessionIndicator({ channel }: { channel: string }) {
