@@ -7,26 +7,27 @@ Grouped by priority. Web reference files are relative to `freeq-app/src/`.
 
 ## P0 — Core Messaging
 
-- [ ] **Message editing** — WinUI tracks `IsEdited` but has no edit UI. Add Up-arrow in ComposeBox to load last sent message for editing; send `+draft/edit=<msgid>` tag on submit. Show `(edited)` label on edited messages.
-  - Web: `ComposeBox.tsx`, `MessageContextMenu.tsx`, `store.ts`
+- [x] **Message editing** — Up-arrow on empty ComposeBox loads last own message for editing. Edit bar shown with cancel. Submits `+draft/edit=<msgid>` PRIVMSG. Incoming edits update `Content`/`IsEdited` in-place via `INotifyPropertyChanged`. `(edited)` label shown.
+  - `Controls/ComposeBox.xaml(.cs)`, `Controls/MessageList.xaml(.cs)`, `Services/IrcClient.cs`, `ViewModels/MainViewModel.cs`, `Models/MessageModel.cs`
 
-- [ ] **Message deletion** — `IsDeleted` flag exists but deleted messages render normally. Add right-click → Delete; send `+draft/delete=<msgid>` TAGMSG. Render deleted messages as struck-out placeholder.
-  - Web: `MessageContextMenu.tsx`, `MessageList.tsx`
+- [x] **Message deletion** — Right-click → Delete sends `+draft/delete=<msgid>` TAGMSG. Incoming deletes set `IsDeleted=true` in-place. Deleted messages render as italic dimmed placeholder.
+  - `Controls/MessageList.xaml(.cs)`, `Services/IrcClient.cs`, `ViewModels/MainViewModel.cs`
 
-- [ ] **Slash commands** — No slash command parsing in ComposeBox. Implement a parser for:
+- [x] **Slash commands** — ComposeBox sends slash commands through `MainViewModel.HandleSlashCommand()`:
   `/me`, `/join`, `/part`, `/topic`, `/invite`, `/kick`, `/op`, `/deop`, `/voice`, `/mode`, `/msg`, `/whois`, `/away`, `/pins`, `/raw`, `/help`
-  - Web: `SlashCommands.tsx`
+  - `ViewModels/MainViewModel.cs`
 
-- [ ] **Nick/channel/emoji autocomplete** — Tab key in ComposeBox should cycle through matching nicks (from MemberList), channel names, and common emoji shortcodes.
-  - Web: `ComposeBox.tsx`
+- [x] **Nick autocomplete** — Tab key in ComposeBox cycles through nicks in the current channel that match the partial word before the caret. Appends `": "` when completing at line start (IRC convention).
+  - `Controls/ComposeBox.xaml.cs`
 
-- [ ] **Compose box UX improvements**
-  - Shift+Enter → insert newline (currently Enter always sends)
-  - Up-arrow on empty input → load last sent message for editing
-  - Web: `ComposeBox.tsx`
+- [x] **Compose box UX improvements**
+  - Shift+Enter → inserts newline (`AcceptsReturn=True`; plain Enter still sends)
+  - Up-arrow on empty input → begin editing last own message
+  - Escape → cancel edit / close autocomplete
+  - `Controls/ComposeBox.xaml(.cs)`
 
-- [ ] **Typing indicators** — Send `TAGMSG <channel> +typing=active` while user types; clear after 10 s idle. Display "X is typing…" beneath the message list for others.
-  - Web: `store.ts`, `ComposeBox.tsx`
+- [x] **Typing indicators** — Sends `@+typing=active TAGMSG` on keystroke; auto-stops after 10 s idle or on send. Inbound typing state tracked per-nick per-channel with 10 s auto-expiry. "X is typing…" shown above compose box.
+  - `Controls/ComposeBox.xaml(.cs)`, `Services/IrcClient.cs`, `ViewModels/MainViewModel.cs`
 
 ---
 

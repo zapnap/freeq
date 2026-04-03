@@ -8,7 +8,8 @@
 
     <Grid Background="{StaticResource BgBrush}">
         <ListView x:Name="MessagesListView" SelectionMode="None"
-                  Padding="0,8,0,8">
+                  Padding="0,8,0,8"
+                  RightTapped="OnMessageRightTapped">
             <ListView.ItemContainerStyle>
                 <Style TargetType="ListViewItem">
                     <Setter Property="Padding" Value="0" />
@@ -18,7 +19,8 @@
             </ListView.ItemContainerStyle>
             <ListView.ItemTemplate>
                 <DataTemplate x:DataType="models:MessageModel">
-                    <Grid Padding="16,6,16,6">
+                    <!-- Tag="{x:Bind}" makes the MessageModel accessible from RightTapped -->
+                    <Grid Padding="16,6,16,6" Tag="{x:Bind}">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
@@ -42,7 +44,7 @@
                                            Foreground="{x:Bind NickBrush}"
                                            VerticalAlignment="Center" />
 
-                                <!-- Verified DID badge: pill chip with Cascadia Code DID string -->
+                                <!-- Verified DID badge -->
                                 <Border Background="{StaticResource AccentDimBrush}"
                                         CornerRadius="{StaticResource SmallRadius}"
                                         Padding="5,2,5,2"
@@ -65,18 +67,28 @@
                                            Foreground="{StaticResource FgDimBrush}"
                                            VerticalAlignment="Center" />
 
-                                <!-- Edited indicator -->
+                                <!-- Edited indicator — Mode=OneWay because IsEdited can change -->
                                 <TextBlock Text="(edited)" FontSize="{StaticResource TinyFontSize}"
                                            Foreground="{StaticResource FgDimBrush}"
                                            VerticalAlignment="Center"
-                                           Visibility="{x:Bind local:MessageList.BoolToVis(IsEdited)}" />
+                                           Visibility="{x:Bind local:MessageList.BoolToVis(IsEdited), Mode=OneWay}" />
                             </StackPanel>
 
-                            <!-- Message text -->
-                            <TextBlock Text="{x:Bind Content}" FontSize="{StaticResource BodyFontSize}"
+                            <!-- Normal message text — Mode=OneWay so edits propagate -->
+                            <TextBlock Text="{x:Bind Content, Mode=OneWay}"
+                                       FontSize="{StaticResource BodyFontSize}"
                                        Foreground="{StaticResource FgBrush}"
                                        TextWrapping="Wrap" Margin="0,2,0,0"
-                                       IsTextSelectionEnabled="True" />
+                                       IsTextSelectionEnabled="True"
+                                       Visibility="{x:Bind local:MessageList.BoolToVisInverse(IsDeleted), Mode=OneWay}" />
+
+                            <!-- Deleted message placeholder — Mode=OneWay -->
+                            <TextBlock Text="This message was deleted."
+                                       FontSize="{StaticResource BodyFontSize}"
+                                       Foreground="{StaticResource FgDimBrush}"
+                                       FontStyle="Italic"
+                                       Margin="0,2,0,0"
+                                       Visibility="{x:Bind local:MessageList.BoolToVis(IsDeleted), Mode=OneWay}" />
                         </StackPanel>
                     </Grid>
                 </DataTemplate>
