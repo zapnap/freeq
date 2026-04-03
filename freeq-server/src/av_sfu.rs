@@ -23,7 +23,9 @@ pub async fn run_sfu(port: u16) -> anyhow::Result<()> {
 
     let mut server = server_config.init()?;
     let client = client_config.init()?;
-    let auth = Auth::new(AuthConfig::default()).await?;
+    let mut auth_config = AuthConfig::default();
+    auth_config.public = Some("/".to_string()); // All paths public (no auth for staging)
+    let auth = Auth::new(auth_config).await?;
 
     let tls_info = server.tls_info();
 
