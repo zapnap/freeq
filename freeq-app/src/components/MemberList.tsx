@@ -349,16 +349,20 @@ interface MemberItemProps {
 }
 
 function MemberItem({ member, onClick }: MemberItemProps) {
+  const nick = useStore((s) => s.nick);
+  const authDid = useStore((s) => s.authDid);
+  const isSelf = member.nick.toLowerCase() === nick.toLowerCase();
+  const effectiveDid = member.did || (isSelf ? authDid : undefined) || undefined;
   const color = nickColor(member.nick);
 
   return (
     <button
-      onClick={(e) => onClick(member.nick, member.did, e)}
+      onClick={(e) => onClick(member.nick, effectiveDid, e)}
       className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-[15px] hover:bg-bg-tertiary group"
-      title={member.did || member.nick}
+      title={effectiveDid || member.nick}
     >
       <div className="relative">
-        <MiniAvatar nick={member.nick} did={member.did} color={color} />
+        <MiniAvatar nick={member.nick} did={effectiveDid} color={color} />
         {/* Presence dot */}
         <span className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-bg-secondary ${
           member.away ? 'bg-warning' : 'bg-success'
@@ -383,8 +387,8 @@ function MemberItem({ member, onClick }: MemberItemProps) {
           <span className="text-xs" title="External Agent">🌐</span>
         )}
 
-        {member.did && !member.actorClass?.includes('agent') && (
-          <span className="text-accent text-xs" title={`Verified AT Protocol identity: ${member.did}`}>✓</span>
+        {effectiveDid && !member.actorClass?.includes('agent') && (
+          <span className="text-accent text-xs" title={`Verified AT Protocol identity: ${effectiveDid}`}>✓</span>
         )}
 
         {member.typing && (
