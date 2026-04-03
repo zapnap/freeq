@@ -8,9 +8,10 @@ The SFU auth bug is already fixed (commit 6750e88) but staging hasn't been redep
 Also need to expose SFU port (4443 internal → 30443 external) via Miren node_port on blueyard-projects.
 
 - [x] Update SessionIndicator.tsx SFU_URL to derive from hostname (not hardcoded IP)
-- [ ] Update deploy.sh app.toml to expose SFU port via node_port (TCP + UDP)
+- [x] Fix Procfile to include --iroh flag (Miren uses Procfile over Dockerfile CMD)
+- [ ] Figure out node_port exposure for SFU port 4443 (Miren TOML format TBD)
 - [ ] Deploy to blueyard-projects cluster
-- [ ] Verify SFU starts, call page loads at :30443, WebTransport connects
+- [ ] Verify SFU starts, call page loads, WebTransport connects
 
 ## Step 2: Verify browser audio through SFU
 

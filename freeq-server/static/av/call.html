@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>freeq voice</title>
-  <script type="module" crossorigin src="/assets/publish-0_tfMLVg.js"></script>
-  <script type="module" crossorigin src="/assets/watch-CQEo0ml-.js"></script>
-  <link rel="modulepreload" crossorigin href="/assets/time-Do1uKez-.js">
+  <script type="module" crossorigin src="/av/assets/publish-0_tfMLVg.js"></script>
+  <script type="module" crossorigin src="/av/assets/watch-CQEo0ml-.js"></script>
+  <link rel="modulepreload" crossorigin href="/av/assets/time-Do1uKez-.js">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -66,9 +66,9 @@
     const params = new URLSearchParams(window.location.search);
     const session = params.get('session') || 'default';
     const presetNick = params.get('nick') || '';
-    const origin = window.location.origin;
-    // Use HTTPS origin for WebTransport (same host, QUIC port)
-    const wtOrigin = origin.replace('http://', 'https://') + '/';
+    // WebTransport connects to the same origin (SFU QUIC binds to same port as web server).
+    // When served through Miren's HTTPS proxy, the origin is already https://.
+    const wtOrigin = window.location.origin.replace('http://', 'https://') + '/';
 
     const landing = document.getElementById('landing');
     const call = document.getElementById('call');

@@ -1154,10 +1154,16 @@ impl Server {
             if let Some(backend) = crate::av_media::init_backend(endpoint.clone()).await {
                 *state.av_media.lock() = Some(backend);
             }
-            // Start AV SFU for browser WebTransport audio
-            tokio::spawn(async {
+            // Start AV SFU for browser WebTransport audio.
+            // Bind SFU QUIC (UDP) to the web server's port so Miren's routing covers both.
+            // SFU also serves call page via HTTP on its own port (4443) for direct access.
+            let sfu_port = web_addr.as_ref()
+                .and_then(|a| a.parse::<std::net::SocketAddr>().ok())
+                .map(|a| a.port())
+                .unwrap_or(4443);
+            tokio::spawn(async move {
                 let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-                if let Err(e) = crate::av_sfu::run_sfu(4443).await {
+                if let Err(e) = crate::av_sfu::run_sfu(sfu_port).await {
                     tracing::error!("AV SFU failed: {e}");
                 }
             });

@@ -204,6 +204,10 @@ pub fn router(state: Arc<SharedState>) -> Router {
         .route("/api/v1/agents/spawned", get(api_spawned_agents))
         .route("/api/v1/channels/{name}/budget", get(api_channel_budget))
         .route("/api/v1/channels/{name}/spend", get(api_channel_spend))
+        // AV call page + assets (served here so it's accessible through Miren's HTTPS)
+        .route("/av/call", get(av_call_page))
+        .route("/av/call.html", get(av_call_page))
+        .route("/av/assets/{filename}", get(av_asset))
         // AV sessions
         .route("/api/v1/sessions", get(api_sessions_list))
         .route("/api/v1/sessions/{id}", get(api_session_detail))
@@ -2427,6 +2431,42 @@ fn html_escape(s: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&#x27;")
+}
+
+/// Serve the AV call page (SFU web UI for browser audio).
+async fn av_call_page() -> impl IntoResponse {
+    (
+        axum::http::StatusCode::OK,
+        [("content-type", "text/html; charset=utf-8")],
+        include_str!("../static/av/call.html"),
+    )
+}
+
+/// Serve AV JS assets (moq-publish, moq-watch, etc).
+async fn av_asset(Path(filename): Path<String>) -> impl IntoResponse {
+    let files: &[(&str, &str)] = &[
+        ("watch-CQEo0ml-.js", include_str!("../static/av/assets/watch-CQEo0ml-.js")),
+        ("publish-0_tfMLVg.js", include_str!("../static/av/assets/publish-0_tfMLVg.js")),
+        ("time-Do1uKez-.js", include_str!("../static/av/assets/time-Do1uKez-.js")),
+        ("main-DGBFe0O7-CIZu5tmC.js", include_str!("../static/av/assets/main-DGBFe0O7-CIZu5tmC.js")),
+        ("main-DGBFe0O7-DQ8if_La.js", include_str!("../static/av/assets/main-DGBFe0O7-DQ8if_La.js")),
+        ("libav-opus-af-BlMWboA7-B4GfDr9_.js", include_str!("../static/av/assets/libav-opus-af-BlMWboA7-B4GfDr9_.js")),
+        ("libav-opus-af-BlMWboA7-CFTeN5TA.js", include_str!("../static/av/assets/libav-opus-af-BlMWboA7-CFTeN5TA.js")),
+    ];
+    for (name, body) in files {
+        if filename == *name {
+            return (
+                axum::http::StatusCode::OK,
+                [("content-type", "application/javascript; charset=utf-8".to_string())],
+                body.to_string(),
+            ).into_response();
+        }
+    }
+    (
+        axum::http::StatusCode::NOT_FOUND,
+        [("content-type", "text/plain".to_string())],
+        "not found".to_string(),
+    ).into_response()
 }
 
 async fn channel_invite_page(

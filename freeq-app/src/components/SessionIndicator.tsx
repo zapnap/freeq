@@ -2,10 +2,9 @@ import { useState, useRef } from 'react';
 import { useStore } from '../store';
 import { joinAvSession, leaveAvSession, endAvSession, startAvSession, getNick } from '../irc/client';
 
-// SFU serves call page via HTTP on the same port as WebTransport (QUIC).
-// Runs on :4443 inside container, exposed on :30443 via node_port.
-// Derive from current hostname so it works on any cluster. Override with VITE_SFU_URL.
-const SFU_URL = import.meta.env.VITE_SFU_URL || `http://${window.location.hostname}:30443`;
+// Call page is served through the main web server at /av/call.
+// SFU QUIC (WebTransport) binds to the same port as the web server.
+// The call page uses the same origin for WebTransport connections.
 
 /** Shows active AV session status in the channel header. */
 export function SessionIndicator({ channel }: { channel: string }) {
@@ -56,7 +55,7 @@ export function SessionIndicator({ channel }: { channel: string }) {
 
     // Open SFU call page with session ID and nick
     const myNick = getNick();
-    const callUrl = `${SFU_URL}/call.html?session=${encodeURIComponent(session.id)}&nick=${encodeURIComponent(myNick)}`;
+    const callUrl = `/av/call?session=${encodeURIComponent(session.id)}&nick=${encodeURIComponent(myNick)}`;
     audioWindowRef.current = window.open(callUrl, `av-${session.id}`, 'width=400,height=300');
     setAudioActive(true);
     useStore.getState().addSystemMessage(channel, 'Audio: connecting to SFU...');

@@ -2,7 +2,7 @@
 //!
 //! Accepts MoQ connections via WebTransport (browser) and iroh QUIC (native).
 //! Uses moq_relay::Cluster to route audio streams between all participants.
-//! Serves the call web page via HTTP on the same port (TCP vs UDP).
+//! Binds QUIC (UDP) on the web server's port. Call page served via web.rs.
 
 #[cfg(feature = "av-native")]
 pub async fn run_sfu(port: u16) -> anyhow::Result<()> {
@@ -27,8 +27,6 @@ pub async fn run_sfu(port: u16) -> anyhow::Result<()> {
     auth_config.public = Some("/".to_string()); // All paths public (no auth for staging)
     let auth = Auth::new(auth_config).await?;
 
-    let tls_info = server.tls_info();
-
     // Cluster routes broadcasts between sessions
     let cluster = Cluster::new(ClusterConfig::default(), client);
     let cluster_handle = cluster.clone();
@@ -38,27 +36,8 @@ pub async fn run_sfu(port: u16) -> anyhow::Result<()> {
         }
     });
 
-    // HTTP server (serves call page) on same port number (TCP, not UDP)
-    let tls_for_http = tls_info.clone();
-    tokio::spawn(async move {
-        let app = axum::Router::new()
-            .route("/certificate.sha256", axum::routing::get(move || {
-                let info = tls_for_http.read().expect("tls lock");
-                let fp = info.fingerprints.first().cloned().unwrap_or_default();
-                async move { fp }
-            }))
-            .fallback(axum::routing::get(serve_static));
-
-        let addr = format!("[::]:{port}");
-        match tokio::net::TcpListener::bind(&addr).await {
-            Ok(listener) => {
-                tracing::info!("AV SFU HTTP on :{port} (call page)");
-                axum::serve(listener, app).await.ok();
-            }
-            Err(e) => tracing::warn!("SFU HTTP bind failed on {addr}: {e}"),
-        }
-    });
-
+    // Call page is served through the main web server (see web.rs /av/* routes).
+    // SFU only handles QUIC (UDP) on this port.
     tracing::info!("AV SFU QUIC on :{port} (WebTransport + MoQ)");
 
     // Accept loop — handle MoQ sessions
@@ -110,59 +89,9 @@ async fn handle_connection(
     let session = request.ok().await?;
 
     tracing::info!(conn = id, "SFU: session active");
-    session.closed().await;
+    let _ = session.closed().await;
     tracing::info!(conn = id, "SFU: session closed");
 
     Ok(())
 }
 
-// ── Static file serving ────────────────────────────────────────────
-
-#[cfg(feature = "av-native")]
-async fn serve_static(
-    uri: axum::http::Uri,
-) -> impl axum::response::IntoResponse {
-    let path = uri.path().trim_start_matches('/');
-    let path = if path.is_empty() { "call.html" } else { path };
-
-    // Serve from compiled-in static files
-    let content = match path {
-        "call.html" | "" => Some((include_str!("../static/av/call.html"), "text/html")),
-        "index.html" => Some((include_str!("../static/av/index.html"), "text/html")),
-        "publish.html" => Some((include_str!("../static/av/publish.html"), "text/html")),
-        _ => None,
-    };
-
-    if let Some((body, mime)) = content {
-        return (
-            axum::http::StatusCode::OK,
-            [("content-type", format!("{mime}; charset=utf-8"))],
-            body.to_string(),
-        ).into_response();
-    }
-
-    // Serve JS assets
-    let js_files: &[(&str, &str)] = &[
-        ("assets/watch-CQEo0ml-.js", include_str!("../static/av/assets/watch-CQEo0ml-.js")),
-        ("assets/publish-0_tfMLVg.js", include_str!("../static/av/assets/publish-0_tfMLVg.js")),
-        ("assets/time-Do1uKez-.js", include_str!("../static/av/assets/time-Do1uKez-.js")),
-        ("assets/main-DGBFe0O7-CIZu5tmC.js", include_str!("../static/av/assets/main-DGBFe0O7-CIZu5tmC.js")),
-        ("assets/main-DGBFe0O7-DQ8if_La.js", include_str!("../static/av/assets/main-DGBFe0O7-DQ8if_La.js")),
-        ("assets/libav-opus-af-BlMWboA7-B4GfDr9_.js", include_str!("../static/av/assets/libav-opus-af-BlMWboA7-B4GfDr9_.js")),
-        ("assets/libav-opus-af-BlMWboA7-CFTeN5TA.js", include_str!("../static/av/assets/libav-opus-af-BlMWboA7-CFTeN5TA.js")),
-    ];
-
-    for (name, body) in js_files {
-        if path == *name {
-            return (
-                axum::http::StatusCode::OK,
-                [("content-type", "application/javascript; charset=utf-8".to_string())],
-                body.to_string(),
-            ).into_response();
-        }
-    }
-
-    (axum::http::StatusCode::NOT_FOUND, [("content-type", "text/plain".to_string())], "not found".to_string()).into_response()
-}
-
-use axum::response::IntoResponse;
