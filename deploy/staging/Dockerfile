@@ -1,8 +1,8 @@
 # freeq staging — IRC server + web client in one image
 
 # ── Rust build ──
-FROM rust:1.89-slim AS builder
-RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+FROM rust:1.93-slim AS builder
+RUN apt-get update && apt-get install -y pkg-config libssl-dev cmake clang libasound2-dev && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY freeq-sdk/ freeq-sdk/
@@ -13,7 +13,7 @@ COPY freeq-bot-id/ freeq-bot-id/
 COPY freeq-sdk-ffi/ freeq-sdk-ffi/
 COPY freeq-windows-core/ freeq-windows-core/
 COPY freeq-tui/ freeq-tui/
-RUN cargo build --release --package freeq-server
+RUN cargo build --release --package freeq-server --features av-native
 
 # ── Web client build ──
 FROM node:20-slim AS web-builder
@@ -32,7 +32,7 @@ RUN mkdir -p /app/data /app/web
 COPY --from=builder /build/target/release/freeq-server /app/freeq-server
 COPY --from=web-builder /app/dist /app/web
 WORKDIR /app
-EXPOSE 8080
+EXPOSE 8080 4443
 # Miren sets $PORT; use shell form so it expands
 CMD /app/freeq-server \
   --listen-addr 127.0.0.1:16667 \
@@ -41,4 +41,5 @@ CMD /app/freeq-server \
   --server-name staging.freeq.at \
   --db-path /app/data/freeq.db \
   --data-dir /app/data \
-  --motd "freeq staging — https://freeq.at"
+  --iroh \
+  --motd "freeq staging — AV with iroh-live"
