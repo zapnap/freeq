@@ -4,8 +4,9 @@ import { joinAvSession, leaveAvSession, endAvSession, startAvSession, getNick } 
 
 // iroh-live relay (serves WebTransport + built-in audio web app)
 // Relay runs on :4443 inside container, exposed on :30443 via node_port.
-// Use HTTP for relay — it serves the web page over HTTP, WebTransport over QUIC (separate)
-const RELAY_URL = import.meta.env.VITE_RELAY_URL || `http://${window.location.hostname}:30443`;
+// iroh-live relay — use IP to bypass HSTS (Chrome force-upgrades hostname to HTTPS).
+// The relay's self-signed cert doesn't work with HSTS. Override with VITE_RELAY_URL.
+const RELAY_URL = import.meta.env.VITE_RELAY_URL || 'http://34.27.122.56:30443';
 
 /** Shows active AV session status in the channel header. */
 export function SessionIndicator({ channel }: { channel: string }) {
