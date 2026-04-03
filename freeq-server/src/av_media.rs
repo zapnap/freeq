@@ -69,8 +69,26 @@ impl MediaBackend for IrohLiveBackend {
                 .await
                 .map_err(|e| format!("Failed to create room: {e}"))?;
 
-            let ticket_str = ticket.to_string();
-            let (_events, handle) = room.split();
+            let ticket_str = room.ticket().to_string();
+            let (mut events, handle) = room.split();
+
+            // Spawn event consumer — gossip needs this to exchange peer announcements
+            let sid = session_id.clone();
+            tokio::spawn(async move {
+                while let Some(event) = events.recv().await {
+                    match event {
+                        iroh_live::rooms::RoomEvent::PeerJoined { display_name, remote } => {
+                            let name = display_name.as_deref().unwrap_or("unknown");
+                            tracing::info!(session = %sid, peer = %remote, %name, "Peer joined iroh-live room");
+                        }
+                        iroh_live::rooms::RoomEvent::PeerLeft { remote } => {
+                            tracing::info!(session = %sid, peer = %remote, "Peer left iroh-live room");
+                        }
+                        _ => {}
+                    }
+                }
+                tracing::info!(session = %sid, "iroh-live room event loop ended");
+            });
 
             self.rooms.lock().insert(session_id.clone(), ActiveRoom {
                 ticket: ticket_str.clone(),

@@ -203,11 +203,12 @@ async fn run_server_session(url: &str, channel: &str, nick: &str, join_existing:
             writer.write_all(format!("JOIN {channel}\r\n").as_bytes()).await?;
             println!("  Joined {channel}");
 
-            // Start or join AV session
             if join_existing {
+                // Join existing — look for ticket in channel messages
                 writer.write_all(format!("@+freeq.at/av-join TAGMSG {channel}\r\n").as_bytes()).await?;
-                println!("  Joining AV session...");
+                println!("  Joining AV session (waiting for ticket in channel)...");
             } else {
+                // Start AV session on server
                 writer.write_all(format!("@+freeq.at/av-start TAGMSG {channel}\r\n").as_bytes()).await?;
                 println!("  Starting AV session...");
             }
