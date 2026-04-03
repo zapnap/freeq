@@ -4,9 +4,9 @@ import { joinAvSession, leaveAvSession, endAvSession, startAvSession, getNick } 
 
 // iroh-live relay (serves WebTransport + built-in audio web app)
 // Relay runs on :4443 inside container, exposed on :30443 via node_port.
-// iroh-live relay — use IP to bypass HSTS (Chrome force-upgrades hostname to HTTPS).
-// The relay's self-signed cert doesn't work with HSTS. Override with VITE_RELAY_URL.
-const RELAY_URL = import.meta.env.VITE_RELAY_URL || 'http://34.27.122.56:30443';
+// SFU serves call page via HTTP on the same port as WebTransport (QUIC).
+// Use IP to bypass HSTS. Override with VITE_SFU_URL.
+const SFU_URL = import.meta.env.VITE_SFU_URL || 'http://34.27.122.56:30443';
 
 /** Shows active AV session status in the channel header. */
 export function SessionIndicator({ channel }: { channel: string }) {
@@ -55,15 +55,12 @@ export function SessionIndicator({ channel }: { channel: string }) {
       } catch {}
     }
 
-    if (ticket && !ticket.startsWith('webrtc://')) {
-      // Open iroh-live relay page with the room ticket
-      const relayUrl = `${RELAY_URL}/?name=${encodeURIComponent(ticket)}`;
-      audioWindowRef.current = window.open(relayUrl, `av-${session.id}`, 'width=500,height=400');
-      setAudioActive(true);
-      useStore.getState().addSystemMessage(channel, 'Audio: connecting via iroh-live relay...');
-    } else {
-      useStore.getState().addSystemMessage(channel, 'No iroh-live ticket available. Server may not have native audio enabled.');
-    }
+    // Open SFU call page with session ID and nick
+    const myNick = getNick();
+    const callUrl = `${SFU_URL}/call.html?session=${encodeURIComponent(session.id)}&nick=${encodeURIComponent(myNick)}`;
+    audioWindowRef.current = window.open(callUrl, `av-${session.id}`, 'width=400,height=300');
+    setAudioActive(true);
+    useStore.getState().addSystemMessage(channel, 'Audio: connecting to SFU...');
   };
 
   const handleJoinWithAudio = async () => {

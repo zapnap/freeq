@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>freeq voice</title>
+  <script type="module" crossorigin src="/assets/publish-0_tfMLVg.js"></script>
+  <script type="module" crossorigin src="/assets/watch-CQEo0ml-.js"></script>
+  <link rel="modulepreload" crossorigin href="/assets/time-Do1uKez-.js">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      background: #111; color: #eee;
+      display: flex; flex-direction: column;
+      align-items: center; padding: 1.5rem; gap: 1rem;
+      min-height: 100vh;
+    }
+    h1 { color: #58a6ff; font-size: 1.2rem; }
+    .status { color: #8b949e; font-size: 0.85rem; text-align: center; }
+    .controls { display: flex; gap: 0.5rem; }
+    button {
+      padding: 0.5rem 1.2rem; border: none; border-radius: 6px;
+      font-size: 0.9rem; cursor: pointer; color: white;
+    }
+    .btn-mute { background: #238636; }
+    .btn-mute.muted { background: #da3633; }
+    .btn-leave { background: #6e7681; }
+    .btn-leave:hover { background: #da3633; }
+    .hidden { display: none; }
+    #landing { display: flex; flex-direction: column; align-items: center; gap: 1rem; }
+    #landing input {
+      padding: 0.5rem 0.8rem; border: 1px solid #444; border-radius: 6px;
+      background: #222; color: #eee; font-size: 0.9rem; width: 200px;
+    }
+    #landing button { background: #238636; }
+    moq-publish { display: none; } /* audio only — hide video */
+  </style>
+</head>
+<body>
+  <h1>freeq voice</h1>
+
+  <!-- Landing: enter name to join -->
+  <div id="landing">
+    <p class="status">Enter your name to join the call</p>
+    <form id="join-form" style="display:flex;gap:0.5rem;">
+      <input id="nick-input" placeholder="Your name" autofocus />
+      <button type="submit">Join</button>
+    </form>
+  </div>
+
+  <!-- Call: active -->
+  <div id="call" class="hidden">
+    <p class="status" id="call-status">Connecting...</p>
+    <div class="controls">
+      <button class="btn-mute" id="btn-mute" onclick="toggleMute()">Mute</button>
+      <button class="btn-leave" onclick="leaveCall()">Leave</button>
+    </div>
+  </div>
+
+  <!-- MoQ elements (hidden) -->
+  <moq-publish id="publish" source="microphone"></moq-publish>
+  <moq-watch id="watch" reload jitter="100"></moq-watch>
+
+  <script type="module">
+    const params = new URLSearchParams(window.location.search);
+    const session = params.get('session') || 'default';
+    const presetNick = params.get('nick') || '';
+    const origin = window.location.origin;
+    // Use HTTPS origin for WebTransport (same host, QUIC port)
+    const wtOrigin = origin.replace('http://', 'https://') + '/';
+
+    const landing = document.getElementById('landing');
+    const call = document.getElementById('call');
+    const callStatus = document.getElementById('call-status');
+    const nickInput = document.getElementById('nick-input');
+    const publish = document.getElementById('publish');
+    const watch = document.getElementById('watch');
+    const btnMute = document.getElementById('btn-mute');
+
+    if (presetNick) nickInput.value = presetNick;
+
+    // Auto-join if nick is provided
+    if (presetNick) {
+      joinCall(presetNick);
+    }
+
+    document.getElementById('join-form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const nick = nickInput.value.trim();
+      if (nick) joinCall(nick);
+    });
+
+    function joinCall(nick) {
+      landing.classList.add('hidden');
+      call.classList.remove('hidden');
+      callStatus.textContent = `Publishing as: ${nick}`;
+
+      // Publish our audio under session/nick
+      const pubName = `${session}/${nick}`;
+      publish.setAttribute('url', wtOrigin);
+      publish.setAttribute('name', pubName);
+      console.log('[call] Publishing:', pubName, 'to', wtOrigin);
+
+      // Watch the session (subscribes to all broadcasts in the session namespace)
+      const watchName = session;
+      watch.setAttribute('url', wtOrigin);
+      watch.setAttribute('name', watchName);
+      console.log('[call] Watching:', watchName);
+
+      callStatus.textContent = `Connected as ${nick} — session: ${session}`;
+    }
+
+    window.toggleMute = function() {
+      // Toggle the publish source
+      const src = publish.getAttribute('source');
+      if (src === 'none') {
+        publish.setAttribute('source', 'microphone');
+        btnMute.textContent = 'Mute';
+        btnMute.classList.remove('muted');
+      } else {
+        publish.setAttribute('source', 'none');
+        btnMute.textContent = 'Unmute';
+        btnMute.classList.add('muted');
+      }
+    };
+
+    window.leaveCall = function() {
+      publish.setAttribute('url', '');
+      watch.setAttribute('url', '');
+      window.close();
+    };
+  </script>
+</body>
+</html>
