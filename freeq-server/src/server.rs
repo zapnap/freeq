@@ -1154,16 +1154,11 @@ impl Server {
             if let Some(backend) = crate::av_media::init_backend(endpoint.clone()).await {
                 *state.av_media.lock() = Some(backend);
             }
-            // Start iroh-live relay for browser WebTransport audio
+            // Start AV SFU for browser WebTransport audio
             tokio::spawn(async {
                 let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-                let config = iroh_live_relay::RelayConfig {
-                    bind: "[::]:4443".parse().unwrap(),
-                    http_bind: "[::]:4443".parse().unwrap(),
-                };
-                tracing::info!("Starting iroh-live relay on :4443 for browser WebTransport");
-                if let Err(e) = iroh_live_relay::run(config).await {
-                    tracing::error!("iroh-live relay failed: {e}");
+                if let Err(e) = crate::av_sfu::run_sfu(4443).await {
+                    tracing::error!("AV SFU failed: {e}");
                 }
             });
         }
