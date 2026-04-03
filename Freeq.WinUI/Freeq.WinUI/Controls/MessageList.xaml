@@ -19,8 +19,8 @@
             </ListView.ItemContainerStyle>
             <ListView.ItemTemplate>
                 <DataTemplate x:DataType="models:MessageModel">
-                    <!-- Tag="{x:Bind}" makes the MessageModel accessible from RightTapped -->
-                    <Grid Padding="{x:Bind local:MessageList.GetMessagePadding(), Mode=OneWay}" Tag="{x:Bind}">
+                    <!-- Tag="{x:Bind Self}" makes the MessageModel accessible from RightTapped -->
+                    <Grid Padding="{x:Bind local:MessageList.GetMessagePadding(), Mode=OneWay}" Tag="{x:Bind Self}">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
@@ -32,7 +32,7 @@
                                 Margin="0,2,12,0"
                             Background="{x:Bind AvatarBackgroundBrush}"
                             Tapped="OnUserTapped"
-                            Tag="{x:Bind}"
+                            Tag="{x:Bind Self}"
                             Visibility="{x:Bind local:MessageList.GetAvatarVisibility(), Mode=OneWay}">
                             <TextBlock Text="{x:Bind NickInitial}" FontSize="14" FontWeight="Bold"
                                        Foreground="{x:Bind NickBrush}"
@@ -47,7 +47,7 @@
                                            Foreground="{x:Bind NickBrush}"
                                            VerticalAlignment="Center"
                                            Tapped="OnUserTapped"
-                                           Tag="{x:Bind}" />
+                                           Tag="{x:Bind Self}" />
 
                                 <!-- Verified DID badge -->
                                 <Border Background="{StaticResource AccentDimBrush}"
@@ -80,7 +80,7 @@
                             </StackPanel>
 
                             <!-- Markdown/media aware message renderer -->
-                            <local:MessageContentView Message="{x:Bind, Mode=OneWay}"
+                            <local:MessageContentView Message="{x:Bind Mode=OneWay}"
                                                      ServerUrl="{x:Bind local:MessageList.GetServerUrl(), Mode=OneWay}"
                                                      AutoLoadExternalMedia="{x:Bind local:MessageList.GetAutoLoadExternalMedia(), Mode=OneWay}"
                                                      Margin="0,2,0,0"
@@ -111,7 +111,7 @@
                                                 Margin="0,6,6,0"
                                                 Padding="8,2"
                                                 Tapped="OnReactionTapped"
-                                                Tag="{x:Bind}">
+                                                Tag="{x:Bind Self}">
                                             <TextBlock Text="{x:Bind Label}"
                                                        FontSize="{StaticResource TinyFontSize}"
                                                        Foreground="{StaticResource FgBrush}" />

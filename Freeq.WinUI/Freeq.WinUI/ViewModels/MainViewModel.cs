@@ -796,10 +796,7 @@ public partial class MainViewModel : ObservableObject
                         WindowsToastRequested?.Invoke($"Mention from {nick}: {message}");
 
                     if (EnableNotificationSounds)
-                        _ = Task.Run(() =>
-                        {
-                            try { System.Media.SystemSounds.Asterisk.Play(); } catch { }
-                        });
+                        NotifyToast("New mention");
                 }
         });
     }
@@ -872,7 +869,9 @@ public partial class MainViewModel : ObservableObject
     {
         var peer = _irc.GetAccount(nick) ?? nick;
         var me = _irc.Did ?? _irc.Nick;
-        var raw = $"{string.CompareOrdinal(me, peer) <= 0 ? me + "|" + peer : peer + "|" + me}";
+        var raw = string.CompareOrdinal(me, peer) <= 0
+            ? $"{me}|{peer}"
+            : $"{peer}|{me}";
         using var sha = SHA256.Create();
         var digest = sha.ComputeHash(Encoding.UTF8.GetBytes(raw));
         var hex = Convert.ToHexString(digest);

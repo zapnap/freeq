@@ -2,7 +2,6 @@ using System.Linq;
 using Freeq.WinUI.Controls;
 using Freeq.WinUI.Models;
 using Freeq.WinUI.ViewModels;
-using Microsoft.Windows.AppNotifications;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -17,7 +16,6 @@ public sealed partial class MainWindow : Window
 {
     private readonly MainViewModel _vm;
     private DispatcherTimer? _toastTimer;
-    private bool _windowsToastReady;
 
     public MainWindow()
     {
@@ -170,7 +168,7 @@ public sealed partial class MainWindow : Window
 
         var shortcuts = new KeyboardAccelerator
         {
-            Key = VirtualKey.Slash,
+            Key = (VirtualKey)191, // Oem2: '/' on standard keyboards
             Modifiers = VirtualKeyModifiers.Control,
         };
         shortcuts.Invoked += async (_, _) => await ShowShortcutsAsync();
@@ -182,7 +180,7 @@ public sealed partial class MainWindow : Window
             Key = VirtualKey.Up,
             Modifiers = VirtualKeyModifiers.Menu,
         };
-        altUp.Invoked += (_, _) => _vm.SelectPreviousChannel();
+        altUp.Invoked += (_, _) => _vm.SelectPreviousChannelCommand.Execute(null);
         root.KeyboardAccelerators.Add(altUp);
 
         // Alt+Down — next channel
@@ -191,7 +189,7 @@ public sealed partial class MainWindow : Window
             Key = VirtualKey.Down,
             Modifiers = VirtualKeyModifiers.Menu,
         };
-        altDown.Invoked += (_, _) => _vm.SelectNextChannel();
+        altDown.Invoked += (_, _) => _vm.SelectNextChannelCommand.Execute(null);
         root.KeyboardAccelerators.Add(altDown);
 
         // Alt+1…9, Alt+0 — jump to nth channel
@@ -212,7 +210,7 @@ public sealed partial class MainWindow : Window
                 Modifiers = VirtualKeyModifiers.Menu,
             };
             var captured = digit;
-            accel.Invoked += (_, _) => _vm.SelectChannelByIndex(captured);
+            accel.Invoked += (_, _) => _vm.SelectChannelByIndexCommand.Execute(captured);
             root.KeyboardAccelerators.Add(accel);
         }
     }
@@ -382,33 +380,16 @@ public sealed partial class MainWindow : Window
     {
         try
         {
-            if (!_windowsToastReady)
-            {
-                AppNotificationManager.Default.Register();
-                _windowsToastReady = true;
-            }
-
-            var notification = new AppNotificationBuilder()
-                .AddText("Freeq mention")
-                .AddText(text)
-                .BuildNotification();
-            AppNotificationManager.Default.Show(notification);
+            var xml = ToastNotificationManager.GetTemplateContent(ToastTemplateType.ToastText02);
+            var nodes = xml.GetElementsByTagName("text");
+            nodes[0].AppendChild(xml.CreateTextNode("Freeq mention"));
+            nodes[1].AppendChild(xml.CreateTextNode(text));
+            var toast = new ToastNotification(xml);
+            ToastNotificationManager.CreateToastNotifier("Freeq.WinUI").Show(toast);
         }
         catch
         {
-            try
-            {
-                var xml = ToastNotificationManager.GetTemplateContent(ToastTemplateType.ToastText02);
-                var nodes = xml.GetElementsByTagName("text");
-                nodes[0].AppendChild(xml.CreateTextNode("Freeq mention"));
-                nodes[1].AppendChild(xml.CreateTextNode(text));
-                var toast = new ToastNotification(xml);
-                ToastNotificationManager.CreateToastNotifier("Freeq.WinUI").Show(toast);
-            }
-            catch
-            {
-                // Ignore if toast APIs are unavailable in this runtime mode.
-            }
+            // Ignore if toast APIs are unavailable in this runtime mode.
         }
     }
 

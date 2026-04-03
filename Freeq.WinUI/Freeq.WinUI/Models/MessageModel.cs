@@ -10,6 +10,9 @@ public class MessageModel : INotifyPropertyChanged
 
     private void Notify(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 
+    // Self-reference for x:Bind Tag bindings
+    public MessageModel Self => this;
+
     public string Id { get; set; } = string.Empty;
     public string Nick { get; set; } = string.Empty;
     public DateTimeOffset Timestamp { get; set; }

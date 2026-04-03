@@ -68,8 +68,7 @@
             </Grid.ColumnDefinitions>
 
             <!-- Autocomplete popup anchored to the input -->
-            <Popup x:Name="AutocompletePopup" PlacementTarget="{Binding ElementName=MessageInput}"
-                   Placement="Top">
+                 <Popup x:Name="AutocompletePopup">
                 <Border Background="{StaticResource BgTertiaryBrush}"
                         BorderBrush="{StaticResource BorderBrush}"
                         BorderThickness="1"
