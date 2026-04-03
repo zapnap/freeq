@@ -20,7 +20,7 @@
             <ListView.ItemTemplate>
                 <DataTemplate x:DataType="models:MessageModel">
                     <!-- Tag="{x:Bind Self}" makes the MessageModel accessible from RightTapped -->
-                    <Grid Padding="{x:Bind local:MessageList.GetMessagePadding(), Mode=OneWay}" Tag="{x:Bind Self}">
+                    <Grid Padding="{x:Bind local:MessageList.GetMessagePadding(), Mode=OneTime}" Tag="{x:Bind Self}">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
@@ -33,7 +33,7 @@
                             Background="{x:Bind AvatarBackgroundBrush}"
                             Tapped="OnUserTapped"
                             Tag="{x:Bind Self}"
-                            Visibility="{x:Bind local:MessageList.GetAvatarVisibility(), Mode=OneWay}">
+                            Visibility="{x:Bind local:MessageList.GetAvatarVisibility(), Mode=OneTime}">
                             <TextBlock Text="{x:Bind NickInitial}" FontSize="14" FontWeight="Bold"
                                        Foreground="{x:Bind NickBrush}"
                                        HorizontalAlignment="Center" VerticalAlignment="Center" />
@@ -81,8 +81,8 @@
 
                             <!-- Markdown/media aware message renderer -->
                             <local:MessageContentView Message="{x:Bind Mode=OneWay}"
-                                                     ServerUrl="{x:Bind local:MessageList.GetServerUrl(), Mode=OneWay}"
-                                                     AutoLoadExternalMedia="{x:Bind local:MessageList.GetAutoLoadExternalMedia(), Mode=OneWay}"
+                                                     ServerUrl="{x:Bind local:MessageList.GetServerUrl(), Mode=OneTime}"
+                                                     AutoLoadExternalMedia="{x:Bind local:MessageList.GetAutoLoadExternalMedia(), Mode=OneTime}"
                                                      Margin="0,2,0,0"
                                                      Visibility="{x:Bind local:MessageList.BoolToVisInverse(IsDeleted), Mode=OneWay}" />
 

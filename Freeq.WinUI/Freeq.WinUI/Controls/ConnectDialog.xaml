@@ -126,7 +126,8 @@
                                  Foreground="{StaticResource FgBrush}"
                                  BorderBrush="{StaticResource BorderBrush}"
                                  CornerRadius="8"
-                                 Padding="14,11" />
+                                 Padding="14,11"
+                                 TextChanged="OnAtNickChanged" />
                     </StackPanel>
                 </StackPanel>
 

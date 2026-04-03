@@ -1,26 +1,27 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ResourceDictionary
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:win="using:Windows.UI">
 
-    <Color x:Key="BgColor">#FFF7F8FB</Color>
-    <Color x:Key="BgSecondaryColor">#FFFFFFFF</Color>
-    <Color x:Key="BgTertiaryColor">#FFF1F3F8</Color>
-    <Color x:Key="SurfaceColor">#FFE8ECF5</Color>
-    <Color x:Key="BorderColor">#FFD8DFEC</Color>
-    <Color x:Key="BorderBrightColor">#FFC8D3E8</Color>
-    <Color x:Key="FgColor">#FF202530</Color>
-    <Color x:Key="FgMutedColor">#FF4F617A</Color>
-    <Color x:Key="FgDimColor">#FF7B8AA0</Color>
-    <Color x:Key="AccentColor">#FF007A66</Color>
-    <Color x:Key="AccentHoverColor">#FF00917A</Color>
-    <Color x:Key="DangerColor">#FFC93030</Color>
-    <Color x:Key="WarningColor">#FFCC8A00</Color>
-    <Color x:Key="SuccessColor">#FF007A66</Color>
-    <Color x:Key="PurpleColor">#FF7F5AD0</Color>
-    <Color x:Key="BlueColor">#FF2A6FD2</Color>
-    <Color x:Key="PinkColor">#FFB6457B</Color>
-    <Color x:Key="OrangeColor">#FFC66A1A</Color>
+    <win:Color x:Key="BgColor">#FFF7F8FB</win:Color>
+    <win:Color x:Key="BgSecondaryColor">#FFFFFFFF</win:Color>
+    <win:Color x:Key="BgTertiaryColor">#FFF1F3F8</win:Color>
+    <win:Color x:Key="SurfaceColor">#FFE8ECF5</win:Color>
+    <win:Color x:Key="BorderColor">#FFD8DFEC</win:Color>
+    <win:Color x:Key="BorderBrightColor">#FFC8D3E8</win:Color>
+    <win:Color x:Key="FgColor">#FF202530</win:Color>
+    <win:Color x:Key="FgMutedColor">#FF4F617A</win:Color>
+    <win:Color x:Key="FgDimColor">#FF7B8AA0</win:Color>
+    <win:Color x:Key="AccentColor">#FF007A66</win:Color>
+    <win:Color x:Key="AccentHoverColor">#FF00917A</win:Color>
+    <win:Color x:Key="DangerColor">#FFC93030</win:Color>
+    <win:Color x:Key="WarningColor">#FFCC8A00</win:Color>
+    <win:Color x:Key="SuccessColor">#FF007A66</win:Color>
+    <win:Color x:Key="PurpleColor">#FF7F5AD0</win:Color>
+    <win:Color x:Key="BlueColor">#FF2A6FD2</win:Color>
+    <win:Color x:Key="PinkColor">#FFB6457B</win:Color>
+    <win:Color x:Key="OrangeColor">#FFC66A1A</win:Color>
 
     <SolidColorBrush x:Key="BgBrush" Color="{StaticResource BgColor}" />
     <SolidColorBrush x:Key="BgSecondaryBrush" Color="{StaticResource BgSecondaryColor}" />
