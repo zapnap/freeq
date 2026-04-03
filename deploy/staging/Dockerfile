@@ -2,7 +2,9 @@
 
 # ── Rust build ──
 FROM rust:1.93-slim AS builder
-RUN apt-get update && apt-get install -y pkg-config libssl-dev cmake clang libasound2-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y pkg-config libssl-dev cmake clang libasound2-dev curl && rm -rf /var/lib/apt/lists/*
+# iroh-live-relay's build script needs npm to bundle its web frontend
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY freeq-sdk/ freeq-sdk/
