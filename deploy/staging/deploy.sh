@@ -37,23 +37,11 @@ name = 'freeq-staging'
 post_import = ''
 env = []
 include = []
-
-[[services.web.ports]]
-name = "sfu-tcp"
-port = 4443
-node_port = 30443
-protocol = "tcp"
-
-[[services.web.ports]]
-name = "sfu-udp"
-port = 4443
-node_port = 30443
-protocol = "udp"
 EOF
 
 # Procfile — Miren needs explicit service definition; $PORT is set by Miren
 cat > "$TMPDIR/Procfile" << 'EOF'
-web: /app/freeq-server --listen-addr 127.0.0.1:16667 --web-addr 0.0.0.0:${PORT:-8080} --web-static-dir /app/web --server-name staging.freeq.at --db-path /app/data/freeq.db --data-dir /app/data --motd "freeq staging — https://freeq.at"
+web: /app/freeq-server --listen-addr 127.0.0.1:16667 --web-addr 0.0.0.0:${PORT:-8080} --web-static-dir /app/web --server-name staging.freeq.at --db-path /app/data/freeq.db --data-dir /app/data --iroh --motd "freeq staging — AV with iroh"
 EOF
 
 # Remove any nested .miren dirs that came from source copies
