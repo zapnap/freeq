@@ -46,7 +46,7 @@ function saveJoinedChannels() {
 const backgroundWhois = new Set<string>();
 
 // Buffer for reassembling chunked WebRTC signaling messages
-const signalChunks = new Map<string, (string | undefined)[]>();
+// P2P signaling removed — audio flows through SFU at /av/call
 
 // ── Public API (called by UI) ──
 
@@ -907,35 +907,6 @@ async function handleLine(rawLine: string) {
         store.setTyping(bufName, from, typing === 'active');
       }
 
-      // Handle WebRTC signaling for AV sessions
-      const avSignal = msg.tags['+freeq.at/av-signal'];
-      if (avSignal && from) {
-        const chunkInfo = msg.tags['+freeq.at/av-chunk'];
-        let signalData: string | null = null;
-        if (chunkInfo) {
-          const [id, idx, total] = chunkInfo.split(':');
-          const key = `${from}:${id}`;
-          if (!signalChunks.has(key)) signalChunks.set(key, new Array(parseInt(total)));
-          const chunks = signalChunks.get(key)!;
-          chunks[parseInt(idx)] = avSignal;
-          if (chunks.every(c => c !== undefined)) {
-            signalChunks.delete(key);
-            signalData = decodeURIComponent(chunks.join(''));
-          }
-        } else {
-          signalData = decodeURIComponent(avSignal);
-        }
-        if (signalData) {
-          const sigFrom = from;
-          const sigData = signalData;
-          // Set callback + handle signal in one import to avoid race
-          import('../lib/webrtc-audio').then(({ setSignalCallback, handleSignal }) => {
-            setSignalCallback((target, data) => sendAvSignal(target, data));
-            handleSignal(sigFrom, sigData);
-          });
-        }
-      }
-
       // Handle AV session state updates
       const avState = msg.tags['+freeq.at/av-state'];
       const avId = msg.tags['+freeq.at/av-id'];
@@ -1359,15 +1330,7 @@ function handleAvSessionState(
         if (actorNick.toLowerCase() === nick.toLowerCase()) {
           store.setActiveAvSession(existing.id);
         }
-        // If we're already in this session with audio active, connect to the new participant
-        if (store.activeAvSession === existing.id && actorNick.toLowerCase() !== nick.toLowerCase()) {
-          import('../lib/webrtc-audio').then(({ isAudioActive, connectToPeer }) => {
-            if (isAudioActive()) {
-              console.log(`[av] New participant ${actorNick} — connecting WebRTC`);
-              connectToPeer(actorNick);
-            }
-          });
-        }
+        // Audio handled by SFU popup window — no P2P connection needed here
       }
       break;
     }
@@ -1403,6 +1366,11 @@ export async function startAvSession(channel: string, title?: string) {
     return;
   }
 
+  if (store.connectionState !== 'connected') {
+    store.addSystemMessage(channel, 'Cannot start voice session: not connected to server.');
+    return;
+  }
+
   // Check if there's already an active session in this channel
   try {
     const resp = await fetch(`/api/v1/channels/${encodeURIComponent(channel)}/sessions`);
@@ -1415,7 +1383,10 @@ export async function startAvSession(channel: string, title?: string) {
         return;
       }
     }
-  } catch {}
+  } catch (e) {
+    console.warn('[av] Failed to check existing sessions:', e);
+    // Continue to create — server will handle dedup
+  }
 
   // No active session — start a new one
   const tags: Record<string, string> = { '+freeq.at/av-start': '' };
@@ -1477,35 +1448,4 @@ export function sendAvSignal(targetNick: string, data: string) {
   }
 }
 
-/// Start WebRTC audio for the current AV session.
-/// Connects to all other participants in the session.
-export async function startSessionAudio(channel: string) {
-  const { startLocalAudio, setSignalCallback, connectToPeer } = await import('../lib/webrtc-audio');
-  const store = useStore.getState();
-  const sessionId = store.activeAvSession;
-  if (!sessionId) return;
-
-  const session = store.avSessions.get(sessionId);
-  if (!session) return;
-
-  // Set up signaling callback
-  setSignalCallback((target, data) => sendAvSignal(target, data));
-
-  // Capture mic
-  await startLocalAudio();
-  store.addSystemMessage(channel, 'Audio started — connecting to participants...');
-
-  // Connect to all other participants
-  const myNick = nick.toLowerCase();
-  for (const [, p] of session.participants) {
-    if (p.nick.toLowerCase() !== myNick) {
-      await connectToPeer(p.nick);
-    }
-  }
-}
-
-/// Stop WebRTC audio.
-export async function stopSessionAudio() {
-  const { stopLocalAudio } = await import('../lib/webrtc-audio');
-  stopLocalAudio();
-}
+// P2P WebRTC audio removed — audio flows through SFU popup window at /av/call

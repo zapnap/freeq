@@ -2347,6 +2347,59 @@ impl Db {
         rows.collect()
     }
 
+    /// Load all active (non-ended) AV sessions with their participants. Used on server restart.
+    pub fn load_active_av_sessions(&self) -> SqlResult<Vec<crate::av::AvSession>> {
+        use crate::av::{AvSession, AvSessionState, AvParticipant, ParticipantRole, MediaBackendType};
+        use std::collections::HashMap;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, channel, created_by, created_at, title, iroh_ticket, backend, recording, max_participants
+             FROM av_sessions WHERE ended_at IS NULL",
+        )?;
+        let mut sessions: Vec<AvSession> = stmt.query_map([], |row: &rusqlite::Row| {
+            let backend_str: String = row.get(6)?;
+            Ok(AvSession {
+                id: row.get(0)?,
+                channel: row.get(1)?,
+                created_by: row.get(2)?,
+                created_by_nick: String::new(),
+                created_at: row.get(3)?,
+                state: AvSessionState::Active,
+                participants: HashMap::new(),
+                title: row.get(4)?,
+                iroh_ticket: row.get(5)?,
+                media_backend: serde_json::from_str(&backend_str).unwrap_or(MediaBackendType::IrohLive),
+                recording_enabled: row.get(7)?,
+                max_participants: row.get(8)?,
+            })
+        })?.filter_map(|r| r.ok()).collect();
+
+        // Load participants for each session
+        for session in &mut sessions {
+            let mut pstmt = self.conn.prepare(
+                "SELECT did, nick, joined_at, left_at, role FROM av_participants WHERE session_id = ?1",
+            )?;
+            let participants: Vec<AvParticipant> = pstmt.query_map([&session.id], |row: &rusqlite::Row| {
+                let role_str: String = row.get(4)?;
+                Ok(AvParticipant {
+                    did: row.get(0)?,
+                    nick: row.get(1)?,
+                    joined_at: row.get(2)?,
+                    left_at: row.get(3)?,
+                    role: serde_json::from_str(&role_str).unwrap_or(ParticipantRole::Speaker),
+                    tracks: vec![],
+                })
+            })?.filter_map(|r| r.ok()).collect();
+            for p in participants {
+                // Also recover created_by_nick from the host participant
+                if p.did == session.created_by {
+                    session.created_by_nick = p.nick.clone();
+                }
+                session.participants.insert(p.did.clone(), p);
+            }
+        }
+        Ok(sessions)
+    }
+
     pub fn list_channel_av_sessions(&self, channel: &str, limit: u32) -> SqlResult<Vec<crate::av::AvSession>> {
         use crate::av::{AvSession, AvSessionState, MediaBackendType};
         use std::collections::HashMap;

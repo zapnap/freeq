@@ -1027,6 +1027,37 @@ impl Server {
         let web_addr = self.config.web_addr.clone();
         let state = self.build_state()?;
 
+        // Recover active AV sessions from DB (survive server restarts)
+        {
+            let recovered = state.with_db(|db| db.load_active_av_sessions()).unwrap_or_default();
+            if !recovered.is_empty() {
+                let mut mgr = state.av_sessions.lock();
+                let mut count = 0;
+                for session in recovered {
+                    // Only restore sessions less than 2 hours old
+                    let age = chrono::Utc::now().timestamp() - session.created_at;
+                    if age > 7200 {
+                        // Mark stale sessions as ended in DB
+                        let mut ended = session;
+                        ended.state = crate::av::AvSessionState::Ended {
+                            ended_at: chrono::Utc::now().timestamp(),
+                            ended_by: None,
+                        };
+                        state.with_db(|db| db.save_av_session(&ended));
+                        continue;
+                    }
+                    if let Some(ch) = &session.channel {
+                        mgr.channel_sessions.insert(ch.to_lowercase(), session.id.clone());
+                    }
+                    mgr.sessions.insert(session.id.clone(), session);
+                    count += 1;
+                }
+                if count > 0 {
+                    tracing::info!("Recovered {count} active AV sessions from database");
+                }
+            }
+        }
+
         // Start plain listener
         let plain_listener = TcpListener::bind(&self.config.listen_addr).await?;
         tracing::info!("Plain listener on {}", self.config.listen_addr);
@@ -1415,6 +1446,43 @@ impl Server {
                             let ch = ch.clone();
                             cleanup_state.with_db(|db| db.prune_messages(&ch, MAX_MESSAGES_PER_CHANNEL));
                         }
+                    }
+                    // Prune ended AV sessions from memory (keep for 1 hour)
+                    // and auto-end sessions idle for >2 hours with no active participants
+                    {
+                        let mut mgr = cleanup_state.av_sessions.lock();
+                        // Auto-end sessions where all participants have left but session wasn't formally ended
+                        let stale_ids: Vec<String> = mgr.active_sessions()
+                            .iter()
+                            .filter(|s| {
+                                let active_count = s.participants.values().filter(|p| p.left_at.is_none()).count();
+                                if active_count == 0 {
+                                    return true; // No active participants — end it
+                                }
+                                // Also end sessions older than 2 hours (safety net)
+                                let age = chrono::Utc::now().timestamp() - s.created_at;
+                                age > 7200
+                            })
+                            .map(|s| s.id.clone())
+                            .collect();
+                        for id in &stale_ids {
+                            if let Ok(session) = mgr.end_session(id, None) {
+                                cleanup_state.with_db(|db| db.save_av_session(&session));
+                                if let Some(ch) = &session.channel {
+                                    let ch = ch.clone();
+                                    drop(mgr);
+                                    crate::connection::messaging::broadcast_av_state_pub(
+                                        &cleanup_state, &ch, id, "ended", "server", 0, "",
+                                    );
+                                    mgr = cleanup_state.av_sessions.lock();
+                                }
+                            }
+                        }
+                        if !stale_ids.is_empty() {
+                            tracing::info!("Auto-ended {} stale AV sessions", stale_ids.len());
+                        }
+                        // Prune ended sessions older than 1 hour from memory
+                        mgr.prune_ended(3600);
                     }
                     // Prune stale IP rate limiter entries
                     {

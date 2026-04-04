@@ -11,8 +11,11 @@ export function SessionIndicator({ channel }: { channel: string }) {
   const avSessions = useStore((s) => s.avSessions);
   const activeAvSession = useStore((s) => s.activeAvSession);
   const authDid = useStore((s) => s.authDid);
+  const connectionState = useStore((s) => s.connectionState);
   const [audioActive, setAudioActive] = useState(false);
   const audioWindowRef = useRef<Window | null>(null);
+
+  const isConnected = connectionState === 'connected';
 
   // Find active session for this channel
   const session = [...avSessions.values()].find(
@@ -24,8 +27,13 @@ export function SessionIndicator({ channel }: { channel: string }) {
     return (
       <button
         onClick={() => startAvSession(channel)}
-        className="text-fg-dim hover:text-accent text-xs px-2 py-1 rounded-lg hover:bg-bg-tertiary flex items-center gap-1"
-        title="Start a voice session"
+        disabled={!isConnected}
+        className={`text-xs px-2 py-1 rounded-lg flex items-center gap-1 ${
+          isConnected
+            ? 'text-fg-dim hover:text-accent hover:bg-bg-tertiary'
+            : 'text-fg-dim/40 cursor-not-allowed'
+        }`}
+        title={isConnected ? "Start a voice session" : "Not connected"}
       >
         <PhoneIcon />
       </button>
@@ -39,7 +47,12 @@ export function SessionIndicator({ channel }: { channel: string }) {
 
   const openAudio = () => {
     const callUrl = `/av/call?session=${encodeURIComponent(session.id)}&nick=${encodeURIComponent(myNick)}`;
-    audioWindowRef.current = window.open(callUrl, `av-${session.id}`, 'width=480,height=400');
+    const win = window.open(callUrl, `av-${session.id}`, 'width=480,height=400');
+    if (!win) {
+      useStore.getState().addSystemMessage(channel, 'Audio: popup blocked by browser. Please allow popups for this site.');
+      return;
+    }
+    audioWindowRef.current = win;
     setAudioActive(true);
     useStore.getState().addSystemMessage(channel, 'Audio: connecting to SFU...');
   };

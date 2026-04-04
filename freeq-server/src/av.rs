@@ -459,6 +459,42 @@ impl AvSessionManager {
         self.end_session_inner(session_id, ended_by);
     }
 
+    /// Leave all active sessions for a DID. Returns vec of (session_id, channel, nick, should_end).
+    pub fn leave_all_for_did(&mut self, did: &str) -> Vec<(String, Option<String>, String, bool)> {
+        let session_ids: Vec<String> = self
+            .sessions
+            .iter()
+            .filter(|(_, s)| {
+                matches!(s.state, AvSessionState::Active)
+                    && s.participants
+                        .get(did)
+                        .map(|p| p.left_at.is_none())
+                        .unwrap_or(false)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        let mut results = Vec::new();
+        for session_id in session_ids {
+            let nick = self
+                .sessions
+                .get(&session_id)
+                .and_then(|s| s.participants.get(did))
+                .map(|p| p.nick.clone())
+                .unwrap_or_default();
+            match self.leave_session(&session_id, did) {
+                Ok((session, should_end)) => {
+                    let channel = session.channel.clone();
+                    results.push((session_id, channel, nick, should_end));
+                }
+                Err(e) => {
+                    tracing::warn!(session_id = %session_id, did = %did, error = %e, "Failed to leave AV session on disconnect");
+                }
+            }
+        }
+        results
+    }
+
     /// Prune ended sessions older than `max_age_secs` from memory.
     pub fn prune_ended(&mut self, max_age_secs: i64) {
         let now = chrono::Utc::now().timestamp();

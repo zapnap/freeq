@@ -2461,12 +2461,25 @@ async fn av_moq_ws_root() -> impl IntoResponse {
 }
 
 /// WebSocket MoQ endpoint with path — upgrades to MoQ session through the SFU cluster.
+/// Path format: {session_id}/{nick} for publish, {session_id} for subscribe.
 #[cfg(feature = "av-native")]
 async fn av_moq_ws(
     ws: axum::extract::WebSocketUpgrade,
     Path(path): Path<String>,
     State(state): State<Arc<crate::server::SharedState>>,
 ) -> impl IntoResponse {
+    // Validate session ID exists (first path segment)
+    let session_id = path.split('/').next().unwrap_or("");
+    if !session_id.is_empty() {
+        let mgr = state.av_sessions.lock();
+        if mgr.get(session_id).is_none() {
+            return (
+                axum::http::StatusCode::FORBIDDEN,
+                "Unknown AV session",
+            ).into_response();
+        }
+    }
+
     let sfu = state.sfu_state.lock().clone();
     match sfu {
         Some(sfu) => ws

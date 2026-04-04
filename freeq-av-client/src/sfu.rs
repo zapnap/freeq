@@ -1,8 +1,10 @@
 //! SFU client — connect to freeq AV SFU via MoQ.
 //!
 //! Publishes mic audio as a MoQ broadcast and subscribes to other participants.
-//! The iroh-live LocalBroadcast already produces hang-formatted MoQ broadcasts,
-//! so we wire its BroadcastConsumer directly to the MoQ origin.
+//! The iroh-live LocalBroadcast produces hang-formatted MoQ broadcasts (Opus audio)
+//! which are compatible with the browser's moq-publish/moq-watch web components
+//! (also Opus via libav-opus WASM). Both use the same MoQ catalog format through
+//! the shared moq_relay::Cluster, enabling native <-> browser audio interop.
 
 use anyhow::Result;
 use iroh_live::media::{

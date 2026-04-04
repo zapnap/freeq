@@ -76,6 +76,8 @@ export class Transport {
         return;
       }
       this.ws.send(line);
+    } else {
+      console.warn('[transport] Dropped message (ws not open, readyState=%s):', this.ws?.readyState, line);
     }
   }
 

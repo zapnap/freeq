@@ -2431,6 +2431,30 @@ where
         true // Guest sessions are always "last"
     };
 
+    // Clean up AV sessions: leave any active sessions this user is in.
+    // This must happen before ghost mode so sessions don't get stuck with phantom participants.
+    {
+        let did_for_av = conn.authenticated_did.clone()
+            .unwrap_or_else(|| format!("guest:{}", conn.nick.as_deref().unwrap_or("*")));
+        let left_sessions = state.av_sessions.lock().leave_all_for_did(&did_for_av);
+        for (av_sid, channel, av_nick, should_end) in &left_sessions {
+            if let Some(ch) = channel {
+                let participant_count = state.av_sessions.lock().active_participant_count(av_sid);
+                if *should_end {
+                    messaging::broadcast_av_state_pub(&state, ch, av_sid, "ended", av_nick, 0, "");
+                } else {
+                    messaging::broadcast_av_state_pub(&state, ch, av_sid, "left", av_nick, participant_count, "");
+                }
+            }
+            // Persist to DB
+            if let Some(s) = state.av_sessions.lock().get(av_sid) {
+                let s = s.clone();
+                state.with_db(|db| db.save_av_session(&s));
+            }
+            tracing::info!(av_session = %av_sid, did = %did_for_av, ended = should_end, "AV session cleanup on disconnect");
+        }
+    }
+
     // Grace period for DID users: hold channel membership for 30s before broadcasting QUIT.
     // If they reconnect within that window, suppress the quit/join churn entirely.
     const QUIT_GRACE_SECS: u64 = 30;

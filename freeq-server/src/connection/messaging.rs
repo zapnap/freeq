@@ -1853,6 +1853,19 @@ pub fn broadcast_av_notice(state: &Arc<SharedState>, channel: &str, text: &str) 
     }
 }
 
+/// Broadcast AV session state to all channel members via TAGMSG (public for disconnect cleanup).
+pub fn broadcast_av_state_pub(
+    state: &Arc<SharedState>,
+    target: &str,
+    session_id: &str,
+    action: &str,
+    actor_nick: &str,
+    participant_count: usize,
+    title: &str,
+) {
+    broadcast_av_state(state, target, session_id, action, actor_nick, participant_count, title);
+}
+
 /// Broadcast AV session state to all channel members via TAGMSG.
 fn broadcast_av_state(
     state: &Arc<SharedState>,

@@ -594,6 +594,43 @@ pub(super) fn handle_join(
     );
     send(state, session_id, format!("{names}\r\n"));
     send(state, session_id, format!("{end_names}\r\n"));
+
+    // Notify joining client about active AV session in this channel (if any)
+    {
+        let mgr = state.av_sessions.lock();
+        if let Some(av_session) = mgr.active_session_for_channel(channel) {
+            let participant_count = av_session.participants.values().filter(|p| p.left_at.is_none()).count();
+            let title = av_session.title.as_deref().unwrap_or("");
+            let mut tags = std::collections::HashMap::new();
+            tags.insert("+freeq.at/av-state".to_string(), "started".to_string());
+            tags.insert("+freeq.at/av-id".to_string(), av_session.id.clone());
+            tags.insert("+freeq.at/av-participants".to_string(), participant_count.to_string());
+            tags.insert("+freeq.at/av-actor".to_string(), av_session.created_by_nick.clone());
+            if !title.is_empty() {
+                tags.insert("+freeq.at/av-title".to_string(), title.to_string());
+            }
+            let time_tag = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S.000Z").to_string();
+            tags.insert("time".to_string(), time_tag);
+            let tag_msg = irc::Message {
+                tags,
+                prefix: Some(server_name.to_string()),
+                command: "TAGMSG".to_string(),
+                params: vec![channel.to_string()],
+            };
+            // Only send if client supports message-tags
+            if state.cap_message_tags.lock().contains(session_id) {
+                send(state, session_id, format!("{tag_msg}\r\n"));
+            } else {
+                // Fallback: human-readable notice
+                let notice_text = format!(
+                    "Active voice session ({} participants) — use /av to join",
+                    participant_count
+                );
+                let notice = Message::from_server(server_name, "NOTICE", vec![channel, &notice_text]);
+                send(state, session_id, format!("{notice}\r\n"));
+            }
+        }
+    }
 }
 
 pub(super) fn handle_mode(

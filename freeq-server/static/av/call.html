@@ -18,6 +18,7 @@
     }
     h1 { color: #58a6ff; font-size: 1.2rem; }
     .status { color: #8b949e; font-size: 0.85rem; text-align: center; }
+    .status.error { color: #f85149; }
     .controls { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
     button {
       padding: 0.5rem 1.2rem; border: none; border-radius: 6px;
@@ -34,9 +35,15 @@
       background: #222; color: #eee; font-size: 0.9rem; width: 200px;
     }
     #landing button { background: #238636; }
-    #videos { display: flex; flex-wrap: wrap; gap: 0.5rem; justify-content: center; }
-    #videos video { width: 320px; border-radius: 8px; background: #222; }
-    #self-video { transform: scaleX(-1); opacity: 0.7; }
+    .audio-indicator {
+      display: flex; align-items: center; gap: 0.5rem;
+      padding: 0.5rem 1rem; border-radius: 8px; background: #1a1a2e;
+    }
+    .audio-indicator .dot {
+      width: 8px; height: 8px; border-radius: 50%; background: #238636;
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
   </style>
 </head>
 <body>
@@ -54,8 +61,9 @@
   <!-- Call: active -->
   <div id="call" class="hidden">
     <p class="status" id="call-status">Connecting...</p>
-    <div id="videos">
-      <video id="self-video" autoplay muted playsinline></video>
+    <div class="audio-indicator hidden" id="audio-indicator">
+      <span class="dot"></span>
+      <span id="audio-label">Audio active</span>
     </div>
     <div class="controls">
       <button class="btn-mute" id="btn-mute">Mute</button>
@@ -65,8 +73,8 @@
 
   <!-- MoQ publish element — source set dynamically after join -->
   <moq-publish id="publish" style="display:none"></moq-publish>
-  <!-- MoQ watch element — canvas required for video rendering -->
-  <moq-watch id="watch" jitter="100"><canvas id="remote-canvas" style="width:320px;border-radius:8px;background:#222;"></canvas></moq-watch>
+  <!-- MoQ watch element — audio only, no canvas needed -->
+  <moq-watch id="watch" jitter="100"></moq-watch>
 
   <script type="module">
     const params = new URLSearchParams(window.location.search);
@@ -83,7 +91,8 @@
     const watch = document.getElementById('watch');
     const btnMute = document.getElementById('btn-mute');
     const btnLeave = document.getElementById('btn-leave');
-    const selfVideo = document.getElementById('self-video');
+    const audioIndicator = document.getElementById('audio-indicator');
+    const audioLabel = document.getElementById('audio-label');
 
     if (presetNick) nickInput.value = presetNick;
     if (presetNick) joinCall(presetNick);
@@ -98,20 +107,26 @@
       landing.classList.add('hidden');
       call.classList.remove('hidden');
       callStatus.textContent = `Joining as ${nick}...`;
+      callStatus.classList.remove('error');
 
-      // Show self-preview
+      // Request microphone only (no video for voice calls)
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        selfVideo.srcObject = stream;
+        await navigator.mediaDevices.getUserMedia({ audio: true });
       } catch (e) {
-        console.warn('Could not get user media for preview:', e);
+        console.error('Could not get microphone:', e);
+        const reason = e.name === 'NotAllowedError' ? 'permission denied — allow microphone access and retry'
+          : e.name === 'NotFoundError' ? 'no microphone found'
+          : e.message;
+        callStatus.textContent = `Microphone error: ${reason}`;
+        callStatus.classList.add('error');
+        return;
       }
 
-      // Set up MoQ publish — use "camera" source (captures video + audio)
+      // Set up MoQ publish — use "microphone" source (audio only)
       const pubName = `${session}/${nick}`;
       publish.setAttribute('url', moqOrigin);
       publish.setAttribute('name', pubName);
-      publish.setAttribute('source', 'camera');
+      publish.setAttribute('source', 'microphone');
       console.log('[call] Publishing:', pubName, 'to', moqOrigin);
 
       // Set up MoQ watch — subscribe to session namespace
@@ -119,21 +134,45 @@
       watch.setAttribute('name', session);
       console.log('[call] Watching:', session);
 
-      callStatus.textContent = `Connected as ${nick} — session: ${session}`;
+      // Monitor connection state — check if MoQ elements connected
+      callStatus.textContent = `Connecting to voice server...`;
+      let connected = false;
+
+      // Poll for connection (MoQ web components don't expose events reliably)
+      const checkConnection = setInterval(() => {
+        // If the publish element has a URL and hasn't errored, consider it connected
+        if (publish.getAttribute('url') && !connected) {
+          connected = true;
+          clearInterval(checkConnection);
+          callStatus.textContent = `Connected as ${nick}`;
+          audioIndicator.classList.remove('hidden');
+          audioLabel.textContent = 'Audio active';
+        }
+      }, 500);
+
+      // Timeout after 10s
+      setTimeout(() => {
+        if (!connected) {
+          clearInterval(checkConnection);
+          callStatus.textContent = 'Connection timed out — voice server may be unavailable';
+          callStatus.classList.add('error');
+        }
+      }, 10000);
     }
 
     let muted = false;
     btnMute.addEventListener('click', () => {
       muted = !muted;
       if (muted) {
-        publish.setAttribute('source', 'camera');
         publish.muted = true;
         btnMute.textContent = 'Unmute';
         btnMute.classList.add('muted');
+        audioLabel.textContent = 'Muted';
       } else {
         publish.muted = false;
         btnMute.textContent = 'Mute';
         btnMute.classList.remove('muted');
+        audioLabel.textContent = 'Audio active';
       }
     });
 
@@ -141,9 +180,6 @@
       publish.setAttribute('source', '');
       publish.setAttribute('url', '');
       watch.setAttribute('url', '');
-      if (selfVideo.srcObject) {
-        selfVideo.srcObject.getTracks().forEach(t => t.stop());
-      }
       window.close();
     });
   </script>
