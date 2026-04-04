@@ -2486,10 +2486,14 @@ async fn av_moq_ws() -> impl IntoResponse {
 }
 
 /// Serve the AV call page (SFU web UI for browser audio).
+/// Sets its own CSP to allow inline scripts (the global middleware skips when CSP is already set).
 async fn av_call_page() -> impl IntoResponse {
     (
         axum::http::StatusCode::OK,
-        [("content-type", "text/html; charset=utf-8")],
+        [
+            ("content-type", "text/html; charset=utf-8"),
+            ("content-security-policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' wss: https:; media-src 'self' blob:; img-src 'self' data:"),
+        ],
         include_str!("../static/av/call.html"),
     )
 }
