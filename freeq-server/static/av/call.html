@@ -69,7 +69,7 @@
     // Connect via WebSocket through the reverse proxy (works through Miren's HTTPS).
     // The /av/moq/ endpoint upgrades to MoQ-over-WebSocket.
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const moqOrigin = `${wsProtocol}//${window.location.host}/av/moq/`;
+    const moqOrigin = `${wsProtocol}//${window.location.host}/av/moq`;
 
     const landing = document.getElementById('landing');
     const call = document.getElementById('call');

@@ -57,7 +57,7 @@ pub async fn run_sfu(sfu_url: &str, session: &str, nick: &str) -> Result<()> {
 
     // Connect to the SFU via WebSocket (works through any HTTP reverse proxy)
     let base: url::Url = sfu_url.parse()?;
-    let url = base.join("/av/moq/")?;
+    let url = base.join("/av/moq")?;
     println!("  Connecting to {url}...");
 
     let session_handle = client
