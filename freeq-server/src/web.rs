@@ -2492,7 +2492,7 @@ async fn av_call_page() -> impl IntoResponse {
         axum::http::StatusCode::OK,
         [
             ("content-type", "text/html; charset=utf-8"),
-            ("content-security-policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' wss: https:; media-src 'self' blob:; img-src 'self' data:"),
+            ("content-security-policy", "default-src 'self'; script-src 'self' 'unsafe-inline' blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' wss: https:; media-src 'self' blob:; img-src 'self' data:; worker-src 'self' blob:"),
         ],
         include_str!("../static/av/call.html"),
     )
