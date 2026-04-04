@@ -50,12 +50,15 @@ ulid = "1"
 iroh-live = { git = "https://github.com/n0-computer/iroh-live", default-features = false, features = ["opus"], optional = true }
 moq-relay = { git = "https://github.com/Frando/moq", branch = "deps/iroh-main", default-features = false, optional = true }
 moq-native = { git = "https://github.com/Frando/moq", branch = "deps/iroh-main", default-features = false, features = ["noq", "iroh", "aws-lc-rs"], optional = true }
+moq-lite = { git = "https://github.com/Frando/moq", branch = "deps/iroh-main", optional = true }
+qmux = { version = "0.0.5", default-features = false, features = ["ws"], optional = true }
+futures = { version = "0.3", optional = true }
 rustls = { version = "0.23", features = ["aws-lc-rs"], default-features = false, optional = true }
 toml = "0.8"
 
 [features]
 default = []
-av-native = ["iroh-live", "moq-relay", "moq-native", "rustls"]  # Enable iroh-live + SFU for browser WebTransport
+av-native = ["iroh-live", "moq-relay", "moq-native", "moq-lite", "qmux", "futures", "rustls"]  # Enable iroh-live + SFU (QUIC + WebSocket)
 
 [dev-dependencies]
 freeq-sdk = { path = "../freeq-sdk" }

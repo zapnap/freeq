@@ -490,6 +490,9 @@ pub struct SharedState {
     pub av_sessions: Mutex<crate::av::AvSessionManager>,
     /// AV media backend (iroh-live rooms).
     pub av_media: Mutex<Option<Arc<crate::av_media::IrohLiveBackend>>>,
+    /// AV SFU state (MoQ cluster for WebSocket + QUIC connections).
+    #[cfg(feature = "av-native")]
+    pub sfu_state: Mutex<Option<Arc<crate::av_sfu::SfuState>>>,
     /// S2S manager (if clustering is active).
     pub s2s_manager: Mutex<Option<Arc<crate::s2s::S2sManager>>>,
     /// CRDT document for cluster state convergence.
@@ -952,6 +955,8 @@ impl Server {
             iroh_endpoint: Mutex::new(None),
             av_sessions: Mutex::new(crate::av::AvSessionManager::new()),
             av_media: Mutex::new(None),
+            #[cfg(feature = "av-native")]
+            sfu_state: Mutex::new(None),
             s2s_manager: Mutex::new(None),
             cluster_doc: crate::crdt::ClusterDoc::new(&self.config.server_name),
             db: db.map(Mutex::new),
@@ -1154,19 +1159,19 @@ impl Server {
             if let Some(backend) = crate::av_media::init_backend(endpoint.clone()).await {
                 *state.av_media.lock() = Some(backend);
             }
-            // Start AV SFU for browser WebTransport audio.
-            // Bind SFU QUIC (UDP) to the web server's port so Miren's routing covers both.
-            // SFU also serves call page via HTTP on its own port (4443) for direct access.
+            // Initialize SFU (MoQ cluster + QUIC accept + WebSocket support).
+            // QUIC binds to the web server's port (UDP). WebSocket handled via web.rs route.
             let sfu_port = web_addr.as_ref()
                 .and_then(|a| a.parse::<std::net::SocketAddr>().ok())
                 .map(|a| a.port())
                 .unwrap_or(4443);
-            tokio::spawn(async move {
+            {
                 let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-                if let Err(e) = crate::av_sfu::run_sfu(sfu_port).await {
-                    tracing::error!("AV SFU failed: {e}");
+                match crate::av_sfu::init_sfu(Some(sfu_port)).await {
+                    Ok(sfu) => *state.sfu_state.lock() = Some(sfu),
+                    Err(e) => tracing::error!("AV SFU init failed: {e}"),
                 }
-            });
+            }
         }
         #[cfg(not(feature = "av-native"))]
         {

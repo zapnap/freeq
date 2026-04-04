@@ -66,9 +66,10 @@
     const params = new URLSearchParams(window.location.search);
     const session = params.get('session') || 'default';
     const presetNick = params.get('nick') || '';
-    // WebTransport connects to the same origin (SFU QUIC binds to same port as web server).
-    // When served through Miren's HTTPS proxy, the origin is already https://.
-    const wtOrigin = window.location.origin.replace('http://', 'https://') + '/';
+    // Connect via WebSocket through the reverse proxy (works through Miren's HTTPS).
+    // The /av/moq/ endpoint upgrades to MoQ-over-WebSocket.
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const moqOrigin = `${wsProtocol}//${window.location.host}/av/moq/`;
 
     const landing = document.getElementById('landing');
     const call = document.getElementById('call');
@@ -98,13 +99,13 @@
 
       // Publish our audio under session/nick
       const pubName = `${session}/${nick}`;
-      publish.setAttribute('url', wtOrigin);
+      publish.setAttribute('url', moqOrigin);
       publish.setAttribute('name', pubName);
-      console.log('[call] Publishing:', pubName, 'to', wtOrigin);
+      console.log('[call] Publishing:', pubName, 'to', moqOrigin);
 
       // Watch the session (subscribes to all broadcasts in the session namespace)
       const watchName = session;
-      watch.setAttribute('url', wtOrigin);
+      watch.setAttribute('url', moqOrigin);
       watch.setAttribute('name', watchName);
       console.log('[call] Watching:', watchName);
 

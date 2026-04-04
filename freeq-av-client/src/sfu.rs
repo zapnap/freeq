@@ -55,8 +55,9 @@ pub async fn run_sfu(sfu_url: &str, session: &str, nick: &str) -> Result<()> {
     let sub_origin = moq_lite::Origin::produce();
     let mut sub_consumer = sub_origin.consume();
 
-    // Connect to the SFU
-    let url: url::Url = sfu_url.parse()?;
+    // Connect to the SFU via WebSocket (works through any HTTP reverse proxy)
+    let base: url::Url = sfu_url.parse()?;
+    let url = base.join("/av/moq/")?;
     println!("  Connecting to {url}...");
 
     let session_handle = client
