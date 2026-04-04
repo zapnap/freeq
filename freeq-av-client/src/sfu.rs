@@ -79,12 +79,12 @@ pub async fn run_sfu(sfu_url: &str, session: &str, nick: &str) -> Result<()> {
                     let path_str = path.to_string();
 
                     // Skip our own broadcast to avoid feedback loop
-                    if path_str == our_name {
+                    if path_str == our_name || path_str.ends_with(&format!("/{}", our_name.split('/').last().unwrap_or(""))) {
                         tracing::debug!("Skipping own broadcast: {path_str}");
                         continue;
                     }
 
-                    println!("  + Broadcast announced: {path_str}");
+                    println!("  + Broadcast announced: {path_str} (subscribing...)");
 
                     // Wrap in RemoteBroadcast which reads the hang catalog
                     let ab = audio_for_playback.clone();
