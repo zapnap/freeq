@@ -228,6 +228,9 @@ pub enum S2sMessage {
         /// Whether this user is an operator on their home server.
         #[serde(default)]
         is_op: bool,
+        /// Actor class: "human", "agent", or "external_agent".
+        #[serde(default)]
+        actor_class: Option<String>,
         origin: String,
     },
 
@@ -394,6 +397,9 @@ pub struct SyncNick {
     #[serde(default)]
     pub is_op: bool,
     pub did: Option<String>,
+    /// Actor class: "human", "agent", or "external_agent".
+    #[serde(default)]
+    pub actor_class: Option<String>,
 }
 
 /// Channel info for sync.

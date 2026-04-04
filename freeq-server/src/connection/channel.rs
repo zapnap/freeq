@@ -390,6 +390,8 @@ pub(super) fn handle_join(
         .get(channel)
         .map(|ch| ch.ops.contains(session_id))
         .unwrap_or(false);
+    let actor_class = state.session_actor_class.lock().get(session_id)
+        .map(|c| c.to_string());
     s2s_broadcast(
         state,
         crate::s2s::S2sMessage::Join {
@@ -399,6 +401,7 @@ pub(super) fn handle_join(
             did: did.map(|d| d.to_string()),
             handle,
             is_op: user_is_op,
+            actor_class,
             origin: origin.clone(),
         },
     );

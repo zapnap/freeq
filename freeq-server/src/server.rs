@@ -188,6 +188,8 @@ pub struct RemoteMember {
     pub handle: Option<String>,
     /// Whether this user is op on their home server.
     pub is_op: bool,
+    /// Actor class: "human", "agent", or "external_agent".
+    pub actor_class: Option<String>,
 }
 
 /// A stored message for channel history replay.
@@ -2270,6 +2272,7 @@ pub(crate) async fn process_s2s_message(
             did,
             handle,
             is_op: _, // Intentionally ignored — op status derived locally (C-2)
+            actor_class,
             origin,
             ..
         } => {
@@ -2343,11 +2346,17 @@ pub(crate) async fn process_s2s_message(
                         did: did.clone(),
                         handle: handle.clone(),
                         is_op: actual_is_op,
+                        actor_class: actor_class.clone(),
                     },
                 );
             }
 
-            let line = format!(":{nick}!{nick}@s2s JOIN {channel}\r\n");
+            // Include actor_class tag for tag-capable clients
+            let line = if let Some(ref ac) = actor_class {
+                format!("@+freeq.at/actor-class={ac} :{nick}!{nick}@s2s JOIN {channel}\r\n")
+            } else {
+                format!(":{nick}!{nick}@s2s JOIN {channel}\r\n")
+            };
             deliver_to_channel(state, &channel, &line);
             send_names_update(state, &channel);
         }
@@ -2559,6 +2568,7 @@ pub(crate) async fn process_s2s_message(
                 let n2s = state.nick_to_session.lock();
 
                 let dids = state.session_dids.lock();
+                let actor_classes = state.session_actor_class.lock();
                 let channel_info: Vec<crate::s2s::ChannelInfo> = channels
                     .iter()
                     .map(|(name, ch)| {
@@ -2571,10 +2581,14 @@ pub(crate) async fn process_s2s_message(
                             .members
                             .iter()
                             .filter_map(|sid| {
-                                n2s.get_nick(sid).map(|n| crate::s2s::SyncNick {
-                                    nick: n.to_string(),
-                                    is_op: ch.ops.contains(sid),
-                                    did: dids.get(sid).cloned(),
+                                n2s.get_nick(sid).map(|n| {
+                                    let ac = actor_classes.get(sid).map(|c| c.to_string());
+                                    crate::s2s::SyncNick {
+                                        nick: n.to_string(),
+                                        is_op: ch.ops.contains(sid),
+                                        did: dids.get(sid).cloned(),
+                                        actor_class: ac,
+                                    }
                                 })
                             })
                             .collect();
@@ -2710,6 +2724,7 @@ pub(crate) async fn process_s2s_message(
                                     did: ni.did.clone(),
                                     handle: None,
                                     is_op: actual_is_op,
+                                    actor_class: ni.actor_class.clone(),
                                 },
                             );
                         }
@@ -2722,6 +2737,7 @@ pub(crate) async fn process_s2s_message(
                                     did: None,
                                     handle: None,
                                     is_op: false,
+                                    actor_class: None,
                                 },
                             );
                         }
@@ -3539,6 +3555,7 @@ mod s2s_adversarial_tests {
                 did: None,
                 handle: None,
                 is_op,
+                actor_class: None,
             });
         }
     }
@@ -3562,6 +3579,7 @@ mod s2s_adversarial_tests {
             did: None,
             handle: None,
             is_op: true,
+            actor_class: None,
             origin: PEER.to_string(),
         }).await;
 
@@ -3856,6 +3874,7 @@ mod s2s_adversarial_tests {
             did: None,
             handle: None,
             is_op: false,
+            actor_class: None,
             origin: PEER.to_string(),
         }).await;
 
@@ -3905,6 +3924,78 @@ mod s2s_adversarial_tests {
         }
         assert!(count <= 100,
             "S2S rate limit breached: received {count} messages (limit 100/sec)");
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // S2S JOIN: actor_class propagation
+    // ═══════════════════════════════════════════════════════════
+
+    #[tokio::test]
+    async fn s2s_join_actor_class_stored_on_remote_member() {
+        let state = test_state();
+        let mgr = test_manager();
+        setup_authenticated_peer(&state, &mgr).await;
+        setup_channel(&state, "#agenttest");
+
+        process_s2s_message(&state, &mgr, PEER, S2sMessage::Join {
+            event_id: format!("{PEER}:agent1"),
+            nick: "testbot".to_string(),
+            channel: "#agenttest".to_string(),
+            did: None,
+            handle: None,
+            is_op: false,
+            actor_class: Some("agent".to_string()),
+            origin: PEER.to_string(),
+        }).await;
+
+        let channels = state.channels.lock();
+        let ch = channels.get("#agenttest").unwrap();
+        let rm = ch.remote_members.get("testbot").expect("remote member should exist");
+        assert_eq!(rm.actor_class.as_deref(), Some("agent"),
+            "Remote member should have actor_class=agent");
+    }
+
+    #[tokio::test]
+    async fn s2s_join_actor_class_delivered_to_local_members() {
+        let state = test_state();
+        let mgr = test_manager();
+        setup_authenticated_peer(&state, &mgr).await;
+        setup_channel(&state, "#agentdeliver");
+
+        // Add a local member to receive the JOIN
+        let (tx, mut rx) = mpsc::channel(16);
+        state.connections.lock().insert("local-sess".to_string(), tx);
+        state.nick_to_session.lock().insert("localuser", "local-sess");
+        state.channels.lock().get_mut("#agentdeliver").unwrap()
+            .members.insert("local-sess".to_string());
+        state.cap_message_tags.lock().insert("local-sess".to_string());
+
+        // Remote agent joins
+        process_s2s_message(&state, &mgr, PEER, S2sMessage::Join {
+            event_id: format!("{PEER}:agent2"),
+            nick: "remotebot".to_string(),
+            channel: "#agentdeliver".to_string(),
+            did: None,
+            handle: None,
+            is_op: false,
+            actor_class: Some("agent".to_string()),
+            origin: PEER.to_string(),
+        }).await;
+
+        // Local member should receive JOIN with actor-class tag
+        let mut found_join = false;
+        while let Ok(Some(msg)) = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            rx.recv(),
+        ).await {
+            if msg.contains("JOIN") && msg.contains("remotebot") {
+                assert!(msg.contains("+freeq.at/actor-class=agent"),
+                    "JOIN should include actor-class tag, got: {msg}");
+                found_join = true;
+                break;
+            }
+        }
+        assert!(found_join, "Local member should receive JOIN for remote agent");
     }
 
     // ═══════════════════════════════════════════════════════════
