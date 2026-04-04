@@ -10,7 +10,7 @@ use iroh_live::media::{
     codec::AudioCodec,
     format::AudioPreset,
     publish::LocalBroadcast,
-    subscribe::{MediaTracks, RemoteBroadcast},
+    subscribe::RemoteBroadcast,
 };
 
 /// Connect to the SFU, publish mic audio, and subscribe to other participants.
@@ -86,21 +86,20 @@ pub async fn run_sfu(sfu_url: &str, session: &str, nick: &str) -> Result<()> {
 
                     println!("  + Broadcast announced: {path_str} (subscribing...)");
 
-                    // Wrap in RemoteBroadcast which reads the hang catalog
+                    // Subscribe to audio only (skip video — native client is audio-only)
                     let ab = audio_for_playback.clone();
                     let ps = path_str.clone();
                     tokio::spawn(async move {
                         match RemoteBroadcast::new(&ps, broadcast_consumer).await {
                             Ok(remote) => {
-                                match remote.media(&ab, Default::default()).await {
-                                    Ok(tracks) => {
-                                        if tracks.audio.is_some() {
-                                            println!("  ~ Receiving audio from {ps}");
-                                        }
-                                        // Keep tracks alive until session ends
+                                match remote.audio(&ab).await {
+                                    Ok(audio_track) => {
+                                        println!("  ~ Receiving audio from {ps}");
+                                        // Keep track alive until session ends
+                                        let _track = audio_track;
                                         tokio::signal::ctrl_c().await.ok();
                                     }
-                                    Err(e) => tracing::warn!(%ps, "Failed to subscribe to media: {e}"),
+                                    Err(e) => tracing::warn!(%ps, "Failed to subscribe to audio: {e}"),
                                 }
                             }
                             Err(e) => tracing::warn!(%ps, "Failed to read catalog: {e}"),
