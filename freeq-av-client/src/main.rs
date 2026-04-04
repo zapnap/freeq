@@ -1,10 +1,10 @@
 //! freeq-av: Native audio client for freeq AV sessions.
 //!
-//! Joins an iroh-live room by ticket and publishes/subscribes audio.
-//! Usage:
-//!   freeq-av room                    # Create a room, print ticket
-//!   freeq-av join <TICKET>           # Join an existing room
-//!   freeq-av call <TICKET>           # Bidirectional call (create + join)
+//! Supports two modes:
+//! - Room mode: peer-to-peer via iroh-live Rooms (local network)
+//! - SFU mode: via MoQ through the SFU (works across NAT, interops with browser)
+
+mod sfu;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -52,6 +52,18 @@ enum Command {
         #[arg(long)]
         join: bool,
     },
+    /// Connect to SFU via MoQ (works across NAT, interops with browser)
+    Sfu {
+        /// SFU URL (e.g. https://staging.freeq.at)
+        #[arg(short, long)]
+        url: String,
+        /// Session ID to join
+        #[arg(short, long, default_value = "default")]
+        session: String,
+        /// Display name / nick
+        #[arg(short, long, default_value = "freeq-av-user")]
+        name: String,
+    },
 }
 
 #[tokio::main]
@@ -61,6 +73,7 @@ async fn main() -> Result<()> {
             tracing_subscriber::EnvFilter::from_default_env()
                 .add_directive("freeq_av=info".parse()?)
                 .add_directive("iroh_live=info".parse()?)
+                .add_directive("moq=info".parse()?)
                 .add_directive("warn".parse()?),
         )
         .init();
@@ -75,6 +88,7 @@ async fn main() -> Result<()> {
             run_room(name, Some(ticket)).await
         }
         Command::Server { url, channel, name, join } => run_server_session(&url, &channel, &name, join).await,
+        Command::Sfu { url, session, name } => sfu::run_sfu(&url, &session, &name).await,
     }
 }
 
