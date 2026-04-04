@@ -122,11 +122,12 @@
         return;
       }
 
-      // Set up MoQ publish — use "microphone" source (audio only)
+      // Set up MoQ publish — "camera" source captures audio+video via the component
+      // (the moq-publish component doesn't support a "microphone"-only source)
       const pubName = `${session}/${nick}`;
       publish.setAttribute('url', moqOrigin);
       publish.setAttribute('name', pubName);
-      publish.setAttribute('source', 'microphone');
+      publish.setAttribute('source', 'camera');
       console.log('[call] Publishing:', pubName, 'to', moqOrigin);
 
       // Set up MoQ watch — subscribe to session namespace
