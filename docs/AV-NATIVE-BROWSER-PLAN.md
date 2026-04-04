@@ -18,16 +18,18 @@ Also need to expose SFU port (4443 internal → 30443 external) via Miren node_p
 
 - [ ] Open staging.freeq.at in two browsers
 - [ ] Start voice session, both join
-- [ ] Both click Audio → call page opens
-- [ ] Verify audio flows between browsers through SFU
+- [ ] Both click Audio → call page opens via /av/call
+- [ ] Verify audio flows between browsers through SFU (via WSS /av/moq)
 
 ## Step 3: Refactor native client to connect via MoQ
 
-- [ ] Add moq-native + moq-relay deps to freeq-av-client
-- [ ] New `sfu` subcommand: connect to SFU endpoint via moq_native::Client
-- [ ] Publish mic audio as MoQ broadcast: `{session}/{nick}/audio`
-- [ ] Subscribe to other participants' broadcasts
-- [ ] Keep iroh-live AudioBackend for capture/playback (just swap transport)
+- [x] Add moq-native + moq-relay + moq-lite + hang deps to freeq-av-client
+- [x] New `sfu` subcommand: connect to SFU endpoint via moq_native::Client
+- [x] WebSocket transport (WSS) works through Miren's HTTP proxy
+- [x] Publish broadcast + subscribe to other broadcasts via MoQ cluster
+- [x] TESTED: native client connects, publishes, receives broadcast announcements
+- [ ] Pipe iroh-live AudioBackend audio → MoQ track frames (audio encoding bridge)
+- [ ] Receive + decode remote MoQ audio tracks → play through AudioBackend
 
 ## Step 4: Wire session to SFU endpoint
 
