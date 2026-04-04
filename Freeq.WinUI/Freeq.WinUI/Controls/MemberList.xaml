@@ -16,7 +16,7 @@
                     <TextBlock x:Name="OpsHeader" FontSize="{StaticResource SectionHeaderFontSize}"
                                FontWeight="Bold" Foreground="{StaticResource FgDimBrush}"
                                Padding="8,4,8,6" CharacterSpacing="120" />
-                    <ListView x:Name="OpsList" SelectionMode="None" IsItemClickEnabled="False">
+                    <ListView x:Name="OpsList" SelectionMode="None" IsItemClickEnabled="True" ItemClick="OnMemberClick">
                         <ListView.ItemContainerStyle>
                             <Style TargetType="ListViewItem">
                                 <Setter Property="Padding" Value="0" />
@@ -61,8 +61,11 @@
                                                Foreground="{x:Bind NickBrush}"
                                                VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
 
+                                    <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                                        <TextBlock Text="away" FontSize="10" Foreground="{StaticResource WarningBrush}"
+                                                   Visibility="{x:Bind local:MemberList.AwayToVisibility(Status)}" />
                                     <!-- Verified: teal circle badge -->
-                                    <Border Grid.Column="3"
+                                    <Border
                                             Width="16" Height="16" CornerRadius="8"
                                             Background="{StaticResource AccentDimBrush}"
                                             VerticalAlignment="Center"
@@ -71,6 +74,7 @@
                                                    Foreground="{StaticResource AccentBrush}"
                                                    HorizontalAlignment="Center" VerticalAlignment="Center" />
                                     </Border>
+                                    </StackPanel>
                                 </Grid>
                             </DataTemplate>
                         </ListView.ItemTemplate>
@@ -82,7 +86,7 @@
                     <TextBlock x:Name="VoicedHeader" FontSize="{StaticResource SectionHeaderFontSize}"
                                FontWeight="Bold" Foreground="{StaticResource FgDimBrush}"
                                Padding="8,4,8,6" CharacterSpacing="120" />
-                    <ListView x:Name="VoicedList" SelectionMode="None" IsItemClickEnabled="False">
+                    <ListView x:Name="VoicedList" SelectionMode="None" IsItemClickEnabled="True" ItemClick="OnMemberClick">
                         <ListView.ItemContainerStyle>
                             <Style TargetType="ListViewItem">
                                 <Setter Property="Padding" Value="0" />
@@ -119,7 +123,10 @@
                                                FontSize="{StaticResource BodyFontSize}"
                                                Foreground="{x:Bind NickBrush}"
                                                VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                                    <Border Grid.Column="3"
+                                    <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                                    <TextBlock Text="away" FontSize="10" Foreground="{StaticResource WarningBrush}"
+                                               Visibility="{x:Bind local:MemberList.AwayToVisibility(Status)}" />
+                                    <Border
                                             Width="16" Height="16" CornerRadius="8"
                                             Background="{StaticResource AccentDimBrush}"
                                             VerticalAlignment="Center"
@@ -128,6 +135,7 @@
                                                    Foreground="{StaticResource AccentBrush}"
                                                    HorizontalAlignment="Center" VerticalAlignment="Center" />
                                     </Border>
+                                    </StackPanel>
                                 </Grid>
                             </DataTemplate>
                         </ListView.ItemTemplate>
@@ -139,7 +147,7 @@
                     <TextBlock x:Name="MembersHeader" FontSize="{StaticResource SectionHeaderFontSize}"
                                FontWeight="Bold" Foreground="{StaticResource FgDimBrush}"
                                Padding="8,4,8,6" CharacterSpacing="120" />
-                    <ListView x:Name="MembersList" SelectionMode="None" IsItemClickEnabled="False">
+                    <ListView x:Name="MembersList" SelectionMode="None" IsItemClickEnabled="True" ItemClick="OnMemberClick">
                         <ListView.ItemContainerStyle>
                             <Style TargetType="ListViewItem">
                                 <Setter Property="Padding" Value="0" />
@@ -171,7 +179,10 @@
                                                FontSize="{StaticResource BodyFontSize}"
                                                Foreground="{x:Bind NickBrush}"
                                                VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                                    <Border Grid.Column="2"
+                                    <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                                    <TextBlock Text="away" FontSize="10" Foreground="{StaticResource WarningBrush}"
+                                               Visibility="{x:Bind local:MemberList.AwayToVisibility(Status)}" />
+                                    <Border
                                             Width="16" Height="16" CornerRadius="8"
                                             Background="{StaticResource AccentDimBrush}"
                                             VerticalAlignment="Center"
@@ -180,6 +191,7 @@
                                                    Foreground="{StaticResource AccentBrush}"
                                                    HorizontalAlignment="Center" VerticalAlignment="Center" />
                                     </Border>
+                                    </StackPanel>
                                 </Grid>
                             </DataTemplate>
                         </ListView.ItemTemplate>

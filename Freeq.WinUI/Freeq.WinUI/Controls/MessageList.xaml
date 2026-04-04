@@ -8,7 +8,8 @@
 
     <Grid Background="{StaticResource BgBrush}">
         <ListView x:Name="MessagesListView" SelectionMode="None"
-                  Padding="0,8,0,8">
+                  Padding="0,8,0,8"
+                  RightTapped="OnMessageRightTapped">
             <ListView.ItemContainerStyle>
                 <Style TargetType="ListViewItem">
                     <Setter Property="Padding" Value="0" />
@@ -18,7 +19,8 @@
             </ListView.ItemContainerStyle>
             <ListView.ItemTemplate>
                 <DataTemplate x:DataType="models:MessageModel">
-                    <Grid Padding="16,6,16,6">
+                    <!-- Tag="{x:Bind Self}" makes the MessageModel accessible from RightTapped -->
+                    <Grid Padding="{x:Bind local:MessageList.GetMessagePadding(), Mode=OneTime}" Tag="{x:Bind Self}">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
@@ -28,7 +30,10 @@
                         <Border Grid.Column="0" Width="36" Height="36"
                                 CornerRadius="18" VerticalAlignment="Top"
                                 Margin="0,2,12,0"
-                                Background="{x:Bind AvatarBackgroundBrush}">
+                            Background="{x:Bind AvatarBackgroundBrush}"
+                            Tapped="OnUserTapped"
+                            Tag="{x:Bind Self}"
+                            Visibility="{x:Bind local:MessageList.GetAvatarVisibility(), Mode=OneTime}">
                             <TextBlock Text="{x:Bind NickInitial}" FontSize="14" FontWeight="Bold"
                                        Foreground="{x:Bind NickBrush}"
                                        HorizontalAlignment="Center" VerticalAlignment="Center" />
@@ -40,9 +45,11 @@
                                 <!-- Nick: hash-colored -->
                                 <TextBlock Text="{x:Bind Nick}" FontSize="14" FontWeight="SemiBold"
                                            Foreground="{x:Bind NickBrush}"
-                                           VerticalAlignment="Center" />
+                                           VerticalAlignment="Center"
+                                           Tapped="OnUserTapped"
+                                           Tag="{x:Bind Self}" />
 
-                                <!-- Verified DID badge: pill chip with Cascadia Code DID string -->
+                                <!-- Verified DID badge -->
                                 <Border Background="{StaticResource AccentDimBrush}"
                                         CornerRadius="{StaticResource SmallRadius}"
                                         Padding="5,2,5,2"
@@ -65,18 +72,53 @@
                                            Foreground="{StaticResource FgDimBrush}"
                                            VerticalAlignment="Center" />
 
-                                <!-- Edited indicator -->
+                                <!-- Edited indicator — Mode=OneWay because IsEdited can change -->
                                 <TextBlock Text="(edited)" FontSize="{StaticResource TinyFontSize}"
                                            Foreground="{StaticResource FgDimBrush}"
                                            VerticalAlignment="Center"
-                                           Visibility="{x:Bind local:MessageList.BoolToVis(IsEdited)}" />
+                                           Visibility="{x:Bind local:MessageList.BoolToVis(IsEdited), Mode=OneWay}" />
                             </StackPanel>
 
-                            <!-- Message text -->
-                            <TextBlock Text="{x:Bind Content}" FontSize="{StaticResource BodyFontSize}"
-                                       Foreground="{StaticResource FgBrush}"
-                                       TextWrapping="Wrap" Margin="0,2,0,0"
-                                       IsTextSelectionEnabled="True" />
+                            <!-- Markdown/media aware message renderer -->
+                            <local:MessageContentView Message="{x:Bind Mode=OneWay}"
+                                                     ServerUrl="{x:Bind local:MessageList.GetServerUrl(), Mode=OneTime}"
+                                                     AutoLoadExternalMedia="{x:Bind local:MessageList.GetAutoLoadExternalMedia(), Mode=OneTime}"
+                                                     Margin="0,2,0,0"
+                                                     Visibility="{x:Bind local:MessageList.BoolToVisInverse(IsDeleted), Mode=OneWay}" />
+
+                            <!-- Deleted message placeholder — Mode=OneWay -->
+                            <TextBlock Text="This message was deleted."
+                                       FontSize="{StaticResource BodyFontSize}"
+                                       Foreground="{StaticResource FgDimBrush}"
+                                       FontStyle="Italic"
+                                       Margin="0,2,0,0"
+                                       Visibility="{x:Bind local:MessageList.BoolToVis(IsDeleted), Mode=OneWay}" />
+
+                            <!-- Reactions -->
+                            <ItemsControl ItemsSource="{x:Bind Reactions, Mode=OneWay}"
+                                          Visibility="{x:Bind local:MessageList.BoolToVis(HasReactions), Mode=OneWay}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <ItemsWrapGrid Orientation="Horizontal" />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate x:DataType="models:ReactionSummary">
+                                        <Border Background="{StaticResource BgTertiaryBrush}"
+                                                BorderBrush="{StaticResource BorderBrush}"
+                                                BorderThickness="1"
+                                                CornerRadius="999"
+                                                Margin="0,6,6,0"
+                                                Padding="8,2"
+                                                Tapped="OnReactionTapped"
+                                                Tag="{x:Bind Self}">
+                                            <TextBlock Text="{x:Bind Label}"
+                                                       FontSize="{StaticResource TinyFontSize}"
+                                                       Foreground="{StaticResource FgBrush}" />
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
                         </StackPanel>
                     </Grid>
                 </DataTemplate>

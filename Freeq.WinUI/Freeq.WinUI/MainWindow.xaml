@@ -11,8 +11,37 @@
     </Window.SystemBackdrop>
 
     <Grid Background="{StaticResource BgBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Spacing="0">
+            <Border x:Name="ReconnectBanner" Background="#FFF6D46B" Padding="12,8" Visibility="Collapsed">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock x:Name="ReconnectBannerText" Foreground="#FF1A1A1A" TextWrapping="Wrap" />
+                    <Button Grid.Column="1" Content="Dismiss" Click="OnDismissReconnectBanner" Margin="12,0,0,0" />
+                </Grid>
+            </Border>
+
+            <Border x:Name="MotdBanner" Background="#FF2A323E" Padding="12,8" Visibility="Collapsed">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock x:Name="MotdBannerText" Foreground="White" TextWrapping="Wrap" />
+                    <Button Grid.Column="1" Content="Dismiss" Click="OnDismissMotdBanner" Margin="12,0,0,0" />
+                </Grid>
+            </Border>
+        </StackPanel>
+
         <!-- Main three-pane layout -->
-        <Grid x:Name="MainLayout" Visibility="Collapsed">
+        <Grid x:Name="MainLayout" Grid.Row="1" Visibility="Collapsed">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" />
@@ -40,6 +69,14 @@
         </Grid>
 
         <!-- Connect Dialog (overlay) -->
-        <controls:ConnectDialog x:Name="ConnectDialogControl" />
+        <controls:ConnectDialog Grid.Row="1" x:Name="ConnectDialogControl" />
+
+        <Border x:Name="InAppToast" Grid.Row="1"
+                HorizontalAlignment="Center" VerticalAlignment="Bottom"
+                Margin="0,0,0,16"
+                Background="#FF232833" CornerRadius="8"
+                Padding="12,8" Visibility="Collapsed">
+            <TextBlock x:Name="InAppToastText" Foreground="White" />
+        </Border>
     </Grid>
 </Window>

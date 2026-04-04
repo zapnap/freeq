@@ -109,6 +109,12 @@ public sealed partial class ConnectDialog : UserControl
         AtNickInput.Text = nick;
     }
 
+    private void OnAtNickChanged(object sender, TextChangedEventArgs e)
+    {
+        if (AtNickInput.FocusState == FocusState.Unfocused) return;
+        _nickManuallyEdited = !string.IsNullOrWhiteSpace(AtNickInput.Text);
+    }
+
     private void OnAdvancedToggle(object sender, RoutedEventArgs e)
     {
         _advancedVisible = !_advancedVisible;

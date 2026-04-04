@@ -35,6 +35,12 @@ public class IrcClient : IDisposable
 
     public event Action<ConnectionState>? StateChanged;
     public event Action<string, string, string, string?, DateTimeOffset?>? MessageReceived; // channel, nick, message, msgid, serverTime
+    public event Action<string, string, string, DateTimeOffset?>? MessageEdited;            // channel, originalMsgId, newContent, serverTime
+    public event Action<string, string>? MessageDeleted;                                    // channel, msgId
+    public event Action<string, string, string, string?>? ReactionReceived;                 // channel, nick, emoji, targetMsgId
+    public event Action<string, string, bool>? TypingChanged;                              // channel, nick, isTyping
+    public event Action<string, bool, string?>? AwayChanged;                               // nick, isAway, message
+    public event Action<bool, string?>? SelfAwayStateChanged;                              // isAway, message
     public event Action<string, string>? JoinReceived; // channel, nick
     public event Action<string, string, string>? PartReceived; // channel, nick, reason
     public event Action<string, string>? QuitReceived; // nick, reason
@@ -44,6 +50,14 @@ public class IrcClient : IDisposable
     public event Action<string, string?>? AccountChanged; // nick, account (null = logged out)
     public event Action<string>? RawReceived;
     public event Action<string>? ErrorReceived;
+    /// <summary>Fired for each RPL_LIST (322) entry: channel, memberCount, topic.</summary>
+    public event Action<string, int, string>? ListEntryReceived;
+    /// <summary>Fired when RPL_LISTEND (323) is received.</summary>
+    public event Action? ListEndReceived;
+    /// <summary>Fired for each PINS response line: channel, msgid, pinnedBy, pinnedAt.</summary>
+    public event Action<string, string, string, long>? PinEntryReceived;
+    /// <summary>Fired once when MOTD (375/372/376) is completed for this session.</summary>
+    public event Action<string>? MotdReceived;
 
     // Nick → account (DID) mapping, populated from extended-join and ACCOUNT messages
     private readonly ConcurrentDictionary<string, string> _accounts = new(StringComparer.OrdinalIgnoreCase);
@@ -63,6 +77,7 @@ public class IrcClient : IDisposable
     ];
 
     private readonly HashSet<string> _ackedCaps = new();
+    private readonly List<string> _motdLines = [];
 
     public string? GetAccount(string nick) =>
         _accounts.TryGetValue(nick, out var account) ? account : null;
@@ -125,6 +140,33 @@ public class IrcClient : IDisposable
         Send($"PRIVMSG {target} :{message}");
     }
 
+    /// <summary>Request the server channel list (triggers ListEntryReceived / ListEndReceived).</summary>
+    public void RequestList() => Send("LIST");
+
+    /// <summary>Set the topic for a channel.</summary>
+    public void SetTopic(string channel, string topic) => Send($"TOPIC {channel} :{topic}");
+
+    /// <summary>Request pinned messages for a channel (triggers PinEntryReceived).</summary>
+    public void RequestPins(string channel) => Send($"PINS {channel}");
+
+    /// <summary>Send a message edit. The server patches the original message in history.</summary>
+    public void SendEditMessage(string target, string originalMsgId, string newContent)
+    {
+        Send($"@+draft/edit={originalMsgId} PRIVMSG {target} :{newContent}");
+    }
+
+    /// <summary>Soft-delete a message by msgid via TAGMSG.</summary>
+    public void SendDeleteMessage(string target, string msgId)
+    {
+        Send($"@+draft/delete={msgId} TAGMSG {target} :");
+    }
+
+    /// <summary>Send typing indicator to a channel. active=true while typing, false when done.</summary>
+    public void SendTyping(string channel, bool active)
+    {
+        Send($"@+typing={(active ? "active" : "done")} TAGMSG {channel} :");
+    }
+
     public void JoinChannel(string channel)
     {
         Send($"JOIN {channel}");
@@ -141,8 +183,10 @@ public class IrcClient : IDisposable
         _saslDid = null;
         _saslPdsUrl = null;
         _saslMethod = null;
+        Did = null;
         _ackedCaps.Clear();
         _accounts.Clear();
+        _motdLines.Clear();
         _cts?.Cancel();
         _ws?.Dispose();
         _ws = null;
@@ -256,17 +300,11 @@ public class IrcClient : IDisposable
                 break;
 
             case "PRIVMSG":
-                if (msg.Params.Length >= 2)
-                {
-                    var nick = msg.Prefix?.Split('!')[0] ?? "unknown";
-                    // When echo-message is acked, let server echoes through — they carry the real msgid.
-                    // When echo-message is not acked, drop self-messages (shouldn't arrive, but defensive).
-                    if (!_ackedCaps.Contains("echo-message") && nick.Equals(Nick, StringComparison.OrdinalIgnoreCase))
-                        break;
-                    var msgid = msg.Tags.TryGetValue("msgid", out var mid) ? mid : null;
-                    DateTimeOffset? serverTime = msg.Tags.TryGetValue("time", out var timeStr) && DateTimeOffset.TryParse(timeStr, null, System.Globalization.DateTimeStyles.RoundtripKind, out var dto) ? dto : null;
-                    MessageReceived?.Invoke(msg.Params[0], nick, msg.Params[1], msgid, serverTime);
-                }
+                HandlePrivmsg(msg);
+                break;
+
+            case "TAGMSG":
+                HandleTagMsg(msg);
                 break;
 
             case "JOIN":
@@ -321,6 +359,35 @@ public class IrcClient : IDisposable
                 break;
             }
 
+            case "322": // RPL_LIST: <client> <channel> <count> :<topic>
+                if (msg.Params.Length >= 3)
+                {
+                    var listTopic = msg.Params.Length >= 4 ? msg.Params[3] : "";
+                    _ = int.TryParse(msg.Params[2], out var listCount);
+                    ListEntryReceived?.Invoke(msg.Params[1], listCount, listTopic);
+                }
+                break;
+
+            case "323": // RPL_LISTEND
+                ListEndReceived?.Invoke();
+                break;
+
+            case "NOTICE":
+                HandleNotice(msg);
+                break;
+
+            case "AWAY":
+            {
+                // away-notify: :nick!user@host AWAY [:reason]
+                var awayNick = msg.Prefix?.Split('!')[0] ?? "";
+                if (!string.IsNullOrWhiteSpace(awayNick))
+                {
+                    var awayMessage = msg.Params.Length >= 1 ? msg.Params[0] : null;
+                    AwayChanged?.Invoke(awayNick, !string.IsNullOrWhiteSpace(awayMessage), awayMessage);
+                }
+                break;
+            }
+
             case "332": // RPL_TOPIC
                 if (msg.Params.Length >= 3)
                     TopicReceived?.Invoke(msg.Params[1], msg.Params[2]);
@@ -343,7 +410,6 @@ public class IrcClient : IDisposable
                 if (msg.Params.Length >= 7)
                 {
                     var whoNick = msg.Params[5];
-                    var whoFlags = msg.Params[6]; // H(ere)/G(one) + optional *@%+, plus 'r' for registered
                     // Check host for freeq DID cloaking: freeq/plc/xxxxx or account from extended info
                     var whoHost = msg.Params[3];
                     if (whoHost.StartsWith("freeq/plc/", StringComparison.OrdinalIgnoreCase) ||
@@ -362,6 +428,14 @@ public class IrcClient : IDisposable
             case "315": // RPL_ENDOFWHO
                 // Refresh member list to pick up newly discovered accounts
                 AccountChanged?.Invoke("*", null); // Signal refresh
+                break;
+
+            case "305": // RPL_UNAWAY
+                SelfAwayStateChanged?.Invoke(false, null);
+                break;
+
+            case "306": // RPL_NOWAWAY
+                SelfAwayStateChanged?.Invoke(true, null);
                 break;
 
             case "366": // RPL_ENDOFNAMES — send WHO to discover accounts, request history
@@ -412,6 +486,97 @@ public class IrcClient : IDisposable
                 Send("CAP END");
                 ErrorReceived?.Invoke("SASL authentication failed");
                 break;
+
+            case "375": // RPL_MOTDSTART
+                _motdLines.Clear();
+                break;
+
+            case "372": // RPL_MOTD
+                if (msg.Params.Length >= 2)
+                {
+                    var motdLine = msg.Params[1].TrimStart('-', ' ');
+                    if (!string.IsNullOrWhiteSpace(motdLine))
+                        _motdLines.Add(motdLine);
+                }
+                break;
+
+            case "376": // RPL_ENDOFMOTD
+            case "422": // ERR_NOMOTD
+                if (_motdLines.Count > 0)
+                    MotdReceived?.Invoke(string.Join("\n", _motdLines));
+                _motdLines.Clear();
+                break;
+        }
+    }
+
+    private void HandlePrivmsg(IrcMessage msg)
+    {
+        if (msg.Params.Length < 2) return;
+
+        var nick = msg.Prefix?.Split('!')[0] ?? "unknown";
+
+        // When echo-message is acked, let server echoes through — they carry the real msgid.
+        // When echo-message is not acked, drop self-messages.
+        if (!_ackedCaps.Contains("echo-message") && nick.Equals(Nick, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var msgid = msg.Tags.TryGetValue("msgid", out var mid) ? mid : null;
+        DateTimeOffset? serverTime = msg.Tags.TryGetValue("time", out var timeStr)
+            && DateTimeOffset.TryParse(timeStr, null, System.Globalization.DateTimeStyles.RoundtripKind, out var dto)
+            ? dto : null;
+
+        // Message edit: PRIVMSG with +draft/edit tag carries the original message ID
+        if (msg.Tags.TryGetValue("+draft/edit", out var editOriginalMsgId))
+        {
+            MessageEdited?.Invoke(msg.Params[0], editOriginalMsgId, msg.Params[1], serverTime);
+            return;
+        }
+
+        MessageReceived?.Invoke(msg.Params[0], nick, msg.Params[1], msgid, serverTime);
+    }
+
+    private void HandleTagMsg(IrcMessage msg)
+    {
+        if (msg.Params.Length < 1) return;
+
+        var target = msg.Params[0];
+        var nick = msg.Prefix?.Split('!')[0] ?? "unknown";
+
+        // Typing indicator: @+typing=active TAGMSG #channel :
+        if (msg.Tags.TryGetValue("+typing", out var typingVal))
+        {
+            bool isTyping = typingVal is "active" or "paused";
+            TypingChanged?.Invoke(target, nick, isTyping);
+        }
+
+        // Message deletion: @+draft/delete=<msgid> TAGMSG #channel :
+        if (msg.Tags.TryGetValue("+draft/delete", out var deleteMsgId))
+        {
+            MessageDeleted?.Invoke(target, deleteMsgId);
+        }
+
+        // Reactions: @+react=<emoji>[;+reply=<msgid>] TAGMSG <target> :
+        if (msg.Tags.TryGetValue("+react", out var emoji))
+        {
+            msg.Tags.TryGetValue("+reply", out var targetMsgId);
+            ReactionReceived?.Invoke(target, nick, emoji, targetMsgId);
+        }
+    }
+
+    private void HandleNotice(IrcMessage msg)
+    {
+        // PINS response: NOTICE <nick> :PIN <channel> <msgid> <pinned_by> <pinned_at>
+        if (msg.Params.Length < 2) return;
+        var body = msg.Params[1];
+        if (body.StartsWith("PIN ", StringComparison.Ordinal))
+        {
+            var parts = body.Split(' ', 5);
+            // parts: ["PIN", "#channel", "<msgid>", "<pinned_by>", "<pinned_at>"]
+            if (parts.Length >= 5
+                && long.TryParse(parts[4], out var pinnedAt))
+            {
+                PinEntryReceived?.Invoke(parts[1], parts[2], parts[3], pinnedAt);
+            }
         }
     }
 

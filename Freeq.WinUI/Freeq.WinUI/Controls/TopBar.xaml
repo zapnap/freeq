@@ -14,6 +14,11 @@
             <ColumnDefinition Width="*" />
             <ColumnDefinition Width="Auto" />
             <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="Auto" />
         </Grid.ColumnDefinitions>
 
         <!-- Channel icon -->
@@ -29,13 +34,62 @@
         <Border Grid.Column="2" Width="1" Height="20" Margin="12,0"
                 Background="{StaticResource BorderBrush}" VerticalAlignment="Center" />
 
-        <!-- Topic -->
-        <TextBlock Grid.Column="3" x:Name="TopicText" FontSize="{StaticResource SmallFontSize}"
-                   Foreground="{StaticResource FgDimBrush}" VerticalAlignment="Center"
-                   TextTrimming="CharacterEllipsis" />
+        <!-- Topic (clickable to edit) -->
+        <Button Grid.Column="3" x:Name="TopicButton"
+                Background="Transparent" Padding="0" MinWidth="0" MinHeight="0"
+                HorizontalAlignment="Stretch" HorizontalContentAlignment="Left"
+                VerticalAlignment="Center"
+                ToolTipService.ToolTip="Click to set topic"
+                Click="OnTopicClick">
+            <TextBlock x:Name="TopicText" FontSize="{StaticResource SmallFontSize}"
+                       Foreground="{StaticResource FgDimBrush}"
+                       TextTrimming="CharacterEllipsis" />
+        </Button>
+
+        <!-- Pins button -->
+        <Button Grid.Column="4" x:Name="PinsButton"
+                Background="Transparent" Foreground="{StaticResource FgDimBrush}"
+                Padding="8,4" MinWidth="0" MinHeight="0"
+                VerticalAlignment="Center"
+                ToolTipService.ToolTip="Pinned messages"
+                Click="OnPinsClick">
+            <TextBlock Text="&#xE718;" FontFamily="Segoe MDL2 Assets" FontSize="14"
+                       VerticalAlignment="Center" />
+        </Button>
+
+        <Button Grid.Column="5" x:Name="ChannelSettingsButton"
+                Background="Transparent" Foreground="{StaticResource FgDimBrush}"
+                Padding="8,4" MinWidth="0" MinHeight="0"
+                VerticalAlignment="Center"
+                ToolTipService.ToolTip="Channel settings"
+                Click="OnChannelSettingsClick">
+            <TextBlock Text="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="14" VerticalAlignment="Center" />
+        </Button>
+
+        <Button Grid.Column="6" x:Name="AuditButton"
+                Background="Transparent" Foreground="{StaticResource FgDimBrush}"
+                Padding="8,4" MinWidth="0" MinHeight="0"
+                VerticalAlignment="Center"
+                ToolTipService.ToolTip="Audit timeline"
+                Click="OnAuditClick">
+            <TextBlock Text="&#xE9D9;" FontFamily="Segoe MDL2 Assets" FontSize="14" VerticalAlignment="Center" />
+        </Button>
+
+        <Button Grid.Column="7" x:Name="BookmarksButton"
+                Background="Transparent" Foreground="{StaticResource FgDimBrush}"
+                Padding="8,4" MinWidth="0" MinHeight="0"
+                VerticalAlignment="Center"
+                ToolTipService.ToolTip="Bookmarks"
+                Click="OnBookmarksClick">
+            <TextBlock Text="&#xE734;" FontFamily="Segoe MDL2 Assets" FontSize="14" VerticalAlignment="Center" />
+        </Button>
+
+        <TextBlock Grid.Column="8" x:Name="E2eeIndicatorText"
+                   FontSize="11" VerticalAlignment="Center"
+                   Foreground="{StaticResource FgDimBrush}" Margin="4,0,8,0" />
 
         <!-- Member count -->
-        <Button Grid.Column="4" x:Name="MemberCountButton"
+        <Button Grid.Column="9" x:Name="MemberCountButton"
                 Background="Transparent" Foreground="{StaticResource FgDimBrush}"
                 Padding="8,4" MinWidth="0" MinHeight="0"
                 VerticalAlignment="Center" Click="OnMemberToggleClick">
@@ -48,10 +102,11 @@
         </Button>
 
         <!-- Settings gear -->
-        <Button Grid.Column="5" Content="&#xE713;" FontFamily="Segoe MDL2 Assets"
+        <Button Grid.Column="10" x:Name="SettingsButton" Content="&#xE713;" FontFamily="Segoe MDL2 Assets"
                 FontSize="14" Background="Transparent"
                 Foreground="{StaticResource FgDimBrush}"
                 Padding="8,4" MinWidth="0" MinHeight="0"
-                VerticalAlignment="Center" />
+            VerticalAlignment="Center"
+            Click="OnSettingsClick" />
     </Grid>
 </UserControl>

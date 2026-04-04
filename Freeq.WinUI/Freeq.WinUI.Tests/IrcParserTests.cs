@@ -137,4 +137,23 @@ public class IrcParserTests
         Assert.Equal("AUTHENTICATE", msg.Command);
         Assert.Equal(challenge, msg.Params[0]);
     }
+
+    [Fact]
+    public void ParseIrcMessage_TagMsg_ReactionWithReply()
+    {
+        var msg = IrcClient.ParseIrcMessage("@+react=👍;+reply=msg-123 :bob!u@h TAGMSG #freeq");
+        Assert.Equal("TAGMSG", msg.Command);
+        Assert.Equal("#freeq", msg.Params[0]);
+        Assert.Equal("👍", msg.Tags["+react"]);
+        Assert.Equal("msg-123", msg.Tags["+reply"]);
+    }
+
+    [Fact]
+    public void ParseIrcMessage_AwayNotify_WithReason()
+    {
+        var msg = IrcClient.ParseIrcMessage(":alice!u@h AWAY :stepped out");
+        Assert.Equal("AWAY", msg.Command);
+        Assert.Single(msg.Params);
+        Assert.Equal("stepped out", msg.Params[0]);
+    }
 }
