@@ -36,7 +36,7 @@ Also need to expose SFU port (4443 internal → 30443 external) via Miren node_p
 
 - [ ] Server sends SFU endpoint URL (not Room ticket) when session starts
 - [ ] Native client uses server-provided SFU address
-- [ ] Test: native + browser in same session, both hear each other
+- [x] **TESTED: native + browser audio works through SFU over WebSocket (2026-04-04)**
 
 ## Step 5: Clean up
 
