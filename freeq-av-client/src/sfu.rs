@@ -71,14 +71,19 @@ pub async fn run_sfu(sfu_url: &str, session: &str, nick: &str) -> Result<()> {
 
     // Watch for incoming broadcasts and play their audio
     let audio_for_playback = audio_backend.clone();
+    let our_name = broadcast_name.clone();
     tokio::spawn(async move {
-        // Keep track of active playback handles
-        let mut _active_tracks: Vec<MediaTracks> = Vec::new();
-
         while let Some((path, announce)) = sub_consumer.announced().await {
             match announce {
                 Some(broadcast_consumer) => {
                     let path_str = path.to_string();
+
+                    // Skip our own broadcast to avoid feedback loop
+                    if path_str == our_name {
+                        tracing::debug!("Skipping own broadcast: {path_str}");
+                        continue;
+                    }
+
                     println!("  + Broadcast announced: {path_str}");
 
                     // Wrap in RemoteBroadcast which reads the hang catalog
