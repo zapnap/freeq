@@ -28,8 +28,9 @@ Also need to expose SFU port (4443 internal → 30443 external) via Miren node_p
 - [x] WebSocket transport (WSS) works through Miren's HTTP proxy
 - [x] Publish broadcast + subscribe to other broadcasts via MoQ cluster
 - [x] TESTED: native client connects, publishes, receives broadcast announcements
-- [ ] Pipe iroh-live AudioBackend audio → MoQ track frames (audio encoding bridge)
-- [ ] Receive + decode remote MoQ audio tracks → play through AudioBackend
+- [x] Pipe iroh-live AudioBackend audio → MoQ track frames (LocalBroadcast.consume() → origin)
+- [x] Receive + decode remote MoQ audio tracks → play through AudioBackend (RemoteBroadcast)
+- [x] TESTED: native↔native audio works through SFU over WebSocket
 
 ## Step 4: Wire session to SFU endpoint
 
