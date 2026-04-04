@@ -209,6 +209,7 @@ pub fn router(state: Arc<SharedState>) -> Router {
         .route("/av/call.html", get(av_call_page))
         .route("/av/assets/{filename}", get(av_asset))
         // AV SFU WebSocket endpoint (MoQ over WebSocket for browser/native clients)
+        .route("/av/moq", get(av_moq_ws_root))
         .route("/av/moq/{*path}", get(av_moq_ws))
         // AV sessions
         .route("/api/v1/sessions", get(api_sessions_list))
@@ -2435,7 +2436,31 @@ fn html_escape(s: &str) -> String {
         .replace('\'', "&#x27;")
 }
 
-/// WebSocket MoQ endpoint — upgrades to MoQ session through the SFU cluster.
+/// WebSocket MoQ endpoint (root path) — upgrades to MoQ session through the SFU cluster.
+#[cfg(feature = "av-native")]
+async fn av_moq_ws_root(
+    ws: axum::extract::WebSocketUpgrade,
+    State(state): State<Arc<crate::server::SharedState>>,
+) -> impl IntoResponse {
+    let sfu = state.sfu_state.lock().clone();
+    match sfu {
+        Some(sfu) => ws
+            .protocols(["webtransport"])
+            .on_upgrade(move |socket| crate::av_sfu::handle_ws_moq(sfu, String::new(), socket))
+            .into_response(),
+        None => (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "SFU not initialized",
+        ).into_response(),
+    }
+}
+
+#[cfg(not(feature = "av-native"))]
+async fn av_moq_ws_root() -> impl IntoResponse {
+    (axum::http::StatusCode::SERVICE_UNAVAILABLE, "AV not enabled")
+}
+
+/// WebSocket MoQ endpoint with path — upgrades to MoQ session through the SFU cluster.
 #[cfg(feature = "av-native")]
 async fn av_moq_ws(
     ws: axum::extract::WebSocketUpgrade,
