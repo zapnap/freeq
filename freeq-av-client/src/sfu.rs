@@ -1,7 +1,8 @@
 //! SFU client — connect to freeq AV SFU via MoQ.
 //!
 //! Publishes mic audio as a MoQ broadcast and subscribes to other participants.
-//! Uses the same protocol as the browser (moq-publish/moq-watch web components).
+//! The iroh-live LocalBroadcast already produces hang-formatted MoQ broadcasts,
+//! so we wire its BroadcastConsumer directly to the MoQ origin.
 
 use anyhow::Result;
 use iroh_live::media::{
@@ -9,6 +10,7 @@ use iroh_live::media::{
     codec::AudioCodec,
     format::AudioPreset,
     publish::LocalBroadcast,
+    subscribe::{MediaTracks, RemoteBroadcast},
 };
 
 /// Connect to the SFU, publish mic audio, and subscribe to other participants.
@@ -18,13 +20,13 @@ pub async fn run_sfu(sfu_url: &str, session: &str, nick: &str) -> Result<()> {
     let broadcast_name = format!("{session}/{nick}");
     tracing::info!(%sfu_url, %broadcast_name, "Connecting to SFU via MoQ");
 
-    // Create MoQ client (QUIC, no TLS verification for self-signed SFU certs)
+    // Create MoQ client
     let mut client_config = moq_native::ClientConfig::default();
     client_config.tls.disable_verify = Some(true);
     client_config.backend = Some(moq_native::QuicBackend::Noq);
     let client = client_config.init()?;
 
-    // Set up audio capture
+    // Set up audio capture + encoding via iroh-live
     let broadcast = LocalBroadcast::new();
     let audio_backend = AudioBackend::default();
     audio_backend.set_aec_enabled(false);
@@ -39,30 +41,24 @@ pub async fn run_sfu(sfu_url: &str, session: &str, nick: &str) -> Result<()> {
     broadcast.audio().set(mic, AudioCodec::Opus, [AudioPreset::Hq])?;
     println!("  Microphone active (Opus).");
 
-    // Create our publishing origin — announce our broadcast to the SFU
+    // LocalBroadcast already produces hang-formatted MoQ broadcasts.
+    // Wire its BroadcastConsumer directly to the MoQ origin.
     let origin = moq_lite::Origin::produce();
+    origin.publish_broadcast(&broadcast_name, broadcast.consume());
+    tracing::info!(%broadcast_name, "Publishing audio broadcast via MoQ");
 
-    // Create a MoQ broadcast with an audio track
-    let moq_broadcast = moq_lite::BroadcastProducer::new();
-    // Enable dynamic track creation so the SFU can request tracks
-    moq_broadcast.dynamic();
-
-    // Publish our broadcast under the session/nick namespace
-    origin.publish_broadcast(&broadcast_name, moq_broadcast.consume());
-    tracing::info!(%broadcast_name, "Publishing audio broadcast");
-
-    // Create subscription origin — receive other participants' broadcasts
+    // Subscription origin — receives other participants' broadcasts
     let sub_origin = moq_lite::Origin::produce();
     let mut sub_consumer = sub_origin.consume();
 
-    // Connect to the SFU via WebSocket (works through any HTTP reverse proxy)
+    // Connect to the SFU via WebSocket
     let base: url::Url = sfu_url.parse()?;
     let url = base.join("/av/moq")?;
     println!("  Connecting to {url}...");
 
     let session_handle = client
-        .with_publish(origin.consume()) // server subscribes to our broadcasts (OriginConsumer)
-        .with_consume(sub_origin)       // server announces others' broadcasts to us (OriginProducer)
+        .with_publish(origin.consume())
+        .with_consume(sub_origin)
         .connect(url)
         .await?;
 
@@ -70,35 +66,45 @@ pub async fn run_sfu(sfu_url: &str, session: &str, nick: &str) -> Result<()> {
     println!("  Publishing as: {broadcast_name}");
     println!("  Press Ctrl+C to leave.\n");
 
-    // Spawn a task to write audio frames to the MoQ broadcast
-    let audio_broadcast = broadcast.clone();
-    let bcast_name = broadcast_name.clone();
-    tokio::spawn(async move {
-        // The iroh-live LocalBroadcast handles encoding.
-        // For now, keep it alive — the MoQ broadcast is separate.
-        // TODO: pipe iroh-live encoded audio → MoQ track frames
-        tracing::info!(%bcast_name, "Audio publish task running");
-        // Keep the broadcast handle alive
-        let _broadcast = audio_broadcast;
-        tokio::signal::ctrl_c().await.ok();
-    });
+    // Keep broadcast alive (dropping it stops encoding)
+    let _broadcast = broadcast;
 
-    // Watch for incoming broadcasts from other participants
+    // Watch for incoming broadcasts and play their audio
+    let audio_for_playback = audio_backend.clone();
     tokio::spawn(async move {
+        // Keep track of active playback handles
+        let mut _active_tracks: Vec<MediaTracks> = Vec::new();
+
         while let Some((path, announce)) = sub_consumer.announced().await {
             match announce {
                 Some(broadcast_consumer) => {
                     let path_str = path.to_string();
                     println!("  + Broadcast announced: {path_str}");
-                    tracing::info!(%path_str, "Remote broadcast announced");
 
-                    // TODO: subscribe to audio track, decode Opus, play through AudioBackend
-                    let _bc = broadcast_consumer;
+                    // Wrap in RemoteBroadcast which reads the hang catalog
+                    let ab = audio_for_playback.clone();
+                    let ps = path_str.clone();
+                    tokio::spawn(async move {
+                        match RemoteBroadcast::new(&ps, broadcast_consumer).await {
+                            Ok(remote) => {
+                                match remote.media(&ab, Default::default()).await {
+                                    Ok(tracks) => {
+                                        if tracks.audio.is_some() {
+                                            println!("  ~ Receiving audio from {ps}");
+                                        }
+                                        // Keep tracks alive until session ends
+                                        tokio::signal::ctrl_c().await.ok();
+                                    }
+                                    Err(e) => tracing::warn!(%ps, "Failed to subscribe to media: {e}"),
+                                }
+                            }
+                            Err(e) => tracing::warn!(%ps, "Failed to read catalog: {e}"),
+                        }
+                    });
                 }
                 None => {
                     let path_str = path.to_string();
                     println!("  - Broadcast removed: {path_str}");
-                    tracing::info!(%path_str, "Remote broadcast removed");
                 }
             }
         }
