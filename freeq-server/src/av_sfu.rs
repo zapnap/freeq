@@ -51,7 +51,8 @@ pub async fn init_sfu(quic_port: Option<u16>) -> anyhow::Result<Arc<SfuState>> {
         let state2 = state.clone();
         tokio::spawn(async move {
             if let Err(e) = run_quic_accept(port, state2).await {
-                tracing::error!("SFU QUIC failed: {e}");
+                // QUIC is optional — WebSocket MoQ still works without it
+                tracing::warn!("SFU QUIC listener failed (WebSocket still active): {e}");
             }
         });
     }
@@ -162,9 +163,17 @@ pub async fn handle_ws_moq(
         .with(tungstenite_to_axum);
 
     let ws = qmux::ws::accept(socket, None);
-    let session = match moq_lite::Server::new()
-        .with_publish(subscribe)
-        .with_consume(publish)
+    // with_consume = consume what client publishes (feed into cluster publisher)
+    // with_publish = publish to client what cluster has for subscribers
+    // Must match QUIC handler: request.with_consume(publish), request.with_publish(subscribe)
+    let mut server = moq_lite::Server::new();
+    if let Some(p) = publish {
+        server = server.with_consume(p);
+    }
+    if let Some(s) = subscribe {
+        server = server.with_publish(s);
+    }
+    let session = match server
         .accept(ws)
         .await
     {

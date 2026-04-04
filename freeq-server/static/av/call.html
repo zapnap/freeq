@@ -81,7 +81,8 @@
     const session = params.get('session') || 'default';
     const presetNick = params.get('nick') || '';
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const moqOrigin = `${wsProtocol}//${window.location.host}/av/moq`;
+    // Use /av/moq/{session} path so the SFU cluster can route by session namespace
+    const moqOrigin = `${wsProtocol}//${window.location.host}/av/moq/${encodeURIComponent(session)}`;
 
     const landing = document.getElementById('landing');
     const call = document.getElementById('call');
