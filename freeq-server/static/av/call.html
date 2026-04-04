@@ -65,8 +65,8 @@
 
   <!-- MoQ publish element — source set dynamically after join -->
   <moq-publish id="publish" style="display:none"></moq-publish>
-  <!-- MoQ watch element — video target set dynamically -->
-  <moq-watch id="watch" jitter="100"></moq-watch>
+  <!-- MoQ watch element — canvas required for video rendering -->
+  <moq-watch id="watch" jitter="100"><canvas id="remote-canvas" style="width:320px;border-radius:8px;background:#222;"></canvas></moq-watch>
 
   <script type="module">
     const params = new URLSearchParams(window.location.search);

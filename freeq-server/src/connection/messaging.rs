@@ -1667,42 +1667,8 @@ fn handle_av_tagmsg(
                     let title_display = title.unwrap_or("voice session");
                     broadcast_av_state(state, target, &session_id, "started", &nick, participant_count, title_display);
 
-                    // Create media room (async — spawn background task)
-                    if let Some(ref media) = *state.av_media.lock() {
-                        let media = media.clone();
-                        let state2 = state.clone();
-                        let sid = session_id.clone();
-                        let conn_id = conn.id.clone();
-                        let nick2 = nick.clone();
-                        tokio::spawn(async move {
-                            match crate::av_media::MediaBackend::create_room(media.as_ref(), &sid).await {
-                                Ok(ticket) => {
-                                    // Store ticket in session
-                                    let mut mgr = state2.av_sessions.lock();
-                                    if let Some(s) = mgr.sessions.get_mut(&sid) {
-                                        s.iroh_ticket = Some(ticket.to_string());
-                                    }
-                                    drop(mgr);
-                                    // Send ticket to creator
-                                    let notice = Message::from_server(
-                                        &state2.server_name,
-                                        "NOTICE",
-                                        vec![&nick2, &format!("AV ticket: {ticket}")],
-                                    );
-                                    send_to(&state2, &conn_id, format!("{notice}\r\n"));
-                                }
-                                Err(e) => {
-                                    tracing::warn!(session_id = %sid, error = %e, "Failed to create media room");
-                                    let notice = Message::from_server(
-                                        &state2.server_name,
-                                        "NOTICE",
-                                        vec![&nick2, &format!("Media room failed: {e} (session still active, no audio)")],
-                                    );
-                                    send_to(&state2, &conn_id, format!("{notice}\r\n"));
-                                }
-                            }
-                        });
-                    }
+                    // Media flows through the SFU (MoQ over WebSocket at /av/moq).
+                    // No need to create iroh-live Rooms — clients connect to SFU directly.
 
                     // Send session ID back to creator
                     let notice = Message::from_server(
@@ -1752,7 +1718,6 @@ fn handle_av_tagmsg(
             let mut mgr = state.av_sessions.lock();
             match mgr.join_session(&session_id, &did, &nick) {
                 Ok(session) => {
-                    let iroh_ticket = session.iroh_ticket.clone();
                     let participant_count = mgr.active_participant_count(&session_id);
                     let channel = session.channel.clone();
 
@@ -1761,15 +1726,7 @@ fn handle_av_tagmsg(
                     }
                     drop(mgr);
 
-                    // Send ticket to joiner
-                    if let Some(ticket) = &iroh_ticket {
-                        let notice = Message::from_server(
-                            &state.server_name,
-                            "NOTICE",
-                            vec![&nick, &format!("AV ticket: {ticket}")],
-                        );
-                        send_to(state, &conn.id, format!("{notice}\r\n"));
-                    }
+                    // Media flows through SFU — no ticket needed.
 
                     // Broadcast updated state
                     broadcast_av_state(state, target, &session_id, "joined", &nick, participant_count, "");

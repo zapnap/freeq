@@ -37,34 +37,16 @@ export function SessionIndicator({ channel }: { channel: string }) {
   const myNick = getNick();
   const isHost = session.createdByNick.toLowerCase() === myNick.toLowerCase();
 
-  const openAudio = async () => {
-    // Get the iroh-live ticket from the session or fetch from REST
-    let ticket = session.irohTicket;
-    if (!ticket || ticket.startsWith('webrtc://')) {
-      try {
-        const resp = await fetch(`/api/v1/sessions/${session.id}`);
-        if (resp.ok) {
-          const data = await resp.json();
-          ticket = data.iroh_ticket;
-          if (ticket) {
-            useStore.getState().updateAvSession({ ...session, irohTicket: ticket });
-          }
-        }
-      } catch {}
-    }
-
-    // Open SFU call page with session ID and nick
-    const myNick = getNick();
+  const openAudio = () => {
     const callUrl = `/av/call?session=${encodeURIComponent(session.id)}&nick=${encodeURIComponent(myNick)}`;
-    audioWindowRef.current = window.open(callUrl, `av-${session.id}`, 'width=400,height=300');
+    audioWindowRef.current = window.open(callUrl, `av-${session.id}`, 'width=480,height=400');
     setAudioActive(true);
     useStore.getState().addSystemMessage(channel, 'Audio: connecting to SFU...');
   };
 
-  const handleJoinWithAudio = async () => {
+  const handleJoinWithAudio = () => {
     joinAvSession(channel, session.id);
-    // Wait for server to process join and ticket to become available
-    setTimeout(() => openAudio(), 1500);
+    openAudio();
   };
 
   const handleLeave = () => {
@@ -108,7 +90,7 @@ export function SessionIndicator({ channel }: { channel: string }) {
             <button
               onClick={openAudio}
               className="text-xs px-2 py-1 rounded-lg bg-success/15 text-success hover:bg-success/25 font-medium flex items-center gap-1"
-              title="Connect audio via iroh-live"
+              title="Connect audio/video"
             >
               <MicIcon /> Audio
             </button>
