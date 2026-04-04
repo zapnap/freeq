@@ -2444,7 +2444,9 @@ async fn av_moq_ws_root(
 ) -> impl IntoResponse {
     let sfu = state.sfu_state.lock().clone();
     match sfu {
+        // qmux requires "webtransport" subprotocol for MoQ framing over WebSocket
         Some(sfu) => ws
+            .protocols(["webtransport"])
             .on_upgrade(move |socket| crate::av_sfu::handle_ws_moq(sfu, String::new(), socket))
             .into_response(),
         None => (
@@ -2467,13 +2469,12 @@ async fn av_moq_ws(
     Path(path): Path<String>,
     State(state): State<Arc<crate::server::SharedState>>,
 ) -> impl IntoResponse {
-    // Log the MoQ path for debugging (session ID is the first segment)
-    let session_id = path.split('/').next().unwrap_or("");
-    tracing::debug!(session_id = %session_id, path = %path, "MoQ WebSocket upgrade");
+    tracing::info!(path = %path, "MoQ WebSocket upgrade with path");
 
     let sfu = state.sfu_state.lock().clone();
     match sfu {
         Some(sfu) => ws
+            .protocols(["webtransport"])
             .on_upgrade(move |socket| crate::av_sfu::handle_ws_moq(sfu, path, socket))
             .into_response(),
         None => (
