@@ -1667,8 +1667,43 @@ fn handle_av_tagmsg(
                     let title_display = title.unwrap_or("voice session");
                     broadcast_av_state(state, target, &session_id, "started", &nick, participant_count, title_display);
 
-                    // Media flows through the SFU (MoQ over WebSocket at /av/moq).
-                    // No need to create iroh-live Rooms — clients connect to SFU directly.
+                    // Create iroh-live Room for native client P2P audio.
+                    // Browser clients use MoQ SFU; native clients join the Room directly.
+                    {
+                        let backend = state.av_media.lock().clone();
+                        let state2 = state.clone();
+                        let sid = session_id.clone();
+                        let conn_id = conn.id.clone();
+                        let nick2 = nick.clone();
+                        tokio::spawn(async move {
+                            if let Some(backend) = backend.as_ref() {
+                                match crate::av_media::MediaBackend::create_room(backend.as_ref(), &sid).await {
+                                    Ok(ticket) => {
+                                        // Store ticket in session
+                                        let mut mgr = state2.av_sessions.lock();
+                                        if let Some(s) = mgr.sessions.get_mut(&sid) {
+                                            s.iroh_ticket = Some(ticket.clone());
+                                        }
+                                        if let Some(s) = mgr.get(&sid) {
+                                            state2.with_db(|db| db.save_av_session(s));
+                                        }
+                                        drop(mgr);
+                                        // Send ticket to creator
+                                        let notice = Message::from_server(
+                                            &state2.server_name,
+                                            "NOTICE",
+                                            vec![&nick2, &format!("AV ticket: {ticket}")],
+                                        );
+                                        send_to(&state2, &conn_id, format!("{notice}\r\n"));
+                                        tracing::info!(session = %sid, "iroh-live room created");
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(session = %sid, error = %e, "Failed to create iroh-live room");
+                                    }
+                                }
+                            }
+                        });
+                    }
 
                     // Send session ID back to creator
                     let notice = Message::from_server(
@@ -1726,7 +1761,15 @@ fn handle_av_tagmsg(
                     }
                     drop(mgr);
 
-                    // Media flows through SFU — no ticket needed.
+                    // Send iroh-live RoomTicket to joiner (for native clients)
+                    if let Some(ticket) = &session.iroh_ticket {
+                        let ticket_notice = Message::from_server(
+                            &state.server_name,
+                            "NOTICE",
+                            vec![&nick, &format!("AV ticket: {ticket}")],
+                        );
+                        send_to(state, &conn.id, format!("{ticket_notice}\r\n"));
+                    }
 
                     // Broadcast updated state
                     broadcast_av_state(state, target, &session_id, "joined", &nick, participant_count, "");
@@ -1764,6 +1807,14 @@ fn handle_av_tagmsg(
                     if should_end {
                         broadcast_av_state(state, target, &session_id, "ended", &nick, 0, "");
                         broadcast_av_s2s(state, "ended", &session_id, channel.as_deref(), &did, &nick, None, Some(&did));
+                        // Close iroh-live room
+                        let backend = state.av_media.lock().clone();
+                        let sid = session_id.clone();
+                        tokio::spawn(async move {
+                            if let Some(backend) = backend.as_ref() {
+                                let _ = crate::av_media::MediaBackend::close_room(backend.as_ref(), &sid).await;
+                            }
+                        });
                     } else {
                         broadcast_av_state(state, target, &session_id, "left", &nick, participant_count, "");
                         broadcast_av_s2s(state, "left", &session_id, channel.as_deref(), &did, &nick, None, None);
@@ -1814,6 +1865,19 @@ fn handle_av_tagmsg(
 
                     broadcast_av_state(state, target, &session_id, "ended", &nick, 0, "");
                     broadcast_av_s2s(state, "ended", &session_id, channel.as_deref(), &did, &nick, None, Some(&did));
+
+                    // Close iroh-live room
+                    {
+                        let backend = state.av_media.lock().clone();
+                        let sid = session_id.clone();
+                        tokio::spawn(async move {
+                            if let Some(backend) = backend.as_ref() {
+                                if let Err(e) = crate::av_media::MediaBackend::close_room(backend.as_ref(), &sid).await {
+                                    tracing::warn!(session = %sid, error = %e, "Failed to close iroh-live room");
+                                }
+                            }
+                        });
+                    }
 
                     tracing::info!(session_id = %session_id, did = %did, "AV session ended");
                 }
