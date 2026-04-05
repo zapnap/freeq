@@ -157,7 +157,9 @@
           .map(p => p.nick)
           .filter(n => n.toLowerCase() !== myNick.toLowerCase());
 
-        // Add watch elements for new participants
+        // Add/refresh watch elements for participants.
+        // moq-watch doesn't retry on RESET_STREAM errors, so we recreate
+        // failed elements every poll cycle until the bridge forwards the broadcast.
         for (const nick of nicks) {
           if (!activeWatchers.has(nick)) {
             const broadcastName = `${session}/${nick}`;
@@ -165,15 +167,20 @@
 
             const watchEl = document.createElement('moq-watch');
             watchEl.setAttribute('jitter', '100');
-            // moq-watch needs a canvas child (even for audio-only)
             const canvas = document.createElement('canvas');
             canvas.style.display = 'none';
             watchEl.appendChild(canvas);
             watchersDiv.appendChild(watchEl);
-
-            // Set attributes after DOM insertion
             watchEl.setAttribute('url', moqOrigin);
             watchEl.setAttribute('name', broadcastName);
+
+            // Retry on error: recreate the element after a delay
+            watchEl.addEventListener('error', () => {
+              console.log('[call] Watch error for', nick, '— will retry on next poll');
+              activeWatchers.delete(nick);
+              watchEl.setAttribute('url', '');
+              watchEl.remove();
+            });
 
             activeWatchers.set(nick, watchEl);
           }
