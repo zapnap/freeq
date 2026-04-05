@@ -220,10 +220,69 @@ async fn run_room_to_moq(
                             "Bridging Room → MoQ"
                         );
 
-                        // Get the BroadcastConsumer from the RemoteBroadcast and publish to cluster
-                        let consumer = broadcast.consumer().clone();
-                        publisher.publish_broadcast(&broadcast_path, consumer);
-                        tracing::info!(broadcast = %broadcast_path, "Room broadcast published to MoQ cluster");
+                        // The RemoteBroadcast already consumed catalog.json during
+                        // construction. We must re-create it from the parsed catalog
+                        // so MoQ subscribers (browsers) can read it. Create a fresh
+                        // BroadcastProducer, write the catalog, and forward audio
+                        // tracks dynamically from the original consumer.
+                        let source_consumer = broadcast.consumer().clone();
+                        let catalog = broadcast.catalog();
+
+                        let mut fresh_producer = moq_lite::Broadcast::produce();
+
+                        // Re-create catalog.json track from parsed catalog
+                        match catalog.to_string() {
+                            Ok(catalog_json) => {
+                                let catalog_track = moq_lite::Track::new("catalog.json");
+                                match fresh_producer.create_track(catalog_track) {
+                                    Ok(mut catalog_writer) => {
+                                        if let Ok(mut group) = catalog_writer.create_group(moq_lite::Group { sequence: 0 }) {
+                                            let _ = group.write_frame(moq_lite::bytes::Bytes::from(catalog_json.into_bytes()));
+                                            group.finish().ok();
+                                        }
+                                        // Keep catalog_writer alive — dropping it would close the track.
+                                        // Leak it intentionally; the broadcast lifetime manages cleanup.
+                                        std::mem::forget(catalog_writer);
+                                    }
+                                    Err(e) => tracing::warn!(broadcast = %broadcast_path, error = %e, "Failed to create catalog track"),
+                                }
+                            }
+                            Err(e) => tracing::warn!(broadcast = %broadcast_path, error = %e, "Failed to serialize catalog"),
+                        }
+
+                        // Set up dynamic forwarding for non-catalog tracks (audio, video)
+                        let mut dynamic = fresh_producer.dynamic();
+                        let bp = broadcast_path.clone();
+                        tokio::spawn(async move {
+                            loop {
+                                match dynamic.requested_track().await {
+                                    Ok(mut dest_track) => {
+                                        if dest_track.info.name == "catalog.json" {
+                                            // Already served above, skip
+                                            continue;
+                                        }
+                                        let track_info = moq_lite::Track::new(dest_track.info.name.clone());
+                                        match source_consumer.subscribe_track(&track_info) {
+                                            Ok(source_track) => {
+                                                let tname = dest_track.info.name.clone();
+                                                tokio::spawn(async move {
+                                                    forward_track(&tname, source_track, &mut dest_track).await;
+                                                });
+                                            }
+                                            Err(e) => {
+                                                tracing::debug!(track = %dest_track.info.name, error = %e, "Track not in source");
+                                                dest_track.abort(e).ok();
+                                            }
+                                        }
+                                    }
+                                    Err(_) => break,
+                                }
+                            }
+                            tracing::debug!(broadcast = %bp, "Room→MoQ dynamic forwarding ended");
+                        });
+
+                        publisher.publish_broadcast(&broadcast_path, fresh_producer.consume());
+                        tracing::info!(broadcast = %broadcast_path, "Room broadcast published to MoQ cluster (with re-created catalog)");
                     }
                     iroh_live::rooms::RoomEvent::PeerJoined { display_name, remote } => {
                         let name = display_name.as_deref().unwrap_or("unknown");
