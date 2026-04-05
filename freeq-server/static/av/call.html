@@ -73,16 +73,16 @@
 
   <!-- MoQ publish element — source set dynamically after join -->
   <moq-publish id="publish" style="display:none"></moq-publish>
-  <!-- MoQ watch element — audio only, no canvas needed -->
-  <moq-watch id="watch" jitter="100"></moq-watch>
+  <!-- MoQ watch element — canvas required by component even for audio-only -->
+  <moq-watch id="watch" jitter="100"><canvas style="display:none"></canvas></moq-watch>
 
   <script type="module">
     const params = new URLSearchParams(window.location.search);
     const session = params.get('session') || 'default';
     const presetNick = params.get('nick') || '';
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    // Use /av/moq/{session} path so the SFU cluster can route by session namespace
-    const moqOrigin = `${wsProtocol}//${window.location.host}/av/moq/${encodeURIComponent(session)}`;
+    // Connect to root MoQ endpoint — cluster routes by broadcast name, not URL path
+    const moqOrigin = `${wsProtocol}//${window.location.host}/av/moq`;
 
     const landing = document.getElementById('landing');
     const call = document.getElementById('call');

@@ -163,17 +163,12 @@ pub async fn handle_ws_moq(
         .with(tungstenite_to_axum);
 
     let ws = qmux::ws::accept(socket, None);
-    // with_consume = consume what client publishes (feed into cluster publisher)
-    // with_publish = publish to client what cluster has for subscribers
-    // Must match QUIC handler: request.with_consume(publish), request.with_publish(subscribe)
-    let mut server = moq_lite::Server::new();
-    if let Some(p) = publish {
-        server = server.with_consume(p);
-    }
-    if let Some(s) = subscribe {
-        server = server.with_publish(s);
-    }
-    let session = match server
+    // moq_lite::Server semantics (opposite of moq_native::Request):
+    //   with_publish(subscribe) = send cluster's subscriber stream TO the client
+    //   with_consume(publish) = consume client's stream and feed INTO cluster publisher
+    let session = match moq_lite::Server::new()
+        .with_publish(subscribe)
+        .with_consume(publish)
         .accept(ws)
         .await
     {
