@@ -131,7 +131,9 @@ async fn run_room(display_name: String, existing_ticket: Option<RoomTicket>, bro
     // Publish microphone
     let mic = audio_backend.default_input().await?;
     broadcast.audio().set(mic, AudioCodec::Opus, [AudioPreset::Hq])?;
-    handle.publish("audio", &broadcast).await?;
+    // Use display name as broadcast name — matches browser convention where
+    // broadcast name = nick (browsers subscribe to {session}/{nick})
+    handle.publish(&display_name, &broadcast).await?;
     println!("  Microphone active (Opus). Press Ctrl+C to leave.\n");
 
     if let Some(ref url) = browser_url {
