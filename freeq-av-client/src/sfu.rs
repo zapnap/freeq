@@ -68,6 +68,12 @@ pub async fn run_sfu(sfu_url: &str, session: &str, nick: &str) -> Result<()> {
     println!("  Publishing as: {broadcast_name}");
     println!("  Press Ctrl+C to leave.\n");
 
+    // Show browser URL for easy joining
+    println!("  -------------------------------------------------------");
+    println!("  Browser call URL:");
+    println!("  {sfu_url}/av/call.html?session={session}");
+    println!("  -------------------------------------------------------\n");
+
     // Keep broadcast alive (dropping it stops encoding)
     let _broadcast = broadcast;
 
