@@ -5,7 +5,11 @@
 //! and verifies audio flows through the bridge in both directions.
 //!
 //! Usage:
-//!   cargo run --example bridge_e2e -- [--irc-addr 127.0.0.1:6667] [--web-url http://127.0.0.1:8080]
+//!   # Local (TCP IRC + HTTP MoQ):
+//!   cargo run --example bridge_e2e -- --irc-addr 127.0.0.1:6667 --web-url http://127.0.0.1:8080
+//!
+//!   # Staging (WebSocket IRC + HTTPS MoQ):
+//!   cargo run --example bridge_e2e -- --web-url https://staging.freeq.at
 
 use std::time::Duration;
 
@@ -31,8 +35,7 @@ async fn main() -> Result<()> {
 
     let irc_addr = std::env::args()
         .position(|a| a == "--irc-addr")
-        .and_then(|i| std::env::args().nth(i + 1))
-        .unwrap_or_else(|| "127.0.0.1:6667".to_string());
+        .and_then(|i| std::env::args().nth(i + 1));
 
     let web_url = std::env::args()
         .position(|a| a == "--web-url")
@@ -40,12 +43,19 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|| "http://127.0.0.1:8080".to_string());
 
     println!("\n=== Bridge E2E Test ===");
-    println!("  IRC: {irc_addr}");
+    if let Some(ref addr) = irc_addr {
+        println!("  IRC: {addr} (TCP)");
+    } else {
+        println!("  IRC: {web_url}/irc (WebSocket)");
+    }
     println!("  Web: {web_url}\n");
 
     // ── Step 1: Connect to IRC, start AV session, get ticket ──────
     println!("[1/5] Connecting to IRC and starting AV session...");
-    let (session_id, iroh_ticket) = start_av_session(&irc_addr).await?;
+    let (session_id, iroh_ticket) = match irc_addr {
+        Some(ref addr) => start_av_session_tcp(addr).await?,
+        None => start_av_session_ws(&web_url).await?,
+    };
     println!("  Session: {session_id}");
     println!("  Ticket: {}...", &iroh_ticket[..40.min(iroh_ticket.len())]);
 
@@ -255,8 +265,8 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Connect to IRC, join channel, start AV session, return (session_id, iroh_ticket).
-async fn start_av_session(addr: &str) -> Result<(String, String)> {
+/// Connect to IRC via raw TCP, join channel, start AV session, return (session_id, iroh_ticket).
+async fn start_av_session_tcp(addr: &str) -> Result<(String, String)> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::TcpStream;
 
@@ -329,6 +339,123 @@ async fn start_av_session(addr: &str) -> Result<(String, String)> {
             interval.tick().await;
             if writer
                 .write_all(b"PING :keepalive\r\n")
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+
+    match result {
+        (Some(sid), Some(t)) => Ok((sid, t)),
+        (None, Some(_)) => bail!("Got ticket but no session ID"),
+        (Some(_), None) => bail!("Got session ID but no ticket"),
+        (None, None) => bail!("No session ID or ticket received"),
+    }
+}
+
+/// Connect to IRC via WebSocket, join channel, start AV session, return (session_id, iroh_ticket).
+async fn start_av_session_ws(web_url: &str) -> Result<(String, String)> {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    let nick = "e2e-tester";
+    let channel = "#e2e-bridge-test";
+
+    // Build WS URL: https://host → wss://host/irc
+    let ws_url = if web_url.starts_with("https://") {
+        format!(
+            "wss://{}/irc",
+            web_url.trim_start_matches("https://").trim_end_matches('/')
+        )
+    } else {
+        format!(
+            "ws://{}/irc",
+            web_url.trim_start_matches("http://").trim_end_matches('/')
+        )
+    };
+
+    let (ws, _) = tokio_tungstenite::connect_async(&ws_url).await?;
+    let (mut ws_write, mut ws_read) = ws.split();
+
+    ws_write
+        .send(Message::Text(format!("NICK {nick}\r\nUSER {nick} 0 * :e2e test\r\n").into()))
+        .await?;
+
+    let mut registered = false;
+    let mut ticket: Option<String> = None;
+    let mut session_id: Option<String> = None;
+
+    let result = timeout(Duration::from_secs(10), async {
+        while let Some(msg) = ws_read.next().await {
+            let text = match msg? {
+                Message::Text(t) => t.to_string(),
+                Message::Close(_) => break,
+                _ => continue,
+            };
+
+            for line in text.lines() {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+
+                if line.starts_with("PING") {
+                    let pong = line.replace("PING", "PONG");
+                    ws_write
+                        .send(Message::Text(format!("{pong}\r\n").into()))
+                        .await?;
+                    continue;
+                }
+
+                if !registered && line.contains(" 001 ") {
+                    registered = true;
+                    ws_write
+                        .send(Message::Text(format!("CAP REQ :message-tags\r\n").into()))
+                        .await?;
+                    ws_write
+                        .send(Message::Text(format!("JOIN {channel}\r\n").into()))
+                        .await?;
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    ws_write
+                        .send(Message::Text(
+                            format!("@+freeq.at/av-start TAGMSG {channel}\r\n").into(),
+                        ))
+                        .await?;
+                }
+
+                if line.contains("AV session started:") {
+                    if let Some(id) = line.split("AV session started: ").nth(1) {
+                        session_id = Some(id.trim().to_string());
+                    }
+                }
+
+                if line.contains("AV ticket:") {
+                    if let Some(t) = line.split("AV ticket: ").nth(1) {
+                        ticket = Some(t.trim().to_string());
+                    }
+                }
+
+                if ticket.is_some() && session_id.is_some() {
+                    break;
+                }
+            }
+            if ticket.is_some() && session_id.is_some() {
+                break;
+            }
+        }
+        Ok::<_, anyhow::Error>((session_id, ticket))
+    })
+    .await??;
+
+    // Keep WS IRC alive in background
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(30));
+        loop {
+            interval.tick().await;
+            if ws_write
+                .send(Message::Text("PING :keepalive\r\n".into()))
                 .await
                 .is_err()
             {
