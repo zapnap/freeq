@@ -39,8 +39,8 @@ enum Command {
     },
     /// Connect to a freeq server, start/join an AV session, get iroh-live ticket
     Server {
-        /// Server host:port (e.g. irc.freeq.at:8081)
-        #[arg(short, long, default_value = "127.0.0.1:8081")]
+        /// Server URL — use https://host for WebSocket IRC, or host:port for raw TCP
+        #[arg(short, long, default_value = "127.0.0.1:6667")]
         url: String,
         /// Channel to join
         #[arg(short, long, default_value = "#freeq")]
@@ -174,83 +174,144 @@ async fn run_room(display_name: String, existing_ticket: Option<RoomTicket>) -> 
     Ok(())
 }
 
-/// Connect to a freeq server via IRC, start/join AV session, get iroh-live ticket.
+/// Connect to a freeq server via IRC (WebSocket or TCP), join AV session, get iroh-live ticket.
 async fn run_server_session(url: &str, channel: &str, nick: &str, join_existing: bool) -> Result<()> {
+    let use_websocket = url.starts_with("https://") || url.starts_with("http://") || url.starts_with("wss://") || url.starts_with("ws://");
+
+    if use_websocket {
+        run_server_session_ws(url, channel, nick, join_existing).await
+    } else {
+        run_server_session_tcp(url, channel, nick, join_existing).await
+    }
+}
+
+/// IRC session over raw TCP (for local dev or direct port access).
+async fn run_server_session_tcp(url: &str, channel: &str, nick: &str, join_existing: bool) -> Result<()> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::TcpStream;
 
-    // Parse host:port from URL
-    let addr = url.trim_start_matches("ws://")
-        .trim_start_matches("wss://")
-        .trim_start_matches("irc://")
-        .trim_end_matches("/irc")
-        .trim_end_matches('/');
+    let addr = url.trim_end_matches('/');
     let addr = if addr.contains(':') { addr.to_string() } else { format!("{addr}:6667") };
 
-    println!("  Connecting to {addr}...");
+    println!("  Connecting to {addr} (TCP)...");
     let stream = TcpStream::connect(&addr).await?;
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
 
+    let ticket = irc_session_loop(&mut lines, &mut writer, nick, channel, join_existing).await?;
+
+    if let Some(ticket_str) = ticket {
+        println!("  Joining iroh-live room...\n");
+        let room_ticket: RoomTicket = ticket_str.parse()
+            .map_err(|e| anyhow::anyhow!("Invalid room ticket from server: {e}"))?;
+
+        // Keep IRC alive in background
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            loop {
+                interval.tick().await;
+                let _ = writer.write_all(b"PING :keepalive\r\n").await;
+            }
+        });
+
+        run_room(nick.to_string(), Some(room_ticket)).await?;
+    } else {
+        println!("  No ticket received — server may not have iroh-live enabled.");
+    }
+    Ok(())
+}
+
+/// IRC session over WebSocket (for servers behind reverse proxy like Miren).
+async fn run_server_session_ws(url: &str, channel: &str, nick: &str, join_existing: bool) -> Result<()> {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::{connect_async, tungstenite::Message};
+
+    // Build WebSocket URL: https://host → wss://host/irc
+    let ws_url = if url.starts_with("https://") {
+        format!("wss://{}/irc", url.trim_start_matches("https://").trim_end_matches('/'))
+    } else if url.starts_with("http://") {
+        format!("ws://{}/irc", url.trim_start_matches("http://").trim_end_matches('/'))
+    } else {
+        url.trim_end_matches('/').to_string()
+    };
+
+    println!("  Connecting to {ws_url} (WebSocket)...");
+    let (ws_stream, _) = connect_async(&ws_url).await
+        .map_err(|e| anyhow::anyhow!("WebSocket connect failed: {e}"))?;
+    let (mut ws_write, mut ws_read) = ws_stream.split();
+
+    macro_rules! ws_send {
+        ($line:expr) => {
+            ws_write.send(Message::Text($line.into())).await
+                .map_err(|e| anyhow::anyhow!("WS send: {e}"))?
+        };
+    }
+
     // IRC registration
-    writer.write_all(format!("NICK {nick}\r\n").as_bytes()).await?;
-    writer.write_all(format!("USER {nick} 0 * :freeq-av\r\n").as_bytes()).await?;
+    ws_send!(format!("NICK {nick}\r\n"));
+    ws_send!(format!("USER {nick} 0 * :freeq-av\r\n"));
 
     let mut registered = false;
     let mut ticket: Option<String> = None;
 
-    // Read until registered, then join channel and start session
-    while let Some(line) = lines.next_line().await? {
-        tracing::debug!("< {line}");
+    while let Some(msg) = ws_read.next().await {
+        let msg = msg.map_err(|e| anyhow::anyhow!("WS read: {e}"))?;
+        let text = match msg {
+            Message::Text(t) => t.to_string(),
+            Message::Close(_) => break,
+            _ => continue,
+        };
 
-        // Respond to PING
-        if line.starts_with("PING") {
-            let pong = line.replace("PING", "PONG");
-            writer.write_all(format!("{pong}\r\n").as_bytes()).await?;
-            continue;
-        }
+        // WebSocket may deliver multiple IRC lines in one message
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() { continue; }
+            tracing::debug!("< {line}");
 
-        // 001 = RPL_WELCOME — registered
-        if !registered && line.contains(" 001 ") {
-            registered = true;
-            println!("  Connected as {nick}");
-
-            // Join channel
-            writer.write_all(format!("JOIN {channel}\r\n").as_bytes()).await?;
-            println!("  Joined {channel}");
-
-            if join_existing {
-                // Join existing — look for ticket in channel messages
-                writer.write_all(format!("@+freeq.at/av-join TAGMSG {channel}\r\n").as_bytes()).await?;
-                println!("  Joining AV session (waiting for ticket in channel)...");
-            } else {
-                // Start AV session on server
-                writer.write_all(format!("@+freeq.at/av-start TAGMSG {channel}\r\n").as_bytes()).await?;
-                println!("  Starting AV session...");
+            if line.starts_with("PING") {
+                let pong = line.replace("PING", "PONG");
+                ws_send!(format!("{pong}\r\n"));
+                continue;
             }
-        }
 
-        // Print all server NOTICEs (includes errors and session info)
-        if line.contains("NOTICE") && !line.starts_with("PING") {
-            if let Some(notice_text) = line.split(" :").nth(1) {
-                println!("  [server] {notice_text}");
+            if !registered && line.contains(" 001 ") {
+                registered = true;
+                println!("  Connected as {nick}");
+                ws_send!(format!("CAP REQ :message-tags\r\n"));
+                ws_send!(format!("JOIN {channel}\r\n"));
+                println!("  Joined {channel}");
+
+                if join_existing {
+                    ws_send!(format!("@+freeq.at/av-join TAGMSG {channel}\r\n"));
+                    println!("  Joining AV session (waiting for ticket)...");
+                } else {
+                    ws_send!(format!("@+freeq.at/av-start TAGMSG {channel}\r\n"));
+                    println!("  Starting AV session...");
+                }
             }
-        }
 
-        // Look for AV ticket in NOTICE
-        if line.contains("AV ticket:") {
-            if let Some(t) = line.split("AV ticket: ").nth(1) {
-                let t = t.trim();
-                println!("  Got iroh-live ticket: {t}");
-                ticket = Some(t.to_string());
-                break;
+            if line.contains("NOTICE") {
+                if let Some(notice_text) = line.split(" :").nth(1) {
+                    println!("  [server] {notice_text}");
+                }
             }
-        }
 
-        // Look for "AV session started" confirmation
-        if line.contains("AV session started:") {
-            println!("  Session created, waiting for ticket...");
+            if line.contains("AV ticket:") {
+                if let Some(t) = line.split("AV ticket: ").nth(1) {
+                    let t = t.trim();
+                    println!("  Got iroh-live ticket!");
+                    ticket = Some(t.to_string());
+                }
+            }
+
+            if line.contains("AV session started:") {
+                println!("  Session created, waiting for ticket...");
+            }
+
+            // Break out once we have the ticket
+            if ticket.is_some() { break; }
         }
+        if ticket.is_some() { break; }
     }
 
     if let Some(ticket_str) = ticket {
@@ -258,22 +319,88 @@ async fn run_server_session(url: &str, channel: &str, nick: &str, join_existing:
         let room_ticket: RoomTicket = ticket_str.parse()
             .map_err(|e| anyhow::anyhow!("Invalid room ticket from server: {e}"))?;
 
-        // Keep the IRC connection alive in background
-        let mut writer2 = writer;
+        // Keep WebSocket IRC alive in background
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
             loop {
                 interval.tick().await;
-                let _ = writer2.write_all(b"PING :keepalive\r\n").await;
+                if ws_write.send(Message::Text("PING :keepalive\r\n".into())).await.is_err() {
+                    break;
+                }
             }
         });
 
-        // Join the iroh-live room
         run_room(nick.to_string(), Some(room_ticket)).await?;
     } else {
         println!("  No ticket received — server may not have iroh-live enabled.");
-        println!("  You can still use 'freeq-av room' for standalone calls.");
+    }
+    Ok(())
+}
+
+/// Shared IRC session logic for TCP mode.
+async fn irc_session_loop<R, W>(
+    lines: &mut tokio::io::Lines<tokio::io::BufReader<R>>,
+    writer: &mut W,
+    nick: &str,
+    channel: &str,
+    join_existing: bool,
+) -> Result<Option<String>>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::AsyncWriteExt;
+
+    writer.write_all(format!("NICK {nick}\r\n").as_bytes()).await?;
+    writer.write_all(format!("USER {nick} 0 * :freeq-av\r\n").as_bytes()).await?;
+
+    let mut registered = false;
+    let mut ticket: Option<String> = None;
+
+    while let Some(line) = lines.next_line().await? {
+        tracing::debug!("< {line}");
+
+        if line.starts_with("PING") {
+            let pong = line.replace("PING", "PONG");
+            writer.write_all(format!("{pong}\r\n").as_bytes()).await?;
+            continue;
+        }
+
+        if !registered && line.contains(" 001 ") {
+            registered = true;
+            println!("  Connected as {nick}");
+            writer.write_all(format!("CAP REQ :message-tags\r\n").as_bytes()).await?;
+            writer.write_all(format!("JOIN {channel}\r\n").as_bytes()).await?;
+            println!("  Joined {channel}");
+
+            if join_existing {
+                writer.write_all(format!("@+freeq.at/av-join TAGMSG {channel}\r\n").as_bytes()).await?;
+                println!("  Joining AV session (waiting for ticket)...");
+            } else {
+                writer.write_all(format!("@+freeq.at/av-start TAGMSG {channel}\r\n").as_bytes()).await?;
+                println!("  Starting AV session...");
+            }
+        }
+
+        if line.contains("NOTICE") {
+            if let Some(notice_text) = line.split(" :").nth(1) {
+                println!("  [server] {notice_text}");
+            }
+        }
+
+        if line.contains("AV ticket:") {
+            if let Some(t) = line.split("AV ticket: ").nth(1) {
+                let t = t.trim();
+                println!("  Got iroh-live ticket!");
+                ticket = Some(t.to_string());
+                break;
+            }
+        }
+
+        if line.contains("AV session started:") {
+            println!("  Session created, waiting for ticket...");
+        }
     }
 
-    Ok(())
+    Ok(ticket)
 }
