@@ -1,71 +1,142 @@
-# AV Architecture: Decoupled Real-Time Sessions
+# AV Architecture
 
-## TL;DR
-
-Freeq treats voice/video/screen sharing as a **session subsystem** that lives alongside IRC channels. Session control (who's in the call, when it starts/ends) flows through IRC. Media transport (actual audio/video) flows through iroh-live over QUIC. These two concerns are completely decoupled — you can swap the media backend without touching session management, and you can build new clients that participate in sessions using only the IRC protocol for signaling or only iroh-live for media.
-
-## Use Cases
-
-### 1. Voice call from the web client
-
-Alice opens freeq in her browser, joins `#standup`, clicks the phone icon. The server creates an AV session and an iroh-live Room. The session badge appears for everyone in the channel. Bob clicks "Join" — his browser opens a connection to the iroh-live relay via WebTransport and starts sending/receiving Opus audio. Alice and Bob talk. When they're done, Alice clicks "End" — the session closes, artifacts (summary, transcript) are generated and posted to the channel.
-
-### 2. Native client joining a browser call
-
-Charlie uses the freeq TUI client. He sees "Voice session active (2 participants)" in `#standup`. He runs `freeq-av server --url irc.freeq.at:6667 --channel '#standup' --join` which connects to the IRC server, joins the AV session, gets the iroh-live RoomTicket, and joins the same Room that Alice and Bob are in — directly over QUIC, no relay needed. All three hear each other.
-
-### 3. Bot recording a session
-
-A transcription bot connects to the IRC server, watches for AV session events via TAGMSG, joins the iroh-live Room as a listener, captures the audio stream, and pipes it to Whisper for real-time transcription. When the session ends, it posts the transcript as an artifact attached to the session. The bot never needs a browser or WebRTC — it uses iroh-live's Rust API directly.
-
-### 4. Federated call across servers
-
-freeq servers `irc.freeq.at` and `irc.zerosum.org` are federated via iroh S2S. When Alice starts a session on freeq.at, the session existence federates to zerosum.org via S2S (AvSessionCreated message). Users on zerosum.org see the active session badge. When they join, they connect to the iroh-live Room using the RoomTicket — iroh handles the peer-to-peer connection across servers. No central media server required.
-
----
-
-## Architecture
+## Data Path: Browser-to-Browser Voice Call
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                    freeq-server (Rust)                    │
-│                                                          │
-│  ┌─────────────────┐    ┌─────────────────────────────┐  │
-│  │ AvSessionManager │    │ IrohLiveBackend             │  │
-│  │                 │    │                             │  │
-│  │ • sessions      │    │ • Live (iroh endpoint)      │  │
-│  │ • participants  │◄──►│ • Rooms (per session)       │  │
-│  │ • lifecycle     │    │ • RoomTickets               │  │
-│  │ • DB persist    │    │                             │  │
-│  └────────┬────────┘    └──────────┬──────────────────┘  │
-│           │                        │                     │
-│     IRC TAGMSG              iroh-live Room               │
-│   (session control)        (media transport)             │
-│           │                        │                     │
-└───────────┼────────────────────────┼─────────────────────┘
-            │                        │
-    ┌───────┴───────┐       ┌────────┴────────┐
-    │               │       │                 │
-    │  IRC clients  │       │  Media clients  │
-    │  (any IRC)    │       │  (iroh QUIC or  │
-    │               │       │   WebTransport) │
-    └───────────────┘       └─────────────────┘
+┌─── Browser A ────────────────────────────────────────────────┐
+│                                                               │
+│  Microphone                                                   │
+│    ↓ getUserMedia({ audio: true })                           │
+│  moq-publish web component                                    │
+│    ↓ Opus encode (libav-opus WASM)                           │
+│    ↓ hang format (MoQ broadcast frames)                      │
+│    ↓ MoQ ANNOUNCE + OBJECT frames                            │
+│    ↓ qmux multiplexing                                       │
+│    ↓ WebSocket binary (wss://host/av/moq)                    │
+│                                                               │
+└───────────────────────────┬───────────────────────────────────┘
+                            │
+                    ┌───────▼───────┐
+                    │   TLS / TCP   │
+                    └───────┬───────┘
+                            │
+┌───────────────────────────▼───────────────────────────────────┐
+│                                                               │
+│  freeq-server                                                 │
+│                                                               │
+│  axum WebSocket handler (/av/moq)                            │
+│    ↓ axum WS ↔ tungstenite conversion                        │
+│    ↓ qmux::ws::accept() — demux MoQ frames                  │
+│    ↓                                                          │
+│  moq_lite::Server                                             │
+│    .with_consume(publisher)  ← takes client's published audio │
+│    .with_publish(subscriber) → sends other clients' audio     │
+│    ↓                                                          │
+│  moq_relay::Cluster                                           │
+│    ├─ In-memory routing by broadcast name                     │
+│    ├─ session/alice → subscribers of session/alice             │
+│    ├─ session/bob   → subscribers of session/bob              │
+│    └─ No iroh involved — pure MoQ relay                       │
+│                                                               │
+└───────────────────────────┬───────────────────────────────────┘
+                            │
+                    ┌───────▼───────┐
+                    │   TLS / TCP   │
+                    └───────┬───────┘
+                            │
+┌───────────────────────────▼───────────────────────────────────┐
+│                                                               │
+│  Browser B                                                    │
+│                                                               │
+│  moq-watch web component (one per remote participant)         │
+│    ↓ WebSocket binary ← qmux ← MoQ OBJECT frames            │
+│    ↓ Opus decode (libav-opus WASM AudioWorklet)              │
+│    ↓ Web Audio API (AudioContext → speaker)                   │
+│  Speaker                                                      │
+│                                                               │
+└───────────────────────────────────────────────────────────────┘
 ```
 
-### Two independent planes
+## Protocol Stack (per WebSocket connection)
 
-**Control plane (IRC):** Session lifecycle messages flow through standard IRC TAGMSG with `+freeq.at/av-*` tags. Any IRC client can see session state, participant lists, and session events. The server manages all session logic — creating, joining, leaving, ending, authorization, persistence, S2S federation.
+```
+┌──────────────────────────┐
+│  Opus audio frames       │  Codec layer
+├──────────────────────────┤
+│  hang format             │  MoQ broadcast catalog
+├──────────────────────────┤
+│  MoQ (ANNOUNCE, OBJECT)  │  Media transport
+├──────────────────────────┤
+│  qmux                    │  Stream multiplexing
+├──────────────────────────┤
+│  WebSocket (binary)      │  Transport
+├──────────────────────────┤
+│  TLS / TCP               │  Network
+└──────────────────────────┘
+```
 
-**Media plane (iroh-live):** Actual audio/video flows through iroh-live Rooms over QUIC. The server creates a Room when a session starts and distributes the RoomTicket to participants. Clients connect to the Room directly (peer-to-peer for native clients, via relay for browsers). The server doesn't touch media data.
+## Where iroh IS and ISN'T used
 
-### Why decoupled
+```
+                    ┌─────────────────────────────────┐
+                    │         freeq-server             │
+                    │                                  │
+  Browser ◄──WS──► │  moq_relay::Cluster  ── NO iroh  │
+                    │                                  │
+  Native  ◄──WS──► │  moq_relay::Cluster  ── NO iroh  │
+  (SFU mode)        │                                  │
+                    │                                  │
+  Native  ◄─QUIC─► │  moq_native (QUIC)   ── NO iroh  │
+  (SFU mode)        │    (optional, may not bind)      │
+                    │                                  │
+  Peer    ◄─QUIC─► │  iroh endpoint        ── YES     │
+  Server            │    └─ S2S federation (JSON)      │
+                    │                                  │
+  Native  ◄─QUIC─► │  iroh-live backend    ── YES     │
+  (room mode)       │    └─ P2P audio rooms            │
+                    │       (not used by browser)      │
+                    └─────────────────────────────────┘
+```
 
-A client can participate in the control plane without the media plane (see session state, manage participants) or the media plane without the control plane (join a Room directly by ticket for audio-only use). This means:
+**For browser-to-browser calls: iroh is not in the audio path.**
 
-- **IRC-only clients** see sessions, participants, and artifacts without needing media support
-- **Media-only tools** (recorders, transcribers, bridges) join Rooms without IRC
-- **The media backend is swappable** — the `MediaBackend` trait abstracts room creation/teardown. iroh-live is the current implementation; others can be added without touching session management
-- **Testing is independent** — session lifecycle can be tested without audio; audio can be tested without a server
+iroh is used for:
+- **S2S federation** — QUIC mesh between freeq servers for chat/presence
+- **iroh-live rooms** — native-to-native P2P audio (alternative to SFU)
+- **iroh endpoint** — cryptographic server identity
+
+## Participant Discovery
+
+Browser call pages discover other participants via REST API polling:
+
+```
+call.html  ──GET /api/v1/sessions/{id}──►  freeq-server
+           ◄── { participants: [{nick: "bob"}, ...] }
+
+For each remote participant:
+  create <moq-watch name="session/bob" url="wss://host/av/moq">
+```
+
+The native client uses MoQ announce-based discovery instead:
+```rust
+while let Some((path, announce)) = sub_consumer.announced().await {
+    // Auto-subscribe to announced broadcasts
+}
+```
+
+## Session Control (separate from media)
+
+```
+IRC WebSocket (/irc)              Media WebSocket (/av/moq)
+─────────────────────             ────────────────────────
+TAGMSG +freeq.at/av-start   →    (no direct link)
+TAGMSG +freeq.at/av-join    →    moq-publish connects
+TAGMSG +freeq.at/av-leave   →    moq-publish disconnects
+TAGMSG +freeq.at/av-state   ←    (broadcast to channel)
+```
+
+Session control flows through IRC. Media flows through MoQ.
+They are intentionally decoupled — the media backend is swappable.
 
 ---
 
@@ -79,12 +150,6 @@ All session control uses TAGMSG with `+freeq.at/av-*` tags on the channel.
 
 ```irc
 @+freeq.at/av-start;+freeq.at/av-title=standup TAGMSG #channel
-```
-
-Server response (to creator):
-```irc
-:server NOTICE nick :AV session started: 01KN7XKRMWHQ...
-:server NOTICE nick :AV ticket: roomaXYZ...
 ```
 
 Server broadcast (to channel, TAGMSG for rich clients + NOTICE fallback):
@@ -104,8 +169,6 @@ or without an ID (joins the channel's active session):
 @+freeq.at/av-join TAGMSG #channel
 ```
 
-Server sends the RoomTicket to the joiner via NOTICE.
-
 #### Leave / End
 
 ```irc
@@ -115,34 +178,11 @@ Server sends the RoomTicket to the joiner via NOTICE.
 
 Sessions auto-end when the last participant leaves.
 
-### Media transport (iroh-live)
-
-When `av-native` feature is enabled, the server creates real iroh-live Rooms:
-
-```rust
-let ticket = RoomTicket::generate();
-let room = Room::new(&live, ticket.clone()).await?;
-let (events, handle) = room.split();
-// handle kept alive for session duration
-// ticket.to_string() sent to participants
-```
-
-Native clients join by parsing the ticket and calling:
-
-```rust
-let ticket: RoomTicket = ticket_string.parse()?;
-let room = Room::new(&live, ticket).await?;
-// room.publish("audio", &broadcast) to send
-// room.recv() events for incoming audio
-```
-
-Browser clients connect to the iroh-live relay at `:4443` via WebTransport. The relay bridges between the browser's WebTransport session and the iroh-live Room.
-
 ### REST API
 
 ```
 GET  /api/v1/sessions                    Active sessions
-GET  /api/v1/sessions/{id}               Session detail (includes iroh_ticket)
+GET  /api/v1/sessions/{id}               Session detail + participants
 GET  /api/v1/sessions/{id}/artifacts     Session artifacts
 POST /api/v1/sessions/{id}/artifacts     Create artifact
 GET  /api/v1/channels/{name}/sessions    Active + recent sessions for channel
@@ -153,13 +193,11 @@ GET  /api/v1/channels/{name}/sessions    Active + recent sessions for channel
 Session lifecycle events federate via the existing S2S protocol:
 
 ```
-AvSessionCreated  { session_id, channel, created_by_did, title, iroh_ticket, origin }
+AvSessionCreated  { session_id, channel, created_by_did, title, origin }
 AvSessionJoined   { session_id, did, nick, origin }
 AvSessionLeft     { session_id, did, origin }
 AvSessionEnded    { session_id, ended_by, origin }
 ```
-
-The `iroh_ticket` in `AvSessionCreated` allows users on remote servers to join the Room directly — iroh handles cross-network connectivity.
 
 ### Database schema
 
@@ -184,35 +222,17 @@ CREATE TABLE av_artifacts (
 );
 ```
 
-### Artifact pipeline
+### Security (current state)
 
-When a session ends, the server can generate artifacts via pluggable backends:
+**Not production-ready.** The MoQ SFU has no authentication:
+- `auth_config.public = Some("/")` — all paths public
+- No channel membership check on WebSocket upgrade
+- No session participant verification
+- Broadcast names are guessable (`{session_id}/{nick}`)
 
-```rust
-pub trait TranscriptBackend: Send + Sync {
-    fn transcribe(&self, audio_url: &str) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + '_>>;
-}
-
-pub trait SummaryBackend: Send + Sync {
-    fn summarize(&self, transcript: &str, context: &SummaryContext) -> Pin<Box<dyn Future<Output = Result<SummaryResult, String>> + Send + '_>>;
-}
-```
-
-`SummaryResult` includes structured `decisions` and `action_items` in addition to the summary text. Artifacts are stored in the database and posted as channel notices.
-
-### Building a plugin
-
-To build something that participates in AV sessions, you have three integration points:
-
-**IRC-level (session awareness):** Connect to the IRC server, watch for `+freeq.at/av-state` TAGMSGs. You'll see session created/joined/left/ended events with participant info. No media capability needed.
-
-**REST-level (session management):** Use the REST API to list sessions, get details, create/list artifacts. Good for dashboards, analytics, or post-session processing.
-
-**iroh-live-level (media participation):** Parse the RoomTicket from the session (via IRC NOTICE or REST API), create an iroh endpoint, join the Room. You can publish audio, subscribe to others' audio, or both. The `freeq-av-client` crate is a working example.
+Before production: add JWT tokens issued on session join, validated on SFU connect.
 
 ### Feature flags
 
-The server compiles in two modes:
-
-- **Default (no features):** Session management works, WebRTC signaling relays through TAGMSG, no iroh-live Rooms. Suitable for Miren/container deployment where disk is limited.
-- **`av-native`:** Adds iroh-live + iroh-live-relay. Server creates real iroh-live Rooms and runs a WebTransport relay on `:4443`. Requires `libasound2-dev` and `cmake` on Linux. Suitable for VPS deployment.
+- **Default (no features):** Session management works, no SFU. Suitable for container deployment.
+- **`av-native`:** Adds moq-relay SFU (WebSocket + optional QUIC), iroh-live backend for native P2P rooms. Requires `libasound2-dev` and `cmake` on Linux.
