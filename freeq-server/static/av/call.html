@@ -43,6 +43,7 @@
       width: 8px; height: 8px; border-radius: 50%; background: #238636;
       animation: pulse 1.5s ease-in-out infinite;
     }
+    .participants { font-size: 0.8rem; color: #8b949e; text-align: center; }
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
   </style>
 </head>
@@ -65,6 +66,7 @@
       <span class="dot"></span>
       <span id="audio-label">Audio active</span>
     </div>
+    <div class="participants" id="participants"></div>
     <div class="controls">
       <button class="btn-mute" id="btn-mute">Mute</button>
       <button class="btn-leave" id="btn-leave">Leave</button>
@@ -73,15 +75,14 @@
 
   <!-- MoQ publish element — source set dynamically after join -->
   <moq-publish id="publish" style="display:none"></moq-publish>
-  <!-- MoQ watch element — canvas required by component even for audio-only -->
-  <moq-watch id="watch" jitter="100"><canvas style="display:none"></canvas></moq-watch>
+  <!-- Watch elements created dynamically per participant -->
+  <div id="watchers" style="display:none"></div>
 
   <script type="module">
     const params = new URLSearchParams(window.location.search);
     const session = params.get('session') || 'default';
     const presetNick = params.get('nick') || '';
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    // Connect to root MoQ endpoint — cluster routes by broadcast name, not URL path
     const moqOrigin = `${wsProtocol}//${window.location.host}/av/moq`;
 
     const landing = document.getElementById('landing');
@@ -89,11 +90,17 @@
     const callStatus = document.getElementById('call-status');
     const nickInput = document.getElementById('nick-input');
     const publish = document.getElementById('publish');
-    const watch = document.getElementById('watch');
     const btnMute = document.getElementById('btn-mute');
     const btnLeave = document.getElementById('btn-leave');
     const audioIndicator = document.getElementById('audio-indicator');
     const audioLabel = document.getElementById('audio-label');
+    const participantsEl = document.getElementById('participants');
+    const watchersDiv = document.getElementById('watchers');
+
+    // Track active watch elements by nick
+    const activeWatchers = new Map();
+    let myNick = '';
+    let pollTimer = null;
 
     if (presetNick) nickInput.value = presetNick;
     if (presetNick) joinCall(presetNick);
@@ -105,12 +112,13 @@
     });
 
     async function joinCall(nick) {
+      myNick = nick;
       landing.classList.add('hidden');
       call.classList.remove('hidden');
       callStatus.textContent = `Joining as ${nick}...`;
       callStatus.classList.remove('error');
 
-      // Request microphone only (no video for voice calls)
+      // Request microphone
       try {
         await navigator.mediaDevices.getUserMedia({ audio: true });
       } catch (e) {
@@ -123,43 +131,73 @@
         return;
       }
 
-      // Set up MoQ publish — "camera" source captures audio+video via the component
-      // (the moq-publish component doesn't support a "microphone"-only source)
+      // Publish our audio — broadcast name is session/nick
       const pubName = `${session}/${nick}`;
       publish.setAttribute('url', moqOrigin);
       publish.setAttribute('name', pubName);
       publish.setAttribute('source', 'camera');
       console.log('[call] Publishing:', pubName, 'to', moqOrigin);
 
-      // Set up MoQ watch — subscribe to session namespace
-      watch.setAttribute('url', moqOrigin);
-      watch.setAttribute('name', session);
-      console.log('[call] Watching:', session);
+      callStatus.textContent = `Connected as ${nick}`;
+      audioIndicator.classList.remove('hidden');
 
-      // Monitor connection state — check if MoQ elements connected
-      callStatus.textContent = `Connecting to voice server...`;
-      let connected = false;
+      // Poll for other participants and create watch elements for each
+      pollParticipants();
+      pollTimer = setInterval(pollParticipants, 3000);
+    }
 
-      // Poll for connection (MoQ web components don't expose events reliably)
-      const checkConnection = setInterval(() => {
-        // If the publish element has a URL and hasn't errored, consider it connected
-        if (publish.getAttribute('url') && !connected) {
-          connected = true;
-          clearInterval(checkConnection);
-          callStatus.textContent = `Connected as ${nick}`;
-          audioIndicator.classList.remove('hidden');
-          audioLabel.textContent = 'Audio active';
+    async function pollParticipants() {
+      try {
+        const resp = await fetch(`/api/v1/sessions/${encodeURIComponent(session)}`);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (!data.participants) return;
+
+        const nicks = data.participants
+          .map(p => p.nick)
+          .filter(n => n.toLowerCase() !== myNick.toLowerCase());
+
+        // Add watch elements for new participants
+        for (const nick of nicks) {
+          if (!activeWatchers.has(nick)) {
+            const broadcastName = `${session}/${nick}`;
+            console.log('[call] Subscribing to:', broadcastName);
+
+            const watchEl = document.createElement('moq-watch');
+            watchEl.setAttribute('jitter', '100');
+            // moq-watch needs a canvas child (even for audio-only)
+            const canvas = document.createElement('canvas');
+            canvas.style.display = 'none';
+            watchEl.appendChild(canvas);
+            watchersDiv.appendChild(watchEl);
+
+            // Set attributes after DOM insertion
+            watchEl.setAttribute('url', moqOrigin);
+            watchEl.setAttribute('name', broadcastName);
+
+            activeWatchers.set(nick, watchEl);
+          }
         }
-      }, 500);
 
-      // Timeout after 10s
-      setTimeout(() => {
-        if (!connected) {
-          clearInterval(checkConnection);
-          callStatus.textContent = 'Connection timed out — voice server may be unavailable';
-          callStatus.classList.add('error');
+        // Remove watch elements for participants who left
+        for (const [nick, el] of activeWatchers) {
+          if (!nicks.includes(nick)) {
+            console.log('[call] Removing watcher for:', nick);
+            el.setAttribute('url', '');
+            el.remove();
+            activeWatchers.delete(nick);
+          }
         }
-      }, 10000);
+
+        // Update UI
+        const allNicks = [myNick, ...nicks];
+        participantsEl.textContent = allNicks.length > 1
+          ? `In call: ${allNicks.join(', ')}`
+          : 'Waiting for others...';
+
+      } catch (e) {
+        console.warn('[call] Failed to poll participants:', e);
+      }
     }
 
     let muted = false;
@@ -179,9 +217,14 @@
     });
 
     btnLeave.addEventListener('click', () => {
+      if (pollTimer) clearInterval(pollTimer);
       publish.setAttribute('source', '');
       publish.setAttribute('url', '');
-      watch.setAttribute('url', '');
+      for (const [, el] of activeWatchers) {
+        el.setAttribute('url', '');
+        el.remove();
+      }
+      activeWatchers.clear();
       window.close();
     });
   </script>
