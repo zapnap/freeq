@@ -187,6 +187,10 @@ async fn forward_track(
         }
         group_producer.finish().ok();
     }
+    // Finish the track cleanly instead of dropping it (which signals "dropped" error
+    // to consumers). For catalog.json this matters because it only has one group —
+    // the loop exits immediately but consumers may not have read it yet.
+    dest.finish().ok();
     tracing::debug!(track = %name, "Track forwarding ended");
 }
 
