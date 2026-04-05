@@ -97,57 +97,45 @@ async fn run_moq_to_room(
                 if let Some(consumer) = maybe_consumer {
                     tracing::info!(session = %session_id, broadcast = %path_str, "Bridging MoQ → Room");
 
-                    // Wrap the MoQ consumer as a RemoteBroadcast to get the BroadcastProducer
-                    // we need for the Room. RemoteBroadcast reads the hang catalog and
-                    // re-exposes the broadcast.
+                    // Pass the raw BroadcastConsumer through to the Room via a fresh
+                    // BroadcastProducer with dynamic track forwarding. We deliberately
+                    // avoid RemoteBroadcast::new() because it consumes the catalog.json
+                    // track during construction, making it unavailable for re-forwarding
+                    // to the native client.
                     let name = path_str.clone();
                     let room = room_handle.clone();
                     tokio::spawn(async move {
-                        match iroh_live::media::subscribe::RemoteBroadcast::new(&name, consumer).await {
-                            Ok(remote) => {
-                                // Get the underlying consumer and create a producer wrapper
-                                let inner_consumer = remote.consumer().clone();
-                                // Create a fresh broadcast and pipe tracks through
-                                let producer = moq_lite::Broadcast::produce();
-                                let source = inner_consumer;
+                        let producer = moq_lite::Broadcast::produce();
+                        let mut dynamic = producer.dynamic();
 
-                                // Use dynamic track forwarding: when the Room peer requests a track,
-                                // subscribe it from the source broadcast
-                                let mut dynamic = producer.dynamic();
-                                let room2 = room.clone();
-                                let name2 = name.clone();
+                        // Publish the producer into the Room
+                        if let Err(e) = room.publish_producer(&name, producer.clone()).await {
+                            tracing::warn!(broadcast = %name, error = %e, "Failed to publish to Room");
+                            return;
+                        }
+                        tracing::info!(broadcast = %name, "Published MoQ broadcast to Room");
 
-                                // Publish the producer into the Room
-                                if let Err(e) = room2.publish_producer(&name2, producer.clone()).await {
-                                    tracing::warn!(broadcast = %name, error = %e, "Failed to publish to Room");
-                                    return;
-                                }
-                                tracing::info!(broadcast = %name, "Published MoQ broadcast to Room");
-
-                                // Forward track requests
-                                loop {
-                                    match dynamic.requested_track().await {
-                                        Ok(mut dest_track) => {
-                                            let track_info = moq_lite::Track::new(dest_track.info.name.clone());
-                                            match source.subscribe_track(&track_info) {
-                                                Ok(source_track) => {
-                                                    let tname = dest_track.info.name.clone();
-                                                    tokio::spawn(async move {
-                                                        forward_track(&tname, source_track, &mut dest_track).await;
-                                                    });
-                                                }
-                                                Err(e) => {
-                                                    tracing::debug!(track = %dest_track.info.name, error = %e, "Track not in source");
-                                                    dest_track.abort(e).ok();
-                                                }
-                                            }
+                        // Forward track requests: when the native client subscribes to a
+                        // track (catalog.json, audio, etc.), subscribe from the raw MoQ
+                        // cluster consumer and pipe groups/frames through.
+                        loop {
+                            match dynamic.requested_track().await {
+                                Ok(mut dest_track) => {
+                                    let track_info = moq_lite::Track::new(dest_track.info.name.clone());
+                                    match consumer.subscribe_track(&track_info) {
+                                        Ok(source_track) => {
+                                            let tname = dest_track.info.name.clone();
+                                            tokio::spawn(async move {
+                                                forward_track(&tname, source_track, &mut dest_track).await;
+                                            });
                                         }
-                                        Err(_) => break, // Dynamic closed
+                                        Err(e) => {
+                                            tracing::debug!(track = %dest_track.info.name, error = %e, "Track not in source");
+                                            dest_track.abort(e).ok();
+                                        }
                                     }
                                 }
-                            }
-                            Err(e) => {
-                                tracing::warn!(broadcast = %name, error = %e, "Failed to create RemoteBroadcast for bridge");
+                                Err(_) => break, // Dynamic closed
                             }
                         }
                     });
