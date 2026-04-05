@@ -83,18 +83,18 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Room { name } => run_room(name, None).await,
+        Command::Room { name } => run_room(name, None, None).await,
         Command::Join { ticket, name } => {
             let ticket: RoomTicket = ticket.parse()
                 .map_err(|e| anyhow::anyhow!("Invalid room ticket: {e}"))?;
-            run_room(name, Some(ticket)).await
+            run_room(name, Some(ticket), None).await
         }
         Command::Server { url, channel, name, join } => run_server_session(&url, &channel, &name, join).await,
         Command::Sfu { url, session, name } => sfu::run_sfu(&url, &session, &name).await,
     }
 }
 
-async fn run_room(display_name: String, existing_ticket: Option<RoomTicket>) -> Result<()> {
+async fn run_room(display_name: String, existing_ticket: Option<RoomTicket>, browser_url: Option<String>) -> Result<()> {
     tracing::info!("Starting iroh-live audio client...");
 
     let live = Live::from_env().await?.with_router().with_gossip().spawn();
@@ -133,6 +133,13 @@ async fn run_room(display_name: String, existing_ticket: Option<RoomTicket>) -> 
     broadcast.audio().set(mic, AudioCodec::Opus, [AudioPreset::Hq])?;
     handle.publish("audio", &broadcast).await?;
     println!("  Microphone active (Opus). Press Ctrl+C to leave.\n");
+
+    if let Some(ref url) = browser_url {
+        println!("  -------------------------------------------------------");
+        println!("  Browser call URL:");
+        println!("  {url}");
+        println!("  -------------------------------------------------------\n");
+    }
 
     // Keep track handles alive so playback doesn't stop
     let mut _active_tracks: Vec<iroh_live::media::subscribe::MediaTracks> = Vec::new();
@@ -200,9 +207,15 @@ async fn run_server_session_tcp(url: &str, channel: &str, nick: &str, join_exist
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
 
-    let ticket = irc_session_loop(&mut lines, &mut writer, nick, channel, join_existing).await?;
+    let result = irc_session_loop(&mut lines, &mut writer, nick, channel, join_existing).await?;
 
-    if let Some(ticket_str) = ticket {
+    if let Some(ticket_str) = result.ticket {
+        // Build the browser call URL if we have a session ID
+        let browser_url = result.session_id.as_ref().map(|sid| {
+            // Derive the web origin from the server address
+            format!("http://{}/av/call.html?session={sid}", addr.split(':').next().unwrap_or("localhost"))
+        });
+
         println!("  Joining iroh-live room...\n");
         let room_ticket: RoomTicket = ticket_str.parse()
             .map_err(|e| anyhow::anyhow!("Invalid room ticket from server: {e}"))?;
@@ -216,7 +229,7 @@ async fn run_server_session_tcp(url: &str, channel: &str, nick: &str, join_exist
             }
         });
 
-        run_room(nick.to_string(), Some(room_ticket)).await?;
+        run_room(nick.to_string(), Some(room_ticket), browser_url).await?;
     } else {
         println!("  No ticket received — server may not have iroh-live enabled.");
     }
@@ -255,6 +268,7 @@ async fn run_server_session_ws(url: &str, channel: &str, nick: &str, join_existi
 
     let mut registered = false;
     let mut ticket: Option<String> = None;
+    let mut session_id: Option<String> = None;
 
     while let Some(msg) = ws_read.next().await {
         let msg = msg.map_err(|e| anyhow::anyhow!("WS read: {e}"))?;
@@ -307,6 +321,9 @@ async fn run_server_session_ws(url: &str, channel: &str, nick: &str, join_existi
             }
 
             if line.contains("AV session started:") {
+                if let Some(id) = line.split("AV session started: ").nth(1) {
+                    session_id = Some(id.trim().to_string());
+                }
                 println!("  Session created, waiting for ticket...");
             }
 
@@ -317,6 +334,13 @@ async fn run_server_session_ws(url: &str, channel: &str, nick: &str, join_existi
     }
 
     if let Some(ticket_str) = ticket {
+        // Build browser call URL from the server URL and session ID
+        let browser_url = session_id.as_ref().map(|sid| {
+            let host = url.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/');
+            let scheme = if url.starts_with("https://") { "https" } else { "http" };
+            format!("{scheme}://{host}/av/call.html?session={sid}")
+        });
+
         println!("  Joining iroh-live room...\n");
         let room_ticket: RoomTicket = ticket_str.parse()
             .map_err(|e| anyhow::anyhow!("Invalid room ticket from server: {e}"))?;
@@ -332,11 +356,17 @@ async fn run_server_session_ws(url: &str, channel: &str, nick: &str, join_existi
             }
         });
 
-        run_room(nick.to_string(), Some(room_ticket)).await?;
+        run_room(nick.to_string(), Some(room_ticket), browser_url).await?;
     } else {
         println!("  No ticket received — server may not have iroh-live enabled.");
     }
     Ok(())
+}
+
+/// Result from IRC session setup: ticket + optional session ID.
+struct IrcSessionResult {
+    ticket: Option<String>,
+    session_id: Option<String>,
 }
 
 /// Shared IRC session logic for TCP mode.
@@ -346,7 +376,7 @@ async fn irc_session_loop<R, W>(
     nick: &str,
     channel: &str,
     join_existing: bool,
-) -> Result<Option<String>>
+) -> Result<IrcSessionResult>
 where
     R: tokio::io::AsyncRead + Unpin,
     W: tokio::io::AsyncWrite + Unpin,
@@ -358,6 +388,7 @@ where
 
     let mut registered = false;
     let mut ticket: Option<String> = None;
+    let mut session_id: Option<String> = None;
 
     while let Some(line) = lines.next_line().await? {
         tracing::debug!("< {line}");
@@ -400,9 +431,12 @@ where
         }
 
         if line.contains("AV session started:") {
+            if let Some(id) = line.split("AV session started: ").nth(1) {
+                session_id = Some(id.trim().to_string());
+            }
             println!("  Session created, waiting for ticket...");
         }
     }
 
-    Ok(ticket)
+    Ok(IrcSessionResult { ticket, session_id })
 }
