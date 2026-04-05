@@ -25,12 +25,14 @@ pub trait MediaBackend: Send + Sync {
 pub struct IrohLiveBackend {
     live: std::sync::Arc<iroh_live::Live>,
     rooms: parking_lot::Mutex<HashMap<String, ActiveRoom>>,
+    /// Room events waiting to be consumed by the bridge.
+    pending_events: parking_lot::Mutex<HashMap<String, iroh_live::rooms::RoomEvents>>,
 }
 
 #[cfg(feature = "av-native")]
-struct ActiveRoom {
-    ticket: String,
-    _handle: iroh_live::rooms::RoomHandle,
+pub struct ActiveRoom {
+    pub ticket: String,
+    pub handle: iroh_live::rooms::RoomHandle,
 }
 
 #[cfg(feature = "av-native")]
@@ -47,11 +49,19 @@ impl IrohLiveBackend {
         Ok(Self {
             live: std::sync::Arc::new(live),
             rooms: parking_lot::Mutex::new(HashMap::new()),
+            pending_events: parking_lot::Mutex::new(HashMap::new()),
         })
     }
 
     pub fn live(&self) -> &iroh_live::Live {
         &self.live
+    }
+
+    /// Take the Room handle and events for a session (for bridge setup).
+    pub fn take_room_for_bridge(&self, session_id: &str) -> Option<(iroh_live::rooms::RoomHandle, iroh_live::rooms::RoomEvents)> {
+        let handle = self.rooms.lock().get(session_id)?.handle.clone();
+        let events = self.pending_events.lock().remove(session_id)?;
+        Some((handle, events))
     }
 }
 
@@ -70,30 +80,16 @@ impl MediaBackend for IrohLiveBackend {
                 .map_err(|e| format!("Failed to create room: {e}"))?;
 
             let ticket_str = room.ticket().to_string();
-            let (mut events, handle) = room.split();
+            let (events, handle) = room.split();
 
-            // Spawn event consumer — gossip needs this to exchange peer announcements
-            let sid = session_id.clone();
-            tokio::spawn(async move {
-                while let Some(event) = events.recv().await {
-                    match event {
-                        iroh_live::rooms::RoomEvent::PeerJoined { display_name, remote } => {
-                            let name = display_name.as_deref().unwrap_or("unknown");
-                            tracing::info!(session = %sid, peer = %remote, %name, "Peer joined iroh-live room");
-                        }
-                        iroh_live::rooms::RoomEvent::PeerLeft { remote } => {
-                            tracing::info!(session = %sid, peer = %remote, "Peer left iroh-live room");
-                        }
-                        _ => {}
-                    }
-                }
-                tracing::info!(session = %sid, "iroh-live room event loop ended");
-            });
-
+            // Store room — events are consumed by the bridge (av_bridge.rs)
             self.rooms.lock().insert(session_id.clone(), ActiveRoom {
                 ticket: ticket_str.clone(),
-                _handle: handle,
+                handle: handle.clone(),
             });
+
+            // Store events separately for the bridge to consume
+            self.pending_events.lock().insert(session_id.clone(), events);
 
             tracing::info!(session_id = %session_id, ticket = %ticket_str, "Created iroh-live media room");
             Ok(ticket_str)

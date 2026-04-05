@@ -493,6 +493,9 @@ pub struct SharedState {
     /// AV SFU state (MoQ cluster for WebSocket + QUIC connections).
     #[cfg(feature = "av-native")]
     pub sfu_state: Mutex<Option<Arc<crate::av_sfu::SfuState>>>,
+    /// Active MoQ↔Room bridge handles (one per session).
+    #[cfg(feature = "av-native")]
+    pub av_bridges: Mutex<std::collections::HashMap<String, crate::av_bridge::BridgeHandle>>,
     /// S2S manager (if clustering is active).
     pub s2s_manager: Mutex<Option<Arc<crate::s2s::S2sManager>>>,
     /// CRDT document for cluster state convergence.
@@ -957,6 +960,8 @@ impl Server {
             av_media: Mutex::new(None),
             #[cfg(feature = "av-native")]
             sfu_state: Mutex::new(None),
+            #[cfg(feature = "av-native")]
+            av_bridges: Mutex::new(std::collections::HashMap::new()),
             s2s_manager: Mutex::new(None),
             cluster_doc: crate::crdt::ClusterDoc::new(&self.config.server_name),
             db: db.map(Mutex::new),

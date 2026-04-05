@@ -1695,6 +1695,29 @@ fn handle_av_tagmsg(
                                             vec![&nick2, &format!("AV ticket: {ticket}")],
                                         );
                                         send_to(&state2, &conn_id, format!("{notice}\r\n"));
+
+                                        // Start the MoQ↔Room bridge
+                                        #[cfg(feature = "av-native")]
+                                        {
+                                            if let Some((room_handle, room_events)) = backend.take_room_for_bridge(&sid) {
+                                                let sfu = state2.sfu_state.lock().clone();
+                                                if let Some(sfu) = sfu {
+                                                    let bridge = crate::av_bridge::start_bridge(
+                                                        sid.clone(),
+                                                        sfu.cluster.clone(),
+                                                        sfu.auth.clone(),
+                                                        room_handle,
+                                                        room_events,
+                                                    );
+                                                    // Store bridge handle to keep it alive
+                                                    state2.av_bridges.lock().insert(sid.clone(), bridge);
+                                                    tracing::info!(session = %sid, "MoQ↔Room bridge started");
+                                                } else {
+                                                    tracing::warn!(session = %sid, "SFU not available — bridge not started");
+                                                }
+                                            }
+                                        }
+
                                         tracing::info!(session = %sid, "iroh-live room created");
                                     }
                                     Err(e) => {
@@ -1807,7 +1830,9 @@ fn handle_av_tagmsg(
                     if should_end {
                         broadcast_av_state(state, target, &session_id, "ended", &nick, 0, "");
                         broadcast_av_s2s(state, "ended", &session_id, channel.as_deref(), &did, &nick, None, Some(&did));
-                        // Close iroh-live room
+                        // Close iroh-live room and bridge
+                        #[cfg(feature = "av-native")]
+                        { state.av_bridges.lock().remove(&session_id); }
                         let backend = state.av_media.lock().clone();
                         let sid = session_id.clone();
                         tokio::spawn(async move {
@@ -1866,8 +1891,10 @@ fn handle_av_tagmsg(
                     broadcast_av_state(state, target, &session_id, "ended", &nick, 0, "");
                     broadcast_av_s2s(state, "ended", &session_id, channel.as_deref(), &did, &nick, None, Some(&did));
 
-                    // Close iroh-live room
+                    // Close iroh-live room and bridge
                     {
+                        #[cfg(feature = "av-native")]
+                        { state.av_bridges.lock().remove(&session_id); }
                         let backend = state.av_media.lock().clone();
                         let sid = session_id.clone();
                         tokio::spawn(async move {
