@@ -25,14 +25,20 @@ pub fn start_bridge(
 ) -> BridgeHandle {
     let shutdown = tokio::sync::watch::channel(false);
 
+    // Track broadcast names bridged from MoQ→Room so Room→MoQ can skip them
+    // (prevents infinite loop: MoQ→Room→MoQ→Room...)
+    let bridged_from_moq: std::sync::Arc<parking_lot::Mutex<std::collections::HashSet<String>>> =
+        std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashSet::new()));
+
     // MoQ → Room: browser audio into iroh-live Room
     let sid = session_id.clone();
     let cluster2 = cluster.clone();
     let auth2 = auth.clone();
     let room2 = room_handle.clone();
     let mut rx1 = shutdown.1.clone();
+    let bridged_set = bridged_from_moq.clone();
     let moq_to_room = tokio::spawn(async move {
-        if let Err(e) = run_moq_to_room(&sid, &cluster2, &auth2, &room2, &mut rx1).await {
+        if let Err(e) = run_moq_to_room(&sid, &cluster2, &auth2, &room2, &mut rx1, &bridged_set).await {
             tracing::warn!(session = %sid, error = %e, "MoQ→Room bridge ended");
         }
     });
@@ -40,8 +46,9 @@ pub fn start_bridge(
     // Room → MoQ: native audio into MoQ cluster
     let sid2 = session_id;
     let mut rx2 = shutdown.1.clone();
+    let bridged_set2 = bridged_from_moq;
     let room_to_moq = tokio::spawn(async move {
-        if let Err(e) = run_room_to_moq(&sid2, &cluster, &auth, room_events, &mut rx2).await {
+        if let Err(e) = run_room_to_moq(&sid2, &cluster, &auth, room_events, &mut rx2, &bridged_set2).await {
             tracing::warn!(session = %sid2, error = %e, "Room→MoQ bridge ended");
         }
     });
@@ -68,6 +75,7 @@ async fn run_moq_to_room(
     auth: &moq_relay::Auth,
     room_handle: &iroh_live::rooms::RoomHandle,
     shutdown: &mut tokio::sync::watch::Receiver<bool>,
+    bridged_from_moq: &std::sync::Arc<parking_lot::Mutex<std::collections::HashSet<String>>>,
 ) -> anyhow::Result<()> {
     let params = moq_relay::AuthParams {
         path: String::new(),
@@ -95,6 +103,8 @@ async fn run_moq_to_room(
                 }
 
                 if let Some(consumer) = maybe_consumer {
+                    // Record this broadcast name so Room→MoQ skips it (loop prevention)
+                    bridged_from_moq.lock().insert(path_str.clone());
                     tracing::info!(session = %session_id, broadcast = %path_str, "Bridging MoQ → Room");
 
                     // Pass the raw BroadcastConsumer through to the Room via a fresh
@@ -188,6 +198,7 @@ async fn run_room_to_moq(
     auth: &moq_relay::Auth,
     mut room_events: iroh_live::rooms::RoomEvents,
     shutdown: &mut tokio::sync::watch::Receiver<bool>,
+    bridged_from_moq: &std::sync::Arc<parking_lot::Mutex<std::collections::HashSet<String>>>,
 ) -> anyhow::Result<()> {
     let params = moq_relay::AuthParams {
         path: String::new(),
@@ -212,6 +223,16 @@ async fn run_room_to_moq(
                         let remote_id = session.remote_id();
                         let broadcast_name = broadcast.broadcast_name().to_string();
                         let broadcast_path = format!("{session_id}/{broadcast_name}");
+
+                        // Skip broadcasts we bridged from MoQ→Room (prevent loop)
+                        if bridged_from_moq.lock().contains(&broadcast_path) {
+                            tracing::debug!(
+                                session = %session_id,
+                                broadcast = %broadcast_path,
+                                "Skipping Room → MoQ (already bridged from MoQ)"
+                            );
+                            continue;
+                        }
 
                         tracing::info!(
                             session = %session_id,
