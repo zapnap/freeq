@@ -159,15 +159,31 @@ impl AvSessionManager {
         creator_nick: &str,
         title: Option<&str>,
     ) -> Result<AvSession, String> {
-        // Check: only one active session per channel
+        // Check: only one active session per channel.
+        // If the existing session has no active participants (all left/disconnected),
+        // auto-end it so a new session can start.
         if let Some(ch) = channel {
-            if let Some(existing_id) = self.channel_sessions.get(&ch.to_lowercase()) {
-                if let Some(existing) = self.sessions.get(existing_id) {
+            if let Some(existing_id) = self.channel_sessions.get(&ch.to_lowercase()).cloned() {
+                if let Some(existing) = self.sessions.get(&existing_id) {
                     if matches!(existing.state, AvSessionState::Active) {
-                        return Err(format!(
-                            "Channel {} already has an active session: {}",
-                            ch, existing_id
-                        ));
+                        let active_count = existing
+                            .participants
+                            .values()
+                            .filter(|p| p.left_at.is_none())
+                            .count();
+                        if active_count > 0 {
+                            return Err(format!(
+                                "Channel {} already has an active session: {}",
+                                ch, existing_id
+                            ));
+                        }
+                        // No active participants — auto-end the stale session
+                        tracing::info!(
+                            session = %existing_id,
+                            channel = %ch,
+                            "Auto-ending stale session (0 active participants) to allow new session"
+                        );
+                        self.end_session_inner(&existing_id, Some(creator_did));
                     }
                 }
             }

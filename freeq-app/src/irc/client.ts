@@ -1376,10 +1376,12 @@ export async function startAvSession(channel: string, title?: string) {
     const resp = await fetch(`/api/v1/channels/${encodeURIComponent(channel)}/sessions`);
     if (resp.ok) {
       const data = await resp.json();
-      if (data.active) {
+      if (data.active && data.active.state === 'Active') {
         // Session exists — join it instead
         console.log('[av] Session already exists, joining:', data.active.id);
+        store.addSystemMessage(channel, `Joining existing voice session (${data.active.participant_count} participants)`);
         joinAvSession(channel, data.active.id);
+        store.setAvAudioActive(true);
         return;
       }
     }
@@ -1389,6 +1391,7 @@ export async function startAvSession(channel: string, title?: string) {
   }
 
   // No active session — start a new one
+  store.addSystemMessage(channel, 'Starting voice session...');
   const tags: Record<string, string> = { '+freeq.at/av-start': '' };
   if (title) tags['+freeq.at/av-title'] = title;
   const line = format('TAGMSG', [channel], tags);

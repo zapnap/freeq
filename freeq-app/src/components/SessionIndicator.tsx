@@ -1,7 +1,10 @@
+import { useEffect } from 'react';
 import { useStore } from '../store';
 import { joinAvSession, leaveAvSession, endAvSession, startAvSession, getNick } from '../irc/client';
+import type { AvSession, AvParticipant } from '../store';
 
-/** Shows active AV session status in the channel header. */
+/** Shows active AV session status in the channel header.
+ *  Polls the REST API to discover sessions (doesn't rely solely on TAGMSG). */
 export function SessionIndicator({ channel }: { channel: string }) {
   const avSessions = useStore((s) => s.avSessions);
   const activeAvSession = useStore((s) => s.activeAvSession);
@@ -10,6 +13,58 @@ export function SessionIndicator({ channel }: { channel: string }) {
   const connectionState = useStore((s) => s.connectionState);
 
   const isConnected = connectionState === 'connected';
+
+  // Poll REST API for active session on this channel (catches sessions started
+  // before we joined the channel or missed TAGMSG broadcasts)
+  useEffect(() => {
+    if (!isConnected || !channel.startsWith('#')) return;
+
+    let cancelled = false;
+
+    async function poll() {
+      try {
+        const resp = await fetch(`/api/v1/channels/${encodeURIComponent(channel)}/sessions`);
+        if (!resp.ok || cancelled) return;
+        const data = await resp.json();
+        if (cancelled) return;
+
+        if (data.active) {
+          const store = useStore.getState();
+          const existing = store.avSessions.get(data.active.id);
+          if (!existing) {
+            // Session exists on server but not in our store — add it
+            const participants = new Map<string, AvParticipant>();
+            for (const p of data.active.participants || []) {
+              participants.set(p.nick, {
+                did: p.did || '',
+                nick: p.nick,
+                role: p.role || 'speaker',
+                joinedAt: new Date(p.joined_at * 1000),
+              });
+            }
+            const session: AvSession = {
+              id: data.active.id,
+              channel: data.active.channel,
+              createdBy: data.active.created_by || '',
+              createdByNick: data.active.created_by_nick || '',
+              title: data.active.title || undefined,
+              participants,
+              state: 'active',
+              startedAt: new Date(data.active.created_at * 1000),
+              irohTicket: data.active.iroh_ticket || undefined,
+            };
+            store.updateAvSession(session);
+          }
+        }
+      } catch {
+        // Ignore fetch errors
+      }
+    }
+
+    poll();
+    const timer = setInterval(poll, 5000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [channel, isConnected]);
 
   // Find active session for this channel
   const session = [...avSessions.values()].find(
