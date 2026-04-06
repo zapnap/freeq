@@ -75,13 +75,16 @@ export function CallPanel() {
       if (!container) return;
 
       const pub = document.createElement('moq-publish');
+      container.appendChild(pub);
+      publishElRef.current = pub;
+
+      // Set attributes AFTER adding to DOM (matches call.html behavior —
+      // moq-publish may need to be connected before attribute changes trigger)
       const broadcastName = `${sessionId}/${myNick}`;
       pub.setAttribute('url', moqOrigin);
       pub.setAttribute('name', broadcastName);
       pub.setAttribute('source', 'camera');
-      container.appendChild(pub);
-      publishElRef.current = pub;
-      console.log('[call] Publishing:', broadcastName);
+      console.log('[call] Publishing:', broadcastName, 'to', moqOrigin);
 
       // Start polling participants
       pollParticipants();
@@ -140,11 +143,13 @@ export function CallPanel() {
         console.log('[call] Subscribing to:', broadcastName);
 
         const watchEl = document.createElement('moq-watch');
-        watchEl.setAttribute('jitter', '100');
         const canvas = document.createElement('canvas');
         canvas.style.display = 'none';
         watchEl.appendChild(canvas);
         container.appendChild(watchEl);
+
+        // Set attributes AFTER adding to DOM
+        watchEl.setAttribute('jitter', '100');
         watchEl.setAttribute('url', moqOrigin);
         watchEl.setAttribute('name', broadcastName);
 
