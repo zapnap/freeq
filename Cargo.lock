@@ -2175,6 +2175,7 @@ dependencies = [
  "iroh-live",
  "moq-lite",
  "moq-native",
+ "reqwest 0.12.28",
  "rustls",
  "tokio",
  "tokio-tungstenite 0.26.2",

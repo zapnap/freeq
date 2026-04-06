@@ -56,13 +56,35 @@ async fn main() -> Result<()> {
         Err(e) => println!("\n  Demo 4: ERROR — {e}\n"),
     }
 
+    // ── Demo 5: Latecomer joins mid-call ────────────────────────
+    println!("━━━ Demo 5: Latecomer joins mid-call ━━━\n");
+    let demo5 = run_demo5(&irc_addr, &web_url).await;
+    match &demo5 {
+        Ok(true) => println!("\n  Demo 5: PASS\n"),
+        Ok(false) => println!("\n  Demo 5: FAIL\n"),
+        Err(e) => println!("\n  Demo 5: ERROR — {e}\n"),
+    }
+
+    // ── Demo 6: Ungraceful disconnect ─────────────────────────────
+    println!("━━━ Demo 6: Ungraceful disconnect ━━━\n");
+    let demo6 = run_demo6(&irc_addr, &web_url).await;
+    match &demo6 {
+        Ok(true) => println!("\n  Demo 6: PASS\n"),
+        Ok(false) => println!("\n  Demo 6: FAIL\n"),
+        Err(e) => println!("\n  Demo 6: ERROR — {e}\n"),
+    }
+
     // ── Summary ───────────────────────────────────────────────────
     println!("━━━ Results ━━━");
     let d3 = demo3.is_ok_and(|b| b);
     let d4 = demo4.is_ok_and(|b| b);
+    let d5 = demo5.is_ok_and(|b| b);
+    let d6 = demo6.is_ok_and(|b| b);
     println!("  Demo 3 (P2P native clients): {}", if d3 { "PASS" } else { "FAIL" });
     println!("  Demo 4 (mixed call):         {}", if d4 { "PASS" } else { "FAIL" });
-    if d3 && d4 {
+    println!("  Demo 5 (latecomer):          {}", if d5 { "PASS" } else { "FAIL" });
+    println!("  Demo 6 (disconnect):         {}", if d6 { "PASS" } else { "FAIL" });
+    if d3 && d4 && d5 && d6 {
         println!("\n  ALL PASS\n");
     } else {
         println!("\n  SOME FAILURES\n");
@@ -306,6 +328,194 @@ async fn run_demo4(irc_addr: &Option<String>, web_url: &str) -> Result<bool> {
     live.shutdown().await;
 
     Ok(native_result && moq_result)
+}
+
+/// Demo 5: Latecomer joins mid-call.
+/// Browser A publishes to MoQ, then native B joins late and sees A's broadcast
+/// through the bridge. Then MoQ subscriber C joins late and sees both A (direct)
+/// and B (via Room→MoQ bridge).
+async fn run_demo5(irc_addr: &Option<String>, web_url: &str) -> Result<bool> {
+    let moq_url: url::Url = format!("{web_url}/av/moq").parse()?;
+
+    // Start session
+    println!("[1/4] Starting AV session...");
+    let (session_id, iroh_ticket) = start_av_session(irc_addr, web_url, "d5-start").await?;
+    println!("  Session: {session_id}");
+
+    // Browser A publishes FIRST
+    println!("[2/4] Browser A publishes (early bird)...");
+    let _browser_a = publish_moq(&moq_url, &format!("{session_id}/early-alice"), 0xA1).await?;
+    println!("  Alice published");
+
+    // Wait to simulate mid-call delay
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Native B joins LATE
+    println!("[3/4] Native B joins late...");
+    let room_ticket: iroh_live::rooms::RoomTicket = iroh_ticket.parse()
+        .map_err(|e| anyhow::anyhow!("Invalid ticket: {e}"))?;
+    let ep = iroh::Endpoint::builder(iroh::endpoint::presets::N0).bind().await?;
+    let live = iroh_live::Live::builder(ep).with_router().with_gossip().spawn();
+    let room = iroh_live::rooms::Room::new(&live, room_ticket).await?;
+    let (mut events, handle) = room.split();
+    handle.set_display_name("late-bob").await?;
+
+    // Publish from B (so we can test the reverse too)
+    let mut prod_b = moq_lite::Broadcast::produce();
+    let ct = moq_lite::Track::new("catalog.json");
+    let mut cw = prod_b.create_track(ct)?;
+    let mut g = cw.create_group(moq_lite::Group { sequence: 0 })?;
+    g.write_frame(moq_lite::bytes::Bytes::from_static(
+        b"{\"audio\":{\"renditions\":{\"audio\":{\"codec\":\"opus\",\"sampleRate\":48000,\"numberOfChannels\":1,\"bitrate\":128000,\"container\":{\"kind\":\"legacy\"}}}}}",
+    ))?;
+    g.finish().ok();
+    let at = moq_lite::Track::new("audio");
+    let mut aw = prod_b.create_track(at)?;
+    for seq in 0..5u64 {
+        let mut g = aw.create_group(moq_lite::Group { sequence: seq })?;
+        g.write_frame(moq_lite::bytes::Bytes::from(vec![0xB2u8; 480]))?;
+        g.finish().ok();
+    }
+    handle.publish_producer("late-bob", prod_b.clone()).await?;
+
+    // Check: late native B sees early browser A via bridge
+    println!("[4/4] Checking latecomer sees existing broadcast...");
+    let native_sees_alice = timeout(TIMEOUT, async {
+        loop {
+            match events.recv().await {
+                Some(iroh_live::rooms::RoomEvent::BroadcastSubscribed { broadcast, .. }) => {
+                    let name = broadcast.broadcast_name().to_string();
+                    if name.contains("early-alice") {
+                        let consumer = broadcast.consumer().clone();
+                        let at = moq_lite::Track::new("audio");
+                        if let Ok(mut track) = consumer.subscribe_track(&at) {
+                            if let Ok(Some(mut group)) = track.next_group().await {
+                                if let Ok(Some(frame)) = group.read_frame().await {
+                                    println!("  Late Bob got early Alice's audio: {} bytes (0x{:02X})", frame.len(), frame[0]);
+                                    return frame[0] == 0xA1;
+                                }
+                            }
+                        }
+                        return false;
+                    }
+                }
+                Some(_) => {}
+                None => return false,
+            }
+        }
+    }).await.unwrap_or(false);
+
+    // Check: MoQ subscriber C joining even later sees both Alice and Bob
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let (_sub_session, mut sub_consumer) = subscribe_moq(&moq_url).await?;
+    let mut late_moq_saw = std::collections::HashSet::new();
+    let moq_sees_both = timeout(TIMEOUT, async {
+        while let Some((path, announce)) = sub_consumer.announced().await {
+            let p = path.to_string();
+            if p.starts_with(&session_id) && announce.is_some() {
+                late_moq_saw.insert(p);
+                if late_moq_saw.len() >= 2 { return true; }
+            }
+        }
+        false
+    }).await.unwrap_or(false);
+
+    println!("  Late native sees early browser: {}", if native_sees_alice { "YES" } else { "NO" });
+    println!("  Late MoQ subscriber sees both:  {} ({:?})", if moq_sees_both { "YES" } else { "NO" }, late_moq_saw);
+
+    live.shutdown().await;
+    Ok(native_sees_alice && moq_sees_both)
+}
+
+/// Demo 6: Ungraceful disconnect — drop a participant and verify others continue.
+/// Browser A + Native B in call. Drop A. Verify B's broadcast is still in the
+/// MoQ cluster and the session doesn't crash.
+async fn run_demo6(irc_addr: &Option<String>, web_url: &str) -> Result<bool> {
+    let moq_url: url::Url = format!("{web_url}/av/moq").parse()?;
+
+    println!("[1/4] Starting AV session...");
+    let (session_id, iroh_ticket) = start_av_session(irc_addr, web_url, "d6-start").await?;
+    println!("  Session: {session_id}");
+
+    // Browser A publishes
+    println!("[2/4] Browser A publishing...");
+    let browser_a = publish_moq(&moq_url, &format!("{session_id}/browser-alice"), 0xA1).await?;
+    println!("  Alice published");
+
+    // Native B joins and publishes
+    println!("[3/4] Native B joining...");
+    let room_ticket: iroh_live::rooms::RoomTicket = iroh_ticket.parse()
+        .map_err(|e| anyhow::anyhow!("Invalid ticket: {e}"))?;
+    let ep = iroh::Endpoint::builder(iroh::endpoint::presets::N0).bind().await?;
+    let live = iroh_live::Live::builder(ep).with_router().with_gossip().spawn();
+    let room = iroh_live::rooms::Room::new(&live, room_ticket).await?;
+    let (_events, handle) = room.split();
+    handle.set_display_name("native-bob").await?;
+
+    let mut prod_b = moq_lite::Broadcast::produce();
+    let ct = moq_lite::Track::new("catalog.json");
+    let mut cw = prod_b.create_track(ct)?;
+    let mut g = cw.create_group(moq_lite::Group { sequence: 0 })?;
+    g.write_frame(moq_lite::bytes::Bytes::from_static(
+        b"{\"audio\":{\"renditions\":{\"audio\":{\"codec\":\"opus\",\"sampleRate\":48000,\"numberOfChannels\":1,\"bitrate\":128000,\"container\":{\"kind\":\"legacy\"}}}}}",
+    ))?;
+    g.finish().ok();
+    let at = moq_lite::Track::new("audio");
+    let mut aw = prod_b.create_track(at)?;
+    for seq in 0..5u64 {
+        let mut g = aw.create_group(moq_lite::Group { sequence: seq })?;
+        g.write_frame(moq_lite::bytes::Bytes::from(vec![0xB2u8; 480]))?;
+        g.finish().ok();
+    }
+    handle.publish_producer("native-bob", prod_b.clone()).await?;
+    println!("  Bob published");
+
+    // Wait for bridge to settle
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Verify both visible before disconnect
+    let (_sub1, mut sub1_consumer) = subscribe_moq(&moq_url).await?;
+    let mut before = std::collections::HashSet::new();
+    timeout(Duration::from_secs(5), async {
+        while let Some((path, announce)) = sub1_consumer.announced().await {
+            let p = path.to_string();
+            if p.starts_with(&session_id) && announce.is_some() {
+                before.insert(p);
+                if before.len() >= 2 { break; }
+            }
+        }
+    }).await.ok();
+    println!("  Before disconnect: {:?}", before);
+
+    // ── DROP browser A (simulates ungraceful disconnect) ──────────
+    println!("[4/4] Dropping Browser A (ungraceful disconnect)...");
+    drop(browser_a);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Verify: Bob is still visible in MoQ cluster
+    let bob_path = format!("{session_id}/native-bob");
+    let (_sub2, mut sub2_consumer) = subscribe_moq(&moq_url).await?;
+    let bob_still_there = timeout(Duration::from_secs(10), async {
+        while let Some((path, announce)) = sub2_consumer.announced().await {
+            let p = path.to_string();
+            if p == bob_path && announce.is_some() {
+                return true;
+            }
+        }
+        false
+    }).await.unwrap_or(false);
+
+    // Verify: session API still works
+    let session_ok = reqwest::get(format!("{web_url}/api/v1/sessions/{session_id}"))
+        .await
+        .map(|r| r.status().is_success())
+        .unwrap_or(false);
+
+    println!("  Bob still in MoQ cluster: {}", if bob_still_there { "YES" } else { "NO" });
+    println!("  Session API still works:  {}", if session_ok { "YES" } else { "NO" });
+
+    live.shutdown().await;
+    Ok(bob_still_there && session_ok)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────

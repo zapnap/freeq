@@ -546,6 +546,195 @@ async fn demo4_mixed_call_three_participants() {
     tracing::info!("✓ Demo 4 mixed call test PASSED — all 3 participants visible in cluster");
 }
 
+/// Demo 5: Latecomer joins mid-call and sees existing broadcasts.
+///
+/// Verifies that when a new MoQ subscriber connects to the cluster after
+/// broadcasts are already published, the subscriber sees all existing broadcasts
+/// via AnnounceInit.
+#[tokio::test]
+async fn demo5_latecomer_sees_existing_broadcasts() {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    tracing_subscriber::fmt()
+        .with_env_filter("info")
+        .try_init()
+        .ok();
+
+    let session = "late-session";
+
+    // ── Set up cluster ────────────────────────────────────────────
+    let mut client_config = moq_native::ClientConfig::default();
+    client_config.max_streams = Some(moq_relay::DEFAULT_MAX_STREAMS);
+    let client = client_config.init().expect("moq client init");
+
+    let mut auth_config = moq_relay::AuthConfig::default();
+    auth_config.public = Some("/".to_string());
+    let auth = moq_relay::Auth::new(auth_config).await.expect("auth init");
+
+    let cluster = moq_relay::Cluster::new(moq_relay::ClusterConfig::default(), client);
+    let cluster_run = cluster.clone();
+    tokio::spawn(async move { let _ = cluster_run.run().await; });
+
+    let token = auth.verify(&moq_relay::AuthParams {
+        path: String::new(), jwt: None, register: None,
+    }).expect("auth token");
+
+    // ── Early bird: publish two broadcasts BEFORE latecomer subscribes ─
+    let alice_path = format!("{session}/alice");
+    let mut prod_a = moq_lite::Broadcast::produce();
+    let ct = moq_lite::Track::new("catalog.json");
+    let mut cw = prod_a.create_track(ct).expect("track");
+    let mut g = cw.create_group(moq_lite::Group { sequence: 0 }).expect("group");
+    g.write_frame(moq_lite::bytes::Bytes::from_static(b"{\"test\":\"alice\"}")).ok();
+    g.finish().ok();
+    let at = moq_lite::Track::new("audio");
+    let mut aw = prod_a.create_track(at).expect("track");
+    for seq in 0..3u64 {
+        let mut g = aw.create_group(moq_lite::Group { sequence: seq }).expect("group");
+        g.write_frame(moq_lite::bytes::Bytes::from(vec![0xAAu8; 100])).ok();
+        g.finish().ok();
+    }
+    cluster.publisher(&token).expect("pub").publish_broadcast(&alice_path, prod_a.consume());
+
+    let bob_path = format!("{session}/bob");
+    let mut prod_b = moq_lite::Broadcast::produce();
+    let ct = moq_lite::Track::new("catalog.json");
+    let mut cw2 = prod_b.create_track(ct).expect("track");
+    let mut g = cw2.create_group(moq_lite::Group { sequence: 0 }).expect("group");
+    g.write_frame(moq_lite::bytes::Bytes::from_static(b"{\"test\":\"bob\"}")).ok();
+    g.finish().ok();
+    let at = moq_lite::Track::new("audio");
+    let mut aw2 = prod_b.create_track(at).expect("track");
+    for seq in 0..3u64 {
+        let mut g = aw2.create_group(moq_lite::Group { sequence: seq }).expect("group");
+        g.write_frame(moq_lite::bytes::Bytes::from(vec![0xBBu8; 100])).ok();
+        g.finish().ok();
+    }
+    cluster.publisher(&token).expect("pub").publish_broadcast(&bob_path, prod_b.consume());
+
+    tracing::info!("Published Alice and Bob BEFORE latecomer subscribes");
+
+    // ── Latecomer subscribes AFTER both are published ─────────────
+    let mut subscriber = cluster.subscriber(&token).expect("subscriber");
+
+    let mut seen = std::collections::HashSet::new();
+    let result = timeout(Duration::from_secs(5), async {
+        while seen.len() < 2 {
+            if let Some((path, maybe_consumer)) = subscriber.announced().await {
+                let path_str = path.to_string();
+                if maybe_consumer.is_some() && path_str.starts_with(session) {
+                    tracing::info!("Latecomer sees: {path_str}");
+                    seen.insert(path_str);
+                }
+            } else {
+                break;
+            }
+        }
+        seen.len() == 2
+    })
+    .await;
+
+    assert!(result.expect("timeout"), "Latecomer should see both existing broadcasts, saw: {seen:?}");
+    assert!(seen.contains(&alice_path), "Missing Alice");
+    assert!(seen.contains(&bob_path), "Missing Bob");
+    tracing::info!("✓ Demo 5 latecomer test PASSED — sees {seen:?}");
+}
+
+/// Demo 6: Broadcast cleanup when a publisher drops.
+///
+/// Verifies that when a BroadcastProducer is dropped (simulating disconnect),
+/// subscribers get an unannounce and can still read from remaining broadcasts.
+#[tokio::test]
+async fn demo6_broadcast_cleanup_on_disconnect() {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    tracing_subscriber::fmt()
+        .with_env_filter("info")
+        .try_init()
+        .ok();
+
+    let session = "cleanup-session";
+
+    // ── Set up cluster ────────────────────────────────────────────
+    let mut client_config = moq_native::ClientConfig::default();
+    client_config.max_streams = Some(moq_relay::DEFAULT_MAX_STREAMS);
+    let client = client_config.init().expect("moq client init");
+
+    let mut auth_config = moq_relay::AuthConfig::default();
+    auth_config.public = Some("/".to_string());
+    let auth = moq_relay::Auth::new(auth_config).await.expect("auth init");
+
+    let cluster = moq_relay::Cluster::new(moq_relay::ClusterConfig::default(), client);
+    let cluster_run = cluster.clone();
+    tokio::spawn(async move { let _ = cluster_run.run().await; });
+
+    let token = auth.verify(&moq_relay::AuthParams {
+        path: String::new(), jwt: None, register: None,
+    }).expect("auth token");
+
+    // ── Publish two broadcasts ────────────────────────────────────
+    let alice_path = format!("{session}/alice");
+    let mut prod_a = moq_lite::Broadcast::produce();
+    let ct = moq_lite::Track::new("audio");
+    let mut aw = prod_a.create_track(ct).expect("track");
+    let mut g = aw.create_group(moq_lite::Group { sequence: 0 }).expect("group");
+    g.write_frame(moq_lite::bytes::Bytes::from(vec![0xAAu8; 100])).ok();
+    g.finish().ok();
+    cluster.publisher(&token).expect("pub").publish_broadcast(&alice_path, prod_a.consume());
+
+    let bob_path = format!("{session}/bob");
+    let mut prod_b = moq_lite::Broadcast::produce();
+    let ct = moq_lite::Track::new("audio");
+    let mut aw2 = prod_b.create_track(ct).expect("track");
+    let mut g = aw2.create_group(moq_lite::Group { sequence: 0 }).expect("group");
+    g.write_frame(moq_lite::bytes::Bytes::from(vec![0xBBu8; 100])).ok();
+    g.finish().ok();
+    cluster.publisher(&token).expect("pub").publish_broadcast(&bob_path, prod_b.consume());
+
+    // ── Subscribe and see both ────────────────────────────────────
+    let mut subscriber = cluster.subscriber(&token).expect("subscriber");
+
+    let mut seen_active = std::collections::HashSet::new();
+    timeout(Duration::from_secs(3), async {
+        while seen_active.len() < 2 {
+            if let Some((path, Some(_))) = subscriber.announced().await {
+                let p = path.to_string();
+                if p.starts_with(session) { seen_active.insert(p); }
+            } else { break; }
+        }
+    }).await.ok();
+    assert_eq!(seen_active.len(), 2, "Should see both broadcasts initially");
+
+    // ── Drop Alice (simulates disconnect) ─────────────────────────
+    tracing::info!("Dropping Alice's producer (simulating disconnect)");
+    drop(prod_a);
+    drop(aw);
+
+    // ── Verify unannounce arrives ─────────────────────────────────
+    let unannounce = timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some((path, active)) = subscriber.announced().await {
+                let path_str = path.to_string();
+                if path_str == alice_path && active.is_none() {
+                    return true; // Got unannounce for Alice
+                }
+            } else {
+                return false;
+            }
+        }
+    })
+    .await;
+
+    assert!(unannounce.expect("timeout"), "Should receive unannounce for Alice");
+    tracing::info!("✓ Alice unannounced after disconnect");
+
+    // ── Bob is still readable ─────────────────────────────────────
+    // Bob's broadcast should still be in the cluster
+    let bob_consumer = cluster.get(&bob_path);
+    assert!(bob_consumer.is_some(), "Bob's broadcast should still be available");
+    tracing::info!("✓ Bob still available after Alice disconnects");
+
+    tracing::info!("✓ Demo 6 cleanup test PASSED");
+}
+
 /// Forward groups and frames from source to dest (same as av_bridge.rs)
 async fn forward_track(
     name: &str,
