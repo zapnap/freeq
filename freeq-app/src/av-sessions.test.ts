@@ -204,6 +204,47 @@ describe('AV Session State Transitions', () => {
   });
 });
 
+describe('AV Audio State (CallPanel)', () => {
+  beforeEach(resetStore);
+
+  it('setAvAudioActive toggles call panel visibility', () => {
+    expect(useStore.getState().avAudioActive).toBe(false);
+    useStore.getState().setAvAudioActive(true);
+    expect(useStore.getState().avAudioActive).toBe(true);
+    useStore.getState().setAvAudioActive(false);
+    expect(useStore.getState().avAudioActive).toBe(false);
+  });
+
+  it('setAvMuted toggles mute state', () => {
+    expect(useStore.getState().avMuted).toBe(false);
+    useStore.getState().setAvMuted(true);
+    expect(useStore.getState().avMuted).toBe(true);
+    useStore.getState().setAvMuted(false);
+    expect(useStore.getState().avMuted).toBe(false);
+  });
+
+  it('leaving session clears audio active', () => {
+    useStore.getState().updateAvSession(makeSession({ id: 's1' }));
+    useStore.getState().setActiveAvSession('s1');
+    useStore.getState().setAvAudioActive(true);
+    useStore.getState().setAvMuted(true);
+
+    // Simulate leave: clear audio + remove session
+    useStore.getState().setAvAudioActive(false);
+    useStore.getState().setActiveAvSession(null);
+
+    expect(useStore.getState().avAudioActive).toBe(false);
+    expect(useStore.getState().activeAvSession).toBeNull();
+  });
+
+  it('audio state is independent of session state', () => {
+    // Can set audio active before session exists (shouldn't crash)
+    useStore.getState().setAvAudioActive(true);
+    expect(useStore.getState().avAudioActive).toBe(true);
+    expect(useStore.getState().activeAvSession).toBeNull();
+  });
+});
+
 describe('AV Session Edge Cases', () => {
   beforeEach(resetStore);
 

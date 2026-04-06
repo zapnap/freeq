@@ -161,6 +161,8 @@ export interface Store {
   // AV sessions
   avSessions: Map<string, AvSession>;
   activeAvSession: string | null;  // session ID we're in
+  avAudioActive: boolean;          // call panel visible/audio connected
+  avMuted: boolean;                // local mic muted
 
   // Actions — connection
   setConnectionState: (state: TransportState) => void;
@@ -244,6 +246,8 @@ export interface Store {
   updateAvSession: (session: AvSession) => void;
   removeAvSession: (id: string) => void;
   setActiveAvSession: (id: string | null) => void;
+  setAvAudioActive: (active: boolean) => void;
+  setAvMuted: (muted: boolean) => void;
 
   // Join gate
   joinGateChannel: string | null;
@@ -322,6 +326,8 @@ export const useStore = create<Store>((set, get) => ({
   threadChannel: null,
   avSessions: new Map(),
   activeAvSession: null,
+  avAudioActive: false,
+  avMuted: false,
   joinGateChannel: null,
   channelSettingsOpen: null,
 
@@ -890,6 +896,8 @@ export const useStore = create<Store>((set, get) => ({
     return { avSessions, activeAvSession: s.activeAvSession === id ? null : s.activeAvSession };
   }),
   setActiveAvSession: (id) => set({ activeAvSession: id }),
+  setAvAudioActive: (active) => set({ avAudioActive: active }),
+  setAvMuted: (muted) => set({ avMuted: muted }),
 
   setJoinGateChannel: (channel) => set({ joinGateChannel: channel }),
   setChannelSettingsOpen: (channel) => set({ channelSettingsOpen: channel }),

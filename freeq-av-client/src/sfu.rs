@@ -42,6 +42,7 @@ pub async fn run_sfu(sfu_url: &str, session: &str, nick: &str) -> Result<()> {
     let mic = audio_backend.default_input().await?;
     broadcast.audio().set(mic, AudioCodec::Opus, [AudioPreset::Hq])?;
     println!("  Microphone active (Opus).");
+    println!("  NOTE: Echo cancellation is disabled — use headphones to avoid feedback.");
 
     // LocalBroadcast already produces hang-formatted MoQ broadcasts.
     // Wire its BroadcastConsumer directly to the MoQ origin.

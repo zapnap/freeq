@@ -1,19 +1,13 @@
-import { useState, useRef } from 'react';
 import { useStore } from '../store';
 import { joinAvSession, leaveAvSession, endAvSession, startAvSession, getNick } from '../irc/client';
-
-// Call page is served through the main web server at /av/call.
-// SFU QUIC (WebTransport) binds to the same port as the web server.
-// The call page uses the same origin for WebTransport connections.
 
 /** Shows active AV session status in the channel header. */
 export function SessionIndicator({ channel }: { channel: string }) {
   const avSessions = useStore((s) => s.avSessions);
   const activeAvSession = useStore((s) => s.activeAvSession);
+  const avAudioActive = useStore((s) => s.avAudioActive);
   const authDid = useStore((s) => s.authDid);
   const connectionState = useStore((s) => s.connectionState);
-  const [audioActive, setAudioActive] = useState(false);
-  const audioWindowRef = useRef<Window | null>(null);
 
   const isConnected = connectionState === 'connected';
 
@@ -45,37 +39,23 @@ export function SessionIndicator({ channel }: { channel: string }) {
   const myNick = getNick();
   const isHost = session.createdByNick.toLowerCase() === myNick.toLowerCase();
 
-  const openAudio = () => {
-    const callUrl = `/av/call?session=${encodeURIComponent(session.id)}&nick=${encodeURIComponent(myNick)}`;
-    const win = window.open(callUrl, `av-${session.id}`, 'width=480,height=400');
-    if (!win) {
-      useStore.getState().addSystemMessage(channel, 'Audio: popup blocked by browser. Please allow popups for this site.');
-      return;
-    }
-    audioWindowRef.current = win;
-    setAudioActive(true);
-    useStore.getState().addSystemMessage(channel, 'Audio: connecting to SFU...');
-  };
-
   const handleJoinWithAudio = () => {
     joinAvSession(channel, session.id);
-    openAudio();
+    useStore.getState().setAvAudioActive(true);
   };
 
   const handleLeave = () => {
-    if (audioWindowRef.current && !audioWindowRef.current.closed) {
-      audioWindowRef.current.close();
-    }
-    setAudioActive(false);
+    useStore.getState().setAvAudioActive(false);
     leaveAvSession(channel, session.id);
   };
 
   const handleEnd = () => {
-    if (audioWindowRef.current && !audioWindowRef.current.closed) {
-      audioWindowRef.current.close();
-    }
-    setAudioActive(false);
+    useStore.getState().setAvAudioActive(false);
     endAvSession(channel, session.id);
+  };
+
+  const handleConnectAudio = () => {
+    useStore.getState().setAvAudioActive(true);
   };
 
   return (
@@ -99,18 +79,14 @@ export function SessionIndicator({ channel }: { channel: string }) {
 
       {isInSession && (
         <div className="flex items-center gap-1">
-          {!audioActive ? (
+          {!avAudioActive && (
             <button
-              onClick={openAudio}
+              onClick={handleConnectAudio}
               className="text-xs px-2 py-1 rounded-lg bg-success/15 text-success hover:bg-success/25 font-medium flex items-center gap-1"
-              title="Connect audio/video"
+              title="Connect audio"
             >
               <MicIcon /> Audio
             </button>
-          ) : (
-            <span className="text-xs px-2 py-1 rounded-lg bg-success/15 text-success font-medium flex items-center gap-1">
-              <MicIcon /> Connected
-            </span>
           )}
           <button
             onClick={handleLeave}

@@ -25,6 +25,7 @@ import { InstallPrompt } from './components/InstallPrompt';
 import { OnboardingTour } from './components/OnboardingTour';
 import { BookmarksPanel } from './components/BookmarksPanel';
 import { MotdBanner } from './components/MotdBanner';
+import { CallPanel } from './components/CallPanel';
 
 export default function App() {
   const registered = useStore((s) => s.registered);
@@ -219,6 +220,7 @@ export default function App() {
             onToggleMembers={() => setMembersOpen(!membersOpen)}
             membersOpen={membersOpen}
           />
+          <CallPanel />
           <MessageList />
           <ComposeBox />
         </main>

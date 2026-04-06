@@ -134,12 +134,14 @@ async fn run_room(display_name: String, existing_ticket: Option<RoomTicket>, bro
     // Use display name as broadcast name — matches browser convention where
     // broadcast name = nick (browsers subscribe to {session}/{nick})
     handle.publish(&display_name, &broadcast).await?;
-    println!("  Microphone active (Opus). Press Ctrl+C to leave.\n");
+    println!("  Microphone active (Opus). Press Ctrl+C to leave.");
+    println!("  NOTE: Echo cancellation is disabled — use headphones to avoid feedback.\n");
 
     if let Some(ref url) = browser_url {
         println!("  -------------------------------------------------------");
         println!("  Browser call URL:");
         println!("  {url}");
+        println!("  (Browser has built-in echo cancellation — no headphones needed)");
         println!("  -------------------------------------------------------\n");
     }
 
