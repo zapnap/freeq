@@ -2442,6 +2442,16 @@ where
                 let participant_count = state.av_sessions.lock().active_participant_count(av_sid);
                 if *should_end {
                     messaging::broadcast_av_state_pub(&state, ch, av_sid, "ended", av_nick, 0, "");
+                    // Clean up bridge and Room when session ends on disconnect
+                    #[cfg(feature = "av-native")]
+                    { state.av_bridges.lock().remove(av_sid); }
+                    let backend = state.av_media.lock().clone();
+                    let sid = av_sid.clone();
+                    if let Some(backend) = backend {
+                        tokio::spawn(async move {
+                            let _ = crate::av_media::MediaBackend::close_room(backend.as_ref(), &sid).await;
+                        });
+                    }
                 } else {
                     messaging::broadcast_av_state_pub(&state, ch, av_sid, "left", av_nick, participant_count, "");
                 }

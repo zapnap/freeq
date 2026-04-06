@@ -1794,6 +1794,33 @@ fn handle_av_tagmsg(
                         send_to(state, &conn.id, format!("{ticket_notice}\r\n"));
                     }
 
+                    // Ensure bridge is running for this session.
+                    // The bridge may have been cleaned up if the session creator disconnected
+                    // while other participants remained (session stayed active but bridge was orphaned).
+                    #[cfg(feature = "av-native")]
+                    {
+                        let has_bridge = state.av_bridges.lock().contains_key(&session_id);
+                        if !has_bridge {
+                            let backend = state.av_media.lock().clone();
+                            if let Some(backend) = backend.as_ref() {
+                                if let Some((room_handle, room_events)) = backend.take_room_for_bridge(&session_id) {
+                                    let sfu = state.sfu_state.lock().clone();
+                                    if let Some(sfu) = sfu {
+                                        let bridge = crate::av_bridge::start_bridge(
+                                            session_id.clone(),
+                                            sfu.cluster.clone(),
+                                            sfu.auth.clone(),
+                                            room_handle,
+                                            room_events,
+                                        );
+                                        state.av_bridges.lock().insert(session_id.clone(), bridge);
+                                        tracing::info!(session = %session_id, "MoQ↔Room bridge (re)started on join");
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // Broadcast updated state
                     broadcast_av_state(state, target, &session_id, "joined", &nick, participant_count, "");
 
