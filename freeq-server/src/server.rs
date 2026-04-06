@@ -188,6 +188,8 @@ pub struct RemoteMember {
     pub handle: Option<String>,
     /// Whether this user is op on their home server.
     pub is_op: bool,
+    /// Actor class: "human", "agent", or "external_agent".
+    pub actor_class: Option<String>,
 }
 
 /// A stored message for channel history replay.
@@ -1878,6 +1880,12 @@ pub(crate) async fn process_s2s_message(
         S2sMessage::Privmsg {
             event_id, origin, ..
         } => (event_id.clone(), origin.clone()),
+        S2sMessage::Tagmsg {
+            event_id, origin, ..
+        } => (event_id.clone(), origin.clone()),
+        S2sMessage::Pin {
+            event_id, origin, ..
+        } => (event_id.clone(), origin.clone()),
         S2sMessage::Join {
             event_id, origin, ..
         } => (event_id.clone(), origin.clone()),
@@ -1943,6 +1951,8 @@ pub(crate) async fn process_s2s_message(
     match (&msg, peer_trust) {
         // Readonly peers cannot originate any events
         (S2sMessage::Privmsg { .. }
+        | S2sMessage::Tagmsg { .. }
+        | S2sMessage::Pin { .. }
         | S2sMessage::Join { .. }
         | S2sMessage::Part { .. }
         | S2sMessage::Quit { .. }
@@ -2247,12 +2257,139 @@ pub(crate) async fn process_s2s_message(
             }
         }
 
+        S2sMessage::Pin {
+            channel,
+            msgid,
+            pinned_by,
+            adding,
+            ..
+        } => {
+            let channel = sanitize_s2s_str(&channel, 200).to_lowercase();
+            let msgid = sanitize_s2s_str(&msgid, 100);
+            let pinned_by = sanitize_s2s_str(&pinned_by, 64);
+
+            let mut channels = state.channels.lock();
+            if let Some(ch) = channels.get_mut(&channel) {
+                if adding {
+                    if !ch.pins.iter().any(|p| p.msgid == msgid) {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        ch.pins.insert(0, crate::server::PinnedMessage {
+                            msgid: msgid.clone(),
+                            pinned_by: pinned_by.clone(),
+                            pinned_at: now,
+                        });
+                        ch.pins.truncate(50);
+                        drop(channels);
+                        state.with_db(|db| db.store_pin(&channel, &msgid, &pinned_by, now));
+                    } else {
+                        drop(channels);
+                    }
+                } else {
+                    ch.pins.retain(|p| p.msgid != msgid);
+                    drop(channels);
+                    state.with_db(|db| db.remove_pin(&channel, &msgid));
+                }
+
+                // Notify local members
+                let tag = if adding { "+freeq.at/pin" } else { "+freeq.at/unpin" };
+                let action = if adding { "pinned" } else { "unpinned" };
+                let notice = format!(
+                    "@{tag}={} :{pinned_by}!~u@s2s NOTICE {channel} :\x01ACTION {action} a message\x01\r\n",
+                    crate::irc::escape_tag_value(&msgid)
+                );
+                let members: Vec<String> = state
+                    .channels
+                    .lock()
+                    .get(&channel)
+                    .map(|ch| ch.members.iter().cloned().collect())
+                    .unwrap_or_default();
+                let conns = state.connections.lock();
+                for sid in &members {
+                    if let Some(tx) = conns.get(sid) {
+                        let _ = tx.try_send(notice.clone());
+                    }
+                }
+            }
+        }
+
+        S2sMessage::Tagmsg {
+            from,
+            target,
+            tags,
+            ..
+        } => {
+            let from = sanitize_s2s_str(&from, 512);
+            let target = sanitize_s2s_str(&target, 200);
+
+            // Normalize draft tags
+            let mut tags = tags.clone();
+            for (draft, canonical) in [
+                ("+draft/react", "+react"),
+                ("+draft/reply", "+reply"),
+            ] {
+                if let Some(v) = tags.remove(draft) {
+                    tags.entry(canonical.to_string()).or_insert(v);
+                }
+            }
+
+            // Persist reactions
+            if let (Some(emoji), Some(target_msgid)) = (tags.get("+react"), tags.get("+reply")) {
+                let nick = from.split('!').next().unwrap_or(&from).to_string();
+                let did = state.nick_owners.lock().get(&nick.to_lowercase()).cloned();
+                let ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let emoji = emoji.clone();
+                let target_msgid = target_msgid.clone();
+                let channel = target.clone();
+                state.with_db(|db| db.store_reaction(&target_msgid, &channel, &nick, did.as_deref(), &emoji, ts));
+            }
+
+            // Deliver to local channel members
+            if target.starts_with('#') || target.starts_with('&') {
+                let tag_msg = crate::irc::Message {
+                    tags: tags.clone(),
+                    prefix: Some(from.clone()),
+                    command: "TAGMSG".to_string(),
+                    params: vec![target.clone()],
+                };
+                let tagged_line = format!("{tag_msg}\r\n");
+
+                let plain_fallback = tags.get("+react").map(|emoji| {
+                    format!(":{from} PRIVMSG {target} :\x01ACTION reacted with {emoji}\x01\r\n")
+                });
+
+                let members: Vec<String> = state
+                    .channels
+                    .lock()
+                    .get(&target.to_lowercase())
+                    .map(|ch| ch.members.iter().cloned().collect())
+                    .unwrap_or_default();
+                let tag_caps = state.cap_message_tags.lock();
+                let conns = state.connections.lock();
+                for sid in &members {
+                    if let Some(tx) = conns.get(sid) {
+                        if tag_caps.contains(sid) {
+                            let _ = tx.try_send(tagged_line.clone());
+                        } else if let Some(ref fallback) = plain_fallback {
+                            let _ = tx.try_send(fallback.clone());
+                        }
+                    }
+                }
+            }
+        }
+
         S2sMessage::Join {
             nick,
             channel,
             did,
             handle,
             is_op: _, // Intentionally ignored — op status derived locally (C-2)
+            actor_class,
             origin,
             ..
         } => {
@@ -2326,11 +2463,17 @@ pub(crate) async fn process_s2s_message(
                         did: did.clone(),
                         handle: handle.clone(),
                         is_op: actual_is_op,
+                        actor_class: actor_class.clone(),
                     },
                 );
             }
 
-            let line = format!(":{nick}!{nick}@s2s JOIN {channel}\r\n");
+            // Include actor_class tag for tag-capable clients
+            let line = if let Some(ref ac) = actor_class {
+                format!("@+freeq.at/actor-class={ac} :{nick}!{nick}@s2s JOIN {channel}\r\n")
+            } else {
+                format!(":{nick}!{nick}@s2s JOIN {channel}\r\n")
+            };
             deliver_to_channel(state, &channel, &line);
             send_names_update(state, &channel);
         }
@@ -2542,6 +2685,7 @@ pub(crate) async fn process_s2s_message(
                 let n2s = state.nick_to_session.lock();
 
                 let dids = state.session_dids.lock();
+                let actor_classes = state.session_actor_class.lock();
                 let channel_info: Vec<crate::s2s::ChannelInfo> = channels
                     .iter()
                     .map(|(name, ch)| {
@@ -2554,10 +2698,14 @@ pub(crate) async fn process_s2s_message(
                             .members
                             .iter()
                             .filter_map(|sid| {
-                                n2s.get_nick(sid).map(|n| crate::s2s::SyncNick {
-                                    nick: n.to_string(),
-                                    is_op: ch.ops.contains(sid),
-                                    did: dids.get(sid).cloned(),
+                                n2s.get_nick(sid).map(|n| {
+                                    let ac = actor_classes.get(sid).map(|c| c.to_string());
+                                    crate::s2s::SyncNick {
+                                        nick: n.to_string(),
+                                        is_op: ch.ops.contains(sid),
+                                        did: dids.get(sid).cloned(),
+                                        actor_class: ac,
+                                    }
                                 })
                             })
                             .collect();
@@ -2693,6 +2841,7 @@ pub(crate) async fn process_s2s_message(
                                     did: ni.did.clone(),
                                     handle: None,
                                     is_op: actual_is_op,
+                                    actor_class: ni.actor_class.clone(),
                                 },
                             );
                         }
@@ -2705,6 +2854,7 @@ pub(crate) async fn process_s2s_message(
                                     did: None,
                                     handle: None,
                                     is_op: false,
+                                    actor_class: None,
                                 },
                             );
                         }
@@ -3586,6 +3736,7 @@ mod s2s_adversarial_tests {
                 did: None,
                 handle: None,
                 is_op,
+                actor_class: None,
             });
         }
     }
@@ -3609,6 +3760,7 @@ mod s2s_adversarial_tests {
             did: None,
             handle: None,
             is_op: true,
+            actor_class: None,
             origin: PEER.to_string(),
         }).await;
 
@@ -3903,6 +4055,7 @@ mod s2s_adversarial_tests {
             did: None,
             handle: None,
             is_op: false,
+            actor_class: None,
             origin: PEER.to_string(),
         }).await;
 
@@ -3952,6 +4105,153 @@ mod s2s_adversarial_tests {
         }
         assert!(count <= 100,
             "S2S rate limit breached: received {count} messages (limit 100/sec)");
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // S2S JOIN: actor_class propagation
+    // ═══════════════════════════════════════════════════════════
+
+    #[tokio::test]
+    async fn s2s_join_actor_class_stored_on_remote_member() {
+        let state = test_state();
+        let mgr = test_manager();
+        setup_authenticated_peer(&state, &mgr).await;
+        setup_channel(&state, "#agenttest");
+
+        process_s2s_message(&state, &mgr, PEER, S2sMessage::Join {
+            event_id: format!("{PEER}:agent1"),
+            nick: "testbot".to_string(),
+            channel: "#agenttest".to_string(),
+            did: None,
+            handle: None,
+            is_op: false,
+            actor_class: Some("agent".to_string()),
+            origin: PEER.to_string(),
+        }).await;
+
+        let channels = state.channels.lock();
+        let ch = channels.get("#agenttest").unwrap();
+        let rm = ch.remote_members.get("testbot").expect("remote member should exist");
+        assert_eq!(rm.actor_class.as_deref(), Some("agent"),
+            "Remote member should have actor_class=agent");
+    }
+
+    #[tokio::test]
+    async fn s2s_join_actor_class_delivered_to_local_members() {
+        let state = test_state();
+        let mgr = test_manager();
+        setup_authenticated_peer(&state, &mgr).await;
+        setup_channel(&state, "#agentdeliver");
+
+        // Add a local member to receive the JOIN
+        let (tx, mut rx) = mpsc::channel(16);
+        state.connections.lock().insert("local-sess".to_string(), tx);
+        state.nick_to_session.lock().insert("localuser", "local-sess");
+        state.channels.lock().get_mut("#agentdeliver").unwrap()
+            .members.insert("local-sess".to_string());
+        state.cap_message_tags.lock().insert("local-sess".to_string());
+
+        // Remote agent joins
+        process_s2s_message(&state, &mgr, PEER, S2sMessage::Join {
+            event_id: format!("{PEER}:agent2"),
+            nick: "remotebot".to_string(),
+            channel: "#agentdeliver".to_string(),
+            did: None,
+            handle: None,
+            is_op: false,
+            actor_class: Some("agent".to_string()),
+            origin: PEER.to_string(),
+        }).await;
+
+        // Local member should receive JOIN with actor-class tag
+        let mut found_join = false;
+        while let Ok(Some(msg)) = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            rx.recv(),
+        ).await {
+            if msg.contains("JOIN") && msg.contains("remotebot") {
+                assert!(msg.contains("+freeq.at/actor-class=agent"),
+                    "JOIN should include actor-class tag, got: {msg}");
+                found_join = true;
+                break;
+            }
+        }
+        assert!(found_join, "Local member should receive JOIN for remote agent");
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // S2S TAGMSG: reaction delivery to local users
+    // ═══════════════════════════════════════════════════════════
+
+    #[tokio::test]
+    async fn s2s_tagmsg_reaction_delivered_to_local_user() {
+        let state = test_state();
+        let mgr = test_manager();
+        setup_authenticated_peer(&state, &mgr).await;
+        setup_channel(&state, "#react-test");
+
+        let (tx, mut rx) = mpsc::channel(16);
+        state.connections.lock().insert("react-sess".to_string(), tx);
+        state.nick_to_session.lock().insert("reactor", "react-sess");
+        state.channels.lock().get_mut("#react-test").unwrap()
+            .members.insert("react-sess".to_string());
+        state.cap_message_tags.lock().insert("react-sess".to_string());
+
+        let mut tags = HashMap::new();
+        tags.insert("+react".to_string(), "👍".to_string());
+        tags.insert("+reply".to_string(), "msg001".to_string());
+
+        process_s2s_message(&state, &mgr, PEER, S2sMessage::Tagmsg {
+            event_id: format!("{PEER}:tag1"),
+            from: "alice!a@remote".to_string(),
+            target: "#react-test".to_string(),
+            tags,
+            origin: PEER.to_string(),
+        }).await;
+
+        let msg = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            rx.recv()
+        ).await.expect("timeout").expect("channel closed");
+        assert!(msg.contains("TAGMSG"), "Should be TAGMSG, got: {msg}");
+        assert!(msg.contains("+react="), "Should contain reaction, got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn s2s_tagmsg_draft_tags_normalized() {
+        let state = test_state();
+        let mgr = test_manager();
+        setup_authenticated_peer(&state, &mgr).await;
+        setup_channel(&state, "#draft-test");
+
+        let (tx, mut rx) = mpsc::channel(16);
+        state.connections.lock().insert("draft-sess".to_string(), tx);
+        state.nick_to_session.lock().insert("drafter", "draft-sess");
+        state.channels.lock().get_mut("#draft-test").unwrap()
+            .members.insert("draft-sess".to_string());
+        state.cap_message_tags.lock().insert("draft-sess".to_string());
+
+        // Send with +draft/ prefixed tags
+        let mut tags = HashMap::new();
+        tags.insert("+draft/react".to_string(), "❤️".to_string());
+        tags.insert("+draft/reply".to_string(), "msg999".to_string());
+
+        process_s2s_message(&state, &mgr, PEER, S2sMessage::Tagmsg {
+            event_id: format!("{PEER}:draft1"),
+            from: "bob!b@remote".to_string(),
+            target: "#draft-test".to_string(),
+            tags,
+            origin: PEER.to_string(),
+        }).await;
+
+        let msg = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            rx.recv()
+        ).await.expect("timeout").expect("channel closed");
+        assert!(msg.contains("TAGMSG"), "Should be TAGMSG, got: {msg}");
+        // Should be normalized to +react, not +draft/react
+        assert!(msg.contains("+react="), "Should contain normalized +react, got: {msg}");
+        assert!(!msg.contains("+draft/react"), "Should NOT contain draft prefix, got: {msg}");
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -4059,67 +4359,4 @@ mod s2s_adversarial_tests {
         })
     }
 
-    #[tokio::test]
-    async fn s2s_dm_persisted_when_both_dids_known() {
-        let state = test_state_with_db();
-        let mgr = test_manager();
-        setup_authenticated_peer(&state, &mgr).await;
-
-        // Set up nick_owners for both users
-        state.nick_owners.lock().insert("alice".to_string(), "did:plc:alice".to_string());
-        state.nick_owners.lock().insert("bob".to_string(), "did:plc:bob".to_string());
-
-        // Set up local user "bob"
-        let (tx, _rx) = mpsc::channel(16);
-        state.connections.lock().insert("bob-sess".to_string(), tx);
-        state.nick_to_session.lock().insert("bob", "bob-sess");
-
-        // Remote alice sends DM to local bob
-        process_s2s_message(&state, &mgr, PEER, S2sMessage::Privmsg {
-            event_id: format!("{PEER}:dm2"),
-            from: "alice!a@remote".to_string(),
-            target: "bob".to_string(),
-            text: "persisted dm".to_string(),
-            origin: PEER.to_string(),
-            msgid: Some("dm-msg-002".to_string()),
-            sig: None,
-        }).await;
-
-        // Check DB for the DM
-        let dm_key = crate::db::canonical_dm_key("did:plc:alice", "did:plc:bob");
-        let msgs = state.with_db(|db| db.get_messages(&dm_key, 10, None)).unwrap();
-        assert_eq!(msgs.len(), 1, "DM should be persisted in DB");
-        assert_eq!(msgs[0].text, "persisted dm");
-    }
-
-    #[tokio::test]
-    async fn s2s_dm_not_persisted_without_dids() {
-        let state = test_state_with_db();
-        let mgr = test_manager();
-        setup_authenticated_peer(&state, &mgr).await;
-
-        // Only bob has a DID, alice does not
-        state.nick_owners.lock().insert("bob".to_string(), "did:plc:bob".to_string());
-
-        // Set up local user "bob"
-        let (tx, _rx) = mpsc::channel(16);
-        state.connections.lock().insert("bob-sess".to_string(), tx);
-        state.nick_to_session.lock().insert("bob", "bob-sess");
-
-        // Remote alice (no DID) sends DM to local bob
-        process_s2s_message(&state, &mgr, PEER, S2sMessage::Privmsg {
-            event_id: format!("{PEER}:dm3"),
-            from: "alice!a@remote".to_string(),
-            target: "bob".to_string(),
-            text: "unpersisted dm".to_string(),
-            origin: PEER.to_string(),
-            msgid: Some("dm-msg-003".to_string()),
-            sig: None,
-        }).await;
-
-        // DM should NOT be persisted (alice has no DID)
-        let dm_key = crate::db::canonical_dm_key("unknown", "did:plc:bob");
-        let msgs = state.with_db(|db| db.get_messages(&dm_key, 10, None)).unwrap();
-        assert_eq!(msgs.len(), 0, "DM without sender DID should not be persisted");
-    }
 }

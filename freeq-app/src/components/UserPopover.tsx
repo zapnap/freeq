@@ -4,6 +4,52 @@ import { useStore } from '../store';
 import { sendWhois } from '../irc/client';
 import * as e2ee from '../lib/e2ee';
 
+function ProvenanceBlock({ provenance }: { provenance: NonNullable<ActorInfo['provenance']> }) {
+  const [creatorProfile, setCreatorProfile] = useState<ATProfile | null>(null);
+  useEffect(() => {
+    if (provenance.creator_did) {
+      fetchProfile(provenance.creator_did).then((p) => p && setCreatorProfile(p));
+    }
+  }, [provenance.creator_did]);
+
+  return (
+    <div className="mt-2 p-2 bg-bg-tertiary rounded-lg text-left">
+      <div className="text-[10px] text-fg-dim font-semibold mb-1">Provenance</div>
+      {provenance.creator_did && (
+        <div className="text-[10px] text-fg-dim flex items-center gap-1.5">
+          <span className="text-fg-dim/60">Creator:</span>
+          <button
+            onClick={() => { navigator.clipboard.writeText(provenance.creator_did!); import('./Toast').then(m => m.showToast('DID copied', 'success', 2000)); }}
+            title="Click to copy DID"
+            className="flex items-center gap-1 cursor-pointer hover:opacity-80"
+          >
+            {creatorProfile?.avatar && (
+              <img src={creatorProfile.avatar} alt="" className="w-3.5 h-3.5 rounded-full" />
+            )}
+            <span className="text-fg-muted">
+              {creatorProfile ? (creatorProfile.displayName || creatorProfile.handle) : provenance.creator_did}
+            </span>
+          </button>
+        </div>
+      )}
+      {provenance.source_repo && (
+        <div className="text-[10px] text-fg-dim">
+          <span className="text-fg-dim/60">Source:</span>{' '}
+          <a href={provenance.source_repo} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline">
+            {provenance.source_repo.replace('https://', '')}
+          </a>
+        </div>
+      )}
+      {provenance.implementation_ref && (
+        <div className="text-[10px] text-fg-dim">
+          <span className="text-fg-dim/60">Impl:</span>{' '}
+          <span className="font-mono">{provenance.implementation_ref}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface ActorInfo {
   actor_class?: string;
   did?: string;
@@ -214,29 +260,7 @@ export function UserPopover({ nick, did, position, onClose }: UserPopoverProps) 
 
           {/* Provenance */}
           {actorInfo?.provenance && (
-            <div className="mt-2 p-2 bg-bg-tertiary rounded-lg text-left">
-              <div className="text-[10px] text-fg-dim font-semibold mb-1">Provenance</div>
-              {actorInfo.provenance.creator_did && (
-                <div className="text-[10px] text-fg-dim">
-                  <span className="text-fg-dim/60">Creator:</span>{' '}
-                  <span className="font-mono">{actorInfo.provenance.creator_did.slice(0, 40)}…</span>
-                </div>
-              )}
-              {actorInfo.provenance.source_repo && (
-                <div className="text-[10px] text-fg-dim">
-                  <span className="text-fg-dim/60">Source:</span>{' '}
-                  <a href={actorInfo.provenance.source_repo} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline">
-                    {actorInfo.provenance.source_repo.replace('https://', '')}
-                  </a>
-                </div>
-              )}
-              {actorInfo.provenance.implementation_ref && (
-                <div className="text-[10px] text-fg-dim">
-                  <span className="text-fg-dim/60">Impl:</span>{' '}
-                  <span className="font-mono">{actorInfo.provenance.implementation_ref}</span>
-                </div>
-              )}
-            </div>
+            <ProvenanceBlock provenance={actorInfo.provenance} />
           )}
 
           {/* Heartbeat */}

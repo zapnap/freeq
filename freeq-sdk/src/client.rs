@@ -240,10 +240,10 @@ impl ClientHandle {
 
     // ── Convenience helpers ──
 
-    /// Send a reply to a specific message (adds +draft/reply tag).
+    /// Send a reply to a specific message (adds +reply tag).
     pub async fn reply(&self, target: &str, msgid: &str, text: &str) -> Result<()> {
         let mut tags = std::collections::HashMap::new();
-        tags.insert("+draft/reply".to_string(), msgid.to_string());
+        tags.insert("+reply".to_string(), msgid.to_string());
         self.send_tagged(target, text, tags).await
     }
 
@@ -317,8 +317,8 @@ impl ClientHandle {
     /// Send a reaction emoji to a specific message.
     pub async fn react(&self, target: &str, emoji: &str, msgid: &str) -> Result<()> {
         let mut tags = std::collections::HashMap::new();
-        tags.insert("+draft/react".to_string(), emoji.to_string());
-        tags.insert("+draft/reply".to_string(), msgid.to_string());
+        tags.insert("+react".to_string(), emoji.to_string());
+        tags.insert("+reply".to_string(), msgid.to_string());
         self.send_tagmsg(target, tags).await
     }
 

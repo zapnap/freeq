@@ -99,6 +99,53 @@ async fn guest_connection() {
     server_handle.abort();
 }
 
+// ── Test: VERSION includes git hash ─────────────────────────────────
+
+#[tokio::test]
+async fn version_includes_git_hash() {
+    let (addr, server_handle) = start_test_server(empty_resolver()).await;
+
+    let config = ConnectConfig {
+        server_addr: addr.to_string(),
+        nick: "vercheck".to_string(),
+        user: "vercheck".to_string(),
+        realname: "Version Check".to_string(),
+        ..Default::default()
+    };
+
+    let (handle, mut events) = client::connect(config, None);
+    expect_event(
+        &mut events,
+        2000,
+        |e| matches!(e, Event::Registered { .. }),
+        "Registered",
+    )
+    .await;
+
+    handle.raw("VERSION").await.unwrap();
+
+    // VERSION reply (351) should contain "freeq-" and a git hash
+    let version_evt = expect_event(
+        &mut events,
+        2000,
+        |e| matches!(e, Event::RawLine(line) if line.contains("351")),
+        "VERSION reply",
+    )
+    .await;
+
+    if let Event::RawLine(line) = &version_evt {
+        assert!(line.contains("freeq-"), "VERSION should contain 'freeq-', got: {line}");
+        // Should have version-hash format (e.g. freeq-0.1.0-3a6d138)
+        assert!(
+            line.contains("freeq-0.") && line.matches('-').count() >= 2,
+            "VERSION should have version-hash format, got: {line}"
+        );
+    }
+
+    handle.quit(None).await.unwrap();
+    server_handle.abort();
+}
+
 // ── Test: Authenticated connection with secp256k1 ───────────────────
 
 #[tokio::test]
