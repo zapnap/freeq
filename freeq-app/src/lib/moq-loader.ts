@@ -26,6 +26,27 @@ export function loadMoqComponents(): Promise<void> {
     let remaining = SCRIPTS.length;
     let failed = false;
 
+    // The moq-publish and moq-watch scripts auto-initialize on load and
+    // expect their elements to already exist in the DOM. Add hidden
+    // placeholder elements so the scripts don't throw "missing element".
+    // CallPanel will create its own elements later; these are just for init.
+    if (!document.querySelector('moq-publish')) {
+      const placeholder = document.createElement('moq-publish');
+      placeholder.style.display = 'none';
+      placeholder.id = '__moq-placeholder-pub';
+      document.body.appendChild(placeholder);
+    }
+    if (!document.querySelector('moq-watch')) {
+      const placeholder = document.createElement('moq-watch');
+      placeholder.style.display = 'none';
+      // moq-watch needs a canvas child
+      const canvas = document.createElement('canvas');
+      canvas.style.display = 'none';
+      placeholder.appendChild(canvas);
+      placeholder.id = '__moq-placeholder-watch';
+      document.body.appendChild(placeholder);
+    }
+
     // Preload shared dependencies
     for (const href of PRELOADS) {
       if (!document.querySelector(`link[href="${href}"]`)) {
