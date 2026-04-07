@@ -26,6 +26,17 @@ base64 = "0.22"
 serde_json = "1"
 aes-gcm = "0.10"
 
+# AV (voice/video via MoQ SFU)
+moq-native = { git = "https://github.com/Frando/moq", branch = "deps/iroh-main", default-features = false, features = ["noq", "websocket", "aws-lc-rs"], optional = true }
+moq-lite = { git = "https://github.com/Frando/moq", branch = "deps/iroh-main", optional = true }
+iroh-live = { git = "https://github.com/n0-computer/iroh-live", default-features = false, features = ["opus"], optional = true }
+rustls = { version = "0.23", features = ["aws-lc-rs"], default-features = false, optional = true }
+url = { version = "2", optional = true }
+
+[features]
+default = []
+av = ["moq-native", "moq-lite", "iroh-live", "rustls", "url"]
+
 [build-dependencies]
 uniffi = { version = "0.29", features = ["build"] }
 

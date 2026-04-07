@@ -13,6 +13,7 @@ static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
 
 uniffi::include_scaffolding!("freeq");
 
+
 // ── Types (must match UDL exactly) ──
 
 pub struct IrcMessage {
@@ -538,7 +539,7 @@ fn convert_event(event: &freeq_sdk::event::Event) -> FreeqEvent {
             nick: nick.clone(),
             info: info.clone(),
         },
-        Event::RawLine(_) => FreeqEvent::Notice { text: String::new() }
+        Event::RawLine(_) => FreeqEvent::Notice { text: String::new() },
         _ => FreeqEvent::Notice {
             text: String::new(),
         },
@@ -928,4 +929,183 @@ impl FreeqP2p {
         let _ = self._shutdown.lock().unwrap().take();
         let _ = self.handle.lock().unwrap().take();
     }
+}
+
+// ── AV (voice/video via MoQ SFU) ─────────────────────────────────
+
+pub enum AvEvent {
+    Connected,
+    Disconnected { reason: String },
+    ParticipantJoined { nick: String },
+    ParticipantLeft { nick: String },
+    AudioTrackStarted { nick: String },
+    AudioTrackStopped { nick: String },
+    Error { message: String },
+}
+
+pub trait AvEventHandler: Send + Sync + 'static {
+    fn on_av_event(&self, event: AvEvent);
+}
+
+#[cfg(feature = "av")]
+pub struct FreeqAv {
+    _session: Mutex<Option<moq_lite::Session>>,
+    _origin: Mutex<Option<moq_lite::OriginProducer>>,
+    _shutdown: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    connected: Mutex<bool>,
+}
+
+#[cfg(not(feature = "av"))]
+pub struct FreeqAv {
+    connected: Mutex<bool>,
+}
+
+#[cfg(feature = "av")]
+impl FreeqAv {
+    fn new(
+        server_url: String,
+        session_id: String,
+        nick: String,
+        handler: Box<dyn AvEventHandler>,
+    ) -> Result<Self, FreeqError> {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
+        let broadcast_name = format!("{session_id}/{nick}");
+
+        // Set up audio capture via iroh-live
+        let broadcast = iroh_live::media::publish::LocalBroadcast::new();
+        let audio_backend = iroh_live::media::audio_backend::AudioBackend::default();
+        audio_backend.set_aec_enabled(false);
+
+        let mic = RUNTIME
+            .block_on(audio_backend.default_input())
+            .map_err(|_| FreeqError::ConnectionFailed)?;
+
+        broadcast
+            .audio()
+            .set(mic, iroh_live::media::codec::AudioCodec::Opus, [iroh_live::media::format::AudioPreset::Hq])
+            .map_err(|_| FreeqError::ConnectionFailed)?;
+
+        // Create MoQ origin and publish our audio
+        let origin = moq_lite::Origin::produce();
+        origin.publish_broadcast(&broadcast_name, broadcast.consume());
+
+        let sub_origin = moq_lite::Origin::produce();
+        let mut sub_consumer = sub_origin.consume();
+
+        // Connect to MoQ SFU via WebSocket
+        let mut client_config = moq_native::ClientConfig::default();
+        client_config.tls.disable_verify = Some(true);
+        client_config.backend = Some(moq_native::QuicBackend::Noq);
+        let client = client_config.init().map_err(|_| FreeqError::ConnectionFailed)?;
+
+        let moq_url: url::Url = format!("{server_url}/av/moq")
+            .parse()
+            .map_err(|_| FreeqError::InvalidArgument)?;
+
+        let session = RUNTIME
+            .block_on(async {
+                client
+                    .with_publish(origin.consume())
+                    .with_consume(sub_origin)
+                    .connect(moq_url)
+                    .await
+            })
+            .map_err(|_| FreeqError::ConnectionFailed)?;
+
+        tracing::info!(broadcast = %broadcast_name, "AV: connected to MoQ SFU");
+        handler.on_av_event(AvEvent::Connected);
+
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+
+        // Watch for incoming broadcasts (other participants)
+        let our_name = broadcast_name.clone();
+        let audio_for_playback = audio_backend;
+        RUNTIME.spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = &mut shutdown_rx => break,
+                    announced = sub_consumer.announced() => {
+                        match announced {
+                            Some((path, Some(broadcast_consumer))) => {
+                                let path_str = path.to_string();
+                                if path_str == our_name { continue; }
+
+                                let nick = path_str.split('/').last().unwrap_or("unknown").to_string();
+                                tracing::info!(nick = %nick, "AV: participant broadcast");
+                                handler.on_av_event(AvEvent::ParticipantJoined { nick: nick.clone() });
+
+                                let ab = audio_for_playback.clone();
+                                tokio::spawn(async move {
+                                    match iroh_live::media::subscribe::RemoteBroadcast::new(&path_str, broadcast_consumer).await {
+                                        Ok(remote) => {
+                                            match remote.media(&ab, Default::default()).await {
+                                                Ok(tracks) => {
+                                                    if tracks.audio.is_some() {
+                                                        tracing::info!(nick = %nick, "AV: playing audio");
+                                                        let _tracks = tracks;
+                                                        // Hold tracks alive until session ends
+                                                        std::future::pending::<()>().await;
+                                                    }
+                                                }
+                                                Err(e) => tracing::warn!(nick = %nick, "AV: audio error: {e}"),
+                                            }
+                                        }
+                                        Err(e) => tracing::warn!(nick = %nick, "AV: subscribe error: {e}"),
+                                    }
+                                });
+                            }
+                            Some((path, None)) => {
+                                let nick = path.to_string().split('/').last().unwrap_or("unknown").to_string();
+                                handler.on_av_event(AvEvent::ParticipantLeft { nick });
+                            }
+                            None => break,
+                        }
+                    }
+                }
+            }
+            handler.on_av_event(AvEvent::Disconnected { reason: "session ended".to_string() });
+        });
+
+        // Keep broadcast alive
+        std::mem::forget(broadcast);
+
+        Ok(Self {
+            _session: Mutex::new(Some(session)),
+            _origin: Mutex::new(Some(origin)),
+            _shutdown: Mutex::new(Some(shutdown_tx)),
+            connected: Mutex::new(true),
+        })
+    }
+
+    fn leave(&self) {
+        if let Some(tx) = self._shutdown.lock().unwrap().take() {
+            let _ = tx.send(());
+        }
+        *self.connected.lock().unwrap() = false;
+    }
+
+    fn set_muted(&self, _muted: bool) {
+        tracing::info!(muted = _muted, "AV: mute toggled");
+    }
+
+    fn is_connected(&self) -> bool {
+        *self.connected.lock().unwrap()
+    }
+}
+
+#[cfg(not(feature = "av"))]
+impl FreeqAv {
+    fn new(
+        _server_url: String,
+        _session_id: String,
+        _nick: String,
+        _handler: Box<dyn AvEventHandler>,
+    ) -> Result<Self, FreeqError> {
+        Err(FreeqError::ConnectionFailed) // AV not compiled in
+    }
+
+    fn leave(&self) {}
+    fn set_muted(&self, _muted: bool) {}
+    fn is_connected(&self) -> bool { false }
 }

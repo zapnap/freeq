@@ -186,6 +186,34 @@ interface FreeqP2p {
     void shutdown();
 };
 
+// ── AV (voice/video calls via MoQ SFU) ──
+
+[Enum]
+interface AvEvent {
+    Connected();
+    Disconnected(string reason);
+    ParticipantJoined(string nick);
+    ParticipantLeft(string nick);
+    AudioTrackStarted(string nick);
+    AudioTrackStopped(string nick);
+    Error(string message);
+};
+
+callback interface AvEventHandler {
+    void on_av_event(AvEvent event);
+};
+
+interface FreeqAv {
+    [Throws=FreeqError]
+    constructor(string server_url, string session_id, string nick, AvEventHandler handler);
+
+    void leave();
+
+    void set_muted(boolean muted);
+
+    boolean is_connected();
+};
+
 [Error]
 enum FreeqError {
     "ConnectionFailed",
