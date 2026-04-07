@@ -57,8 +57,11 @@ export function CallPanel() {
       if (cancelled) return;
 
       // Request mic permission (camera handled separately on toggle)
+      // We only need the permission — stop the stream immediately so it
+      // doesn't interfere with moq-publish's own getUserMedia call.
       try {
-        await navigator.mediaDevices.getUserMedia({ audio: true });
+        const permStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        permStream.getTracks().forEach((t) => t.stop());
       } catch (e: unknown) {
         const err = e as { name?: string; message?: string };
         const reason = err.name === 'NotAllowedError' ? 'microphone permission denied'
