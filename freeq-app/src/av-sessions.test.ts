@@ -204,7 +204,7 @@ describe('AV Session State Transitions', () => {
   });
 });
 
-describe('AV Audio State (CallPanel)', () => {
+describe('AV Audio & Video State (CallPanel)', () => {
   beforeEach(resetStore);
 
   it('setAvAudioActive toggles call panel visibility', () => {
@@ -223,22 +223,45 @@ describe('AV Audio State (CallPanel)', () => {
     expect(useStore.getState().avMuted).toBe(false);
   });
 
-  it('leaving session clears audio active', () => {
+  it('setAvCameraOn toggles camera (default off)', () => {
+    expect(useStore.getState().avCameraOn).toBe(false);
+    useStore.getState().setAvCameraOn(true);
+    expect(useStore.getState().avCameraOn).toBe(true);
+    useStore.getState().setAvCameraOn(false);
+    expect(useStore.getState().avCameraOn).toBe(false);
+  });
+
+  it('camera defaults to off', () => {
+    expect(useStore.getState().avCameraOn).toBe(false);
+  });
+
+  it('leaving session clears audio and camera', () => {
     useStore.getState().updateAvSession(makeSession({ id: 's1' }));
     useStore.getState().setActiveAvSession('s1');
     useStore.getState().setAvAudioActive(true);
     useStore.getState().setAvMuted(true);
+    useStore.getState().setAvCameraOn(true);
 
-    // Simulate leave: clear audio + remove session
     useStore.getState().setAvAudioActive(false);
+    useStore.getState().setAvCameraOn(false);
     useStore.getState().setActiveAvSession(null);
 
     expect(useStore.getState().avAudioActive).toBe(false);
+    expect(useStore.getState().avCameraOn).toBe(false);
     expect(useStore.getState().activeAvSession).toBeNull();
   });
 
+  it('camera and mute are independent', () => {
+    useStore.getState().setAvCameraOn(true);
+    useStore.getState().setAvMuted(true);
+    expect(useStore.getState().avCameraOn).toBe(true);
+    expect(useStore.getState().avMuted).toBe(true);
+
+    useStore.getState().setAvMuted(false);
+    expect(useStore.getState().avCameraOn).toBe(true);
+  });
+
   it('audio state is independent of session state', () => {
-    // Can set audio active before session exists (shouldn't crash)
     useStore.getState().setAvAudioActive(true);
     expect(useStore.getState().avAudioActive).toBe(true);
     expect(useStore.getState().activeAvSession).toBeNull();

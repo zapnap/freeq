@@ -1,22 +1,25 @@
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useCallback, useState } from 'react';
 import { useStore } from '../store';
 import { getNick, leaveAvSession } from '../irc/client';
 import { loadMoqComponents } from '../lib/moq-loader';
+import { getCachedProfile } from '../lib/profiles';
 
 /**
- * Inline call panel — replaces the call.html popup.
+ * Inline call panel with audio + video support.
  *
- * Renders as a compact bar when avAudioActive is true. Manages moq-publish
- * (microphone → MoQ SFU) and moq-watch (other participants' audio) elements
- * imperatively via refs, since they're custom web components.
+ * Camera is OFF by default (audio only). When any participant turns on their
+ * camera, the panel expands to show a video grid. Participants with camera off
+ * show their avatar or initials.
  *
- * Handles retry on RESET_STREAM: failed watchers are removed and recreated
- * on the next participant poll cycle.
+ * Uses moq-publish `invisible` attribute to control camera:
+ * - invisible set → camera off (audio only)
+ * - invisible removed → camera on (video + audio)
  */
 export function CallPanel() {
   const activeAvSession = useStore((s) => s.activeAvSession);
   const avAudioActive = useStore((s) => s.avAudioActive);
   const avMuted = useStore((s) => s.avMuted);
+  const avCameraOn = useStore((s) => s.avCameraOn);
   const avSessions = useStore((s) => s.avSessions);
 
   const session = activeAvSession ? avSessions.get(activeAvSession) : null;
@@ -25,19 +28,21 @@ export function CallPanel() {
 
   const publishContainerRef = useRef<HTMLDivElement>(null);
   const watchContainerRef = useRef<HTMLDivElement>(null);
+  const localVideoRef = useRef<HTMLVideoElement>(null);
   const publishElRef = useRef<HTMLElement | null>(null);
   const watchersRef = useRef<Map<string, HTMLElement>>(new Map());
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const retryCountRef = useRef<Map<string, number>>(new Map());
+  const localStreamRef = useRef<MediaStream | null>(null);
+
+  const [participants, setParticipants] = useState<string[]>([]);
 
   const myNick = getNick();
-
   const moqOrigin = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/av/moq`;
 
-  // ── Start/stop audio when avAudioActive changes ─────────────
+  // ── Start/stop call when avAudioActive changes ──────────────
   useEffect(() => {
     if (!avAudioActive || !sessionId || !myNick) return;
-
     let cancelled = false;
 
     async function start() {
@@ -49,28 +54,23 @@ export function CallPanel() {
         useStore.getState().setAvAudioActive(false);
         return;
       }
-
       if (cancelled) return;
 
-      // Request microphone
+      // Request mic permission (camera handled separately on toggle)
       try {
         await navigator.mediaDevices.getUserMedia({ audio: true });
       } catch (e: unknown) {
         const err = e as { name?: string; message?: string };
-        const reason = err.name === 'NotAllowedError'
-          ? 'microphone permission denied'
-          : err.name === 'NotFoundError'
-          ? 'no microphone found'
+        const reason = err.name === 'NotAllowedError' ? 'microphone permission denied'
+          : err.name === 'NotFoundError' ? 'no microphone found'
           : err.message || 'unknown error';
         console.error('[call] Mic error:', reason);
         useStore.getState().addSystemMessage(channel || 'server', `Microphone error: ${reason}`);
         useStore.getState().setAvAudioActive(false);
         return;
       }
-
       if (cancelled) return;
 
-      // Create publisher
       const container = publishContainerRef.current;
       if (!container) return;
 
@@ -78,29 +78,24 @@ export function CallPanel() {
       container.appendChild(pub);
       publishElRef.current = pub;
 
-      // Set attributes AFTER adding to DOM (matches call.html behavior —
-      // moq-publish may need to be connected before attribute changes trigger)
       const broadcastName = `${sessionId}/${myNick}`;
       pub.setAttribute('url', moqOrigin);
       pub.setAttribute('name', broadcastName);
       pub.setAttribute('source', 'camera');
-      console.log('[call] Publishing:', broadcastName, 'to', moqOrigin);
+      // Camera off by default
+      pub.setAttribute('invisible', '');
+      console.log('[call] Publishing:', broadcastName);
 
-      // Start polling participants
       pollParticipants();
       pollTimerRef.current = setInterval(pollParticipants, 3000);
     }
 
     start();
-
-    return () => {
-      cancelled = true;
-      cleanup();
-    };
+    return () => { cancelled = true; cleanup(); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [avAudioActive, sessionId]);
 
-  // ── Sync mute state to publisher ────────────────────────────
+  // ── Sync mute state ─────────────────────────────────────────
   useEffect(() => {
     const pub = publishElRef.current;
     if (pub) {
@@ -108,10 +103,41 @@ export function CallPanel() {
     }
   }, [avMuted]);
 
-  // ── Poll participants and manage watchers ────────────────────
+  // ── Sync camera state ───────────────────────────────────────
+  useEffect(() => {
+    const pub = publishElRef.current;
+    if (!pub) return;
+
+    if (avCameraOn) {
+      pub.removeAttribute('invisible');
+      // Start local preview
+      navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+        .then((stream) => {
+          localStreamRef.current = stream;
+          if (localVideoRef.current) {
+            localVideoRef.current.srcObject = stream;
+          }
+        })
+        .catch((e) => {
+          console.warn('[call] Camera error:', e);
+          useStore.getState().setAvCameraOn(false);
+        });
+    } else {
+      pub.setAttribute('invisible', '');
+      // Stop local preview
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach((t) => t.stop());
+        localStreamRef.current = null;
+      }
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = null;
+      }
+    }
+  }, [avCameraOn]);
+
+  // ── Poll participants ───────────────────────────────────────
   const pollParticipants = useCallback(async () => {
     if (!sessionId) return;
-
     try {
       const resp = await fetch(`/api/v1/sessions/${encodeURIComponent(sessionId)}`);
       if (!resp.ok) return;
@@ -122,20 +148,18 @@ export function CallPanel() {
         .map((p: { nick: string }) => p.nick)
         .filter((n: string) => n.toLowerCase() !== myNick.toLowerCase());
 
+      setParticipants(nicks);
+
       const container = watchContainerRef.current;
       if (!container) return;
 
-      // Add watchers for new participants
       for (const nick of nicks) {
         if (watchersRef.current.has(nick)) continue;
 
-        // Check retry backoff
         const retries = retryCountRef.current.get(nick) || 0;
         if (retries > 0) {
-          // Exponential backoff: skip this poll cycle if too recent
-          // retries=1 → skip 1 cycle (3s), retries=2 → skip 2 (6s), max 3 skips (9s)
           const skipCycles = Math.min(retries, 3);
-          retryCountRef.current.set(nick, retries - skipCycles); // count down
+          retryCountRef.current.set(nick, retries - skipCycles);
           if (retries > skipCycles) continue;
         }
 
@@ -144,16 +168,14 @@ export function CallPanel() {
 
         const watchEl = document.createElement('moq-watch');
         const canvas = document.createElement('canvas');
-        canvas.style.display = 'none';
+        canvas.className = 'w-full h-full object-cover rounded-lg';
         watchEl.appendChild(canvas);
         container.appendChild(watchEl);
 
-        // Set attributes AFTER adding to DOM
         watchEl.setAttribute('jitter', '100');
         watchEl.setAttribute('url', moqOrigin);
         watchEl.setAttribute('name', broadcastName);
 
-        // Retry on error: remove element, will be recreated on next poll
         watchEl.addEventListener('error', () => {
           console.log('[call] Watch error for', nick, '— will retry');
           watchersRef.current.delete(nick);
@@ -164,19 +186,13 @@ export function CallPanel() {
         });
 
         watchersRef.current.set(nick, watchEl);
-        // Reset retry count on successful creation
-        // (actual success is determined by not getting an error within a few seconds)
         setTimeout(() => {
-          if (watchersRef.current.has(nick)) {
-            retryCountRef.current.delete(nick);
-          }
+          if (watchersRef.current.has(nick)) retryCountRef.current.delete(nick);
         }, 10000);
       }
 
-      // Remove watchers for participants who left
       for (const [nick, el] of watchersRef.current) {
         if (!nicks.includes(nick)) {
-          console.log('[call] Removing watcher for:', nick);
           el.setAttribute('url', '');
           el.remove();
           watchersRef.current.delete(nick);
@@ -208,58 +224,125 @@ export function CallPanel() {
     }
     watchersRef.current.clear();
     retryCountRef.current.clear();
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((t) => t.stop());
+      localStreamRef.current = null;
+    }
+    setParticipants([]);
   }
 
-  const handleMuteToggle = () => {
-    useStore.getState().setAvMuted(!avMuted);
-  };
-
+  const handleMuteToggle = () => useStore.getState().setAvMuted(!avMuted);
+  const handleCameraToggle = () => useStore.getState().setAvCameraOn(!avCameraOn);
   const handleLeave = () => {
     cleanup();
     useStore.getState().setAvAudioActive(false);
-    if (channel && sessionId) {
-      leaveAvSession(channel, sessionId);
-    }
+    useStore.getState().setAvCameraOn(false);
+    if (channel && sessionId) leaveAvSession(channel, sessionId);
   };
 
   if (!avAudioActive || !sessionId) return null;
 
-  const participantCount = session?.participants.size || 0;
+  const participantCount = (session?.participants.size || 0);
+  const showVideoGrid = avCameraOn || participants.length > 0;
+  const authDid = useStore.getState().authDid;
+  const myAvatar = authDid ? getCachedProfile(authDid)?.avatar : null;
 
   return (
-    <div className="flex items-center gap-2 px-3 py-1.5 bg-success/10 border-b border-border text-sm">
-      {/* Status */}
-      <div className="flex items-center gap-1.5 text-success font-medium">
-        <span className="w-2 h-2 rounded-full bg-success animate-pulse" />
-        <span>Voice ({participantCount})</span>
+    <div className="border-b border-border bg-bg-secondary">
+      {/* Video grid — shown when camera is on or participants exist */}
+      {showVideoGrid && (
+        <div className="flex flex-wrap gap-2 p-2 justify-center max-h-64 overflow-y-auto">
+          {/* Local tile */}
+          <div className="relative w-32 h-24 rounded-lg overflow-hidden bg-bg-tertiary flex-shrink-0">
+            {avCameraOn ? (
+              <video
+                ref={localVideoRef}
+                autoPlay
+                muted
+                playsInline
+                className="w-full h-full object-cover mirror"
+                style={{ transform: 'scaleX(-1)' }}
+              />
+            ) : (
+              <AvatarTile name={myNick} avatarUrl={myAvatar} />
+            )}
+            <span className="absolute bottom-1 left-1 text-[10px] bg-black/60 text-white px-1 rounded">
+              You {avMuted && '(muted)'}
+            </span>
+          </div>
+
+          {/* Remote tiles */}
+          {participants.map((nick) => (
+            <div key={nick} className="relative w-32 h-24 rounded-lg overflow-hidden bg-bg-tertiary flex-shrink-0">
+              {/* The moq-watch canvas renders here if video is available */}
+              <AvatarTile name={nick} />
+              <span className="absolute bottom-1 left-1 text-[10px] bg-black/60 text-white px-1 rounded">
+                {nick}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Controls bar */}
+      <div className="flex items-center gap-2 px-3 py-1.5 text-sm">
+        <div className="flex items-center gap-1.5 text-success font-medium">
+          <span className="w-2 h-2 rounded-full bg-success animate-pulse" />
+          <span>{avCameraOn ? 'Video' : 'Voice'} ({participantCount})</span>
+        </div>
+
+        <div className="flex-1" />
+
+        {/* Mute */}
+        <button
+          onClick={handleMuteToggle}
+          className={`text-xs px-2 py-1 rounded-lg font-medium flex items-center gap-1 ${
+            avMuted ? 'bg-danger/15 text-danger' : 'bg-bg-tertiary text-fg-dim hover:text-fg'
+          }`}
+        >
+          {avMuted ? <MicOffIcon /> : <MicIcon />}
+          {avMuted ? 'Unmute' : 'Mute'}
+        </button>
+
+        {/* Camera */}
+        <button
+          onClick={handleCameraToggle}
+          className={`text-xs px-2 py-1 rounded-lg font-medium flex items-center gap-1 ${
+            avCameraOn ? 'bg-accent/15 text-accent' : 'bg-bg-tertiary text-fg-dim hover:text-fg'
+          }`}
+        >
+          {avCameraOn ? <CameraOnIcon /> : <CameraOffIcon />}
+          {avCameraOn ? 'Camera' : 'Camera'}
+        </button>
+
+        {/* Leave */}
+        <button
+          onClick={handleLeave}
+          className="text-xs px-2 py-1 rounded-lg bg-danger/10 text-danger hover:bg-danger/20 font-medium"
+        >
+          Leave
+        </button>
       </div>
-
-      <div className="flex-1" />
-
-      {/* Mute */}
-      <button
-        onClick={handleMuteToggle}
-        className={`text-xs px-2 py-1 rounded-lg font-medium ${
-          avMuted
-            ? 'bg-danger/15 text-danger'
-            : 'bg-bg-tertiary text-fg-dim hover:text-fg'
-        }`}
-      >
-        {avMuted ? <MicOffIcon /> : <MicIcon />}
-        <span className="ml-1">{avMuted ? 'Unmute' : 'Mute'}</span>
-      </button>
-
-      {/* Leave */}
-      <button
-        onClick={handleLeave}
-        className="text-xs px-2 py-1 rounded-lg bg-danger/10 text-danger hover:bg-danger/20 font-medium"
-      >
-        Leave
-      </button>
 
       {/* Hidden containers for moq elements */}
       <div ref={publishContainerRef} className="hidden" />
       <div ref={watchContainerRef} className="hidden" />
+    </div>
+  );
+}
+
+/** Shows avatar or initials when camera is off */
+function AvatarTile({ name, avatarUrl }: { name: string; avatarUrl?: string | null }) {
+  const initials = name.slice(0, 2).toUpperCase();
+  return (
+    <div className="w-full h-full flex items-center justify-center bg-bg-tertiary">
+      {avatarUrl ? (
+        <img src={avatarUrl} alt={name} className="w-12 h-12 rounded-full object-cover" />
+      ) : (
+        <div className="w-12 h-12 rounded-full bg-accent/20 flex items-center justify-center text-accent font-bold text-lg">
+          {initials}
+        </div>
+      )}
     </div>
   );
 }
@@ -278,6 +361,22 @@ function MicOffIcon() {
     <svg className="w-3 h-3 inline" viewBox="0 0 16 16" fill="currentColor">
       <path d="M13 8c0 .564-.094 1.107-.266 1.613l-.814-.814A4.02 4.02 0 0 0 12 8V7a.5.5 0 0 1 1 0v1zm-5 4c.818 0 1.578-.245 2.212-.667l.718.719a4.973 4.973 0 0 1-2.43.923V15h3a.5.5 0 0 1 0 1h-7a.5.5 0 0 1 0-1h3v-2.025A5 5 0 0 1 3 8V7a.5.5 0 0 1 1 0v1a4 4 0 0 0 4 4zm3-9v4.879L5.158 2.037A3.001 3.001 0 0 1 11 3z"/>
       <path d="M9.486 10.607 5 6.12V8a3 3 0 0 0 4.486 2.607zm-7.84-1.96-.001-.001 1.442-1.442-.001-.001L14.96.33l.708.707L1.354 15.354l-.707-.707L4.14 11.153A4.985 4.985 0 0 1 3 8V7a.5.5 0 0 1 1 0v1c0 .455.076.897.216 1.306l.59-.59A4.02 4.02 0 0 1 4 8z"/>
+    </svg>
+  );
+}
+
+function CameraOnIcon() {
+  return (
+    <svg className="w-3 h-3 inline" viewBox="0 0 16 16" fill="currentColor">
+      <path fillRule="evenodd" d="M0 5a2 2 0 0 1 2-2h7.5a2 2 0 0 1 1.983 1.738l3.11-1.382A1 1 0 0 1 16 4.269v7.462a1 1 0 0 1-1.406.913l-3.111-1.382A2 2 0 0 1 9.5 13H2a2 2 0 0 1-2-2V5z"/>
+    </svg>
+  );
+}
+
+function CameraOffIcon() {
+  return (
+    <svg className="w-3 h-3 inline" viewBox="0 0 16 16" fill="currentColor">
+      <path fillRule="evenodd" d="M10.961 12.365a1.99 1.99 0 0 0 .522-1.103l3.11 1.382A1 1 0 0 0 16 11.731V4.269a1 1 0 0 0-1.406-.913l-3.111 1.382A2 2 0 0 0 9.5 3H4.272l6.69 9.365zm-10.114-9A2 2 0 0 0 0 5v6a2 2 0 0 0 2 2h5.728L.847 3.366zm9.746 11.925-14-19 .646-.708 14 19-.646.708z"/>
     </svg>
   );
 }
