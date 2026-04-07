@@ -488,6 +488,16 @@ pub struct SharedState {
     pub server_iroh_id: Mutex<Option<String>>,
     /// Iroh endpoint handle (kept alive for the server's lifetime).
     pub iroh_endpoint: Mutex<Option<iroh::Endpoint>>,
+    /// AV session manager (voice/video/screen sharing).
+    pub av_sessions: Mutex<crate::av::AvSessionManager>,
+    /// AV media backend (iroh-live rooms).
+    pub av_media: Mutex<Option<Arc<crate::av_media::IrohLiveBackend>>>,
+    /// AV SFU state (MoQ cluster for WebSocket + QUIC connections).
+    #[cfg(feature = "av-native")]
+    pub sfu_state: Mutex<Option<Arc<crate::av_sfu::SfuState>>>,
+    /// Active MoQ↔Room bridge handles (one per session).
+    #[cfg(feature = "av-native")]
+    pub av_bridges: Mutex<std::collections::HashMap<String, crate::av_bridge::BridgeHandle>>,
     /// S2S manager (if clustering is active).
     pub s2s_manager: Mutex<Option<Arc<crate::s2s::S2sManager>>>,
     /// CRDT document for cluster state convergence.
@@ -948,6 +958,12 @@ impl Server {
             session_away: Mutex::new(HashMap::new()),
             server_iroh_id: Mutex::new(None),
             iroh_endpoint: Mutex::new(None),
+            av_sessions: Mutex::new(crate::av::AvSessionManager::new()),
+            av_media: Mutex::new(None),
+            #[cfg(feature = "av-native")]
+            sfu_state: Mutex::new(None),
+            #[cfg(feature = "av-native")]
+            av_bridges: Mutex::new(std::collections::HashMap::new()),
             s2s_manager: Mutex::new(None),
             cluster_doc: crate::crdt::ClusterDoc::new(&self.config.server_name),
             db: db.map(Mutex::new),
@@ -1017,6 +1033,37 @@ impl Server {
         let tls_acceptor = self.build_tls_acceptor()?;
         let web_addr = self.config.web_addr.clone();
         let state = self.build_state()?;
+
+        // Recover active AV sessions from DB (survive server restarts)
+        {
+            let recovered = state.with_db(|db| db.load_active_av_sessions()).unwrap_or_default();
+            if !recovered.is_empty() {
+                let mut mgr = state.av_sessions.lock();
+                let mut count = 0;
+                for session in recovered {
+                    // Only restore sessions less than 2 hours old
+                    let age = chrono::Utc::now().timestamp() - session.created_at;
+                    if age > 7200 {
+                        // Mark stale sessions as ended in DB
+                        let mut ended = session;
+                        ended.state = crate::av::AvSessionState::Ended {
+                            ended_at: chrono::Utc::now().timestamp(),
+                            ended_by: None,
+                        };
+                        state.with_db(|db| db.save_av_session(&ended));
+                        continue;
+                    }
+                    if let Some(ch) = &session.channel {
+                        mgr.channel_sessions.insert(ch.to_lowercase(), session.id.clone());
+                    }
+                    mgr.sessions.insert(session.id.clone(), session);
+                    count += 1;
+                }
+                if count > 0 {
+                    tracing::info!("Recovered {count} active AV sessions from database");
+                }
+            }
+        }
 
         // Start plain listener
         let plain_listener = TcpListener::bind(&self.config.listen_addr).await?;
@@ -1142,6 +1189,31 @@ impl Server {
             }
         } else if !self.config.s2s_peers.is_empty() {
             tracing::error!("S2S requires iroh transport (--iroh)");
+        }
+
+        // Initialize AV media backend
+        #[cfg(feature = "av-native")]
+        if let Some(ref endpoint) = iroh_endpoint {
+            if let Some(backend) = crate::av_media::init_backend(endpoint.clone()).await {
+                *state.av_media.lock() = Some(backend);
+            }
+            // Initialize SFU (MoQ cluster + QUIC accept + WebSocket support).
+            // QUIC binds to the web server's port (UDP). WebSocket handled via web.rs route.
+            let sfu_port = web_addr.as_ref()
+                .and_then(|a| a.parse::<std::net::SocketAddr>().ok())
+                .map(|a| a.port())
+                .unwrap_or(4443);
+            {
+                let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+                match crate::av_sfu::init_sfu(Some(sfu_port)).await {
+                    Ok(sfu) => *state.sfu_state.lock() = Some(sfu),
+                    Err(e) => tracing::error!("AV SFU init failed: {e}"),
+                }
+            }
+        }
+        #[cfg(not(feature = "av-native"))]
+        {
+            *state.av_media.lock() = Some(crate::av_media::init_backend_stub());
         }
 
         // Store iroh endpoint in shared state to keep it alive
@@ -1381,6 +1453,43 @@ impl Server {
                             let ch = ch.clone();
                             cleanup_state.with_db(|db| db.prune_messages(&ch, MAX_MESSAGES_PER_CHANNEL));
                         }
+                    }
+                    // Prune ended AV sessions from memory (keep for 1 hour)
+                    // and auto-end sessions idle for >2 hours with no active participants
+                    {
+                        let mut mgr = cleanup_state.av_sessions.lock();
+                        // Auto-end sessions where all participants have left but session wasn't formally ended
+                        let stale_ids: Vec<String> = mgr.active_sessions()
+                            .iter()
+                            .filter(|s| {
+                                let active_count = s.participants.values().filter(|p| p.left_at.is_none()).count();
+                                if active_count == 0 {
+                                    return true; // No active participants — end it
+                                }
+                                // Also end sessions older than 2 hours (safety net)
+                                let age = chrono::Utc::now().timestamp() - s.created_at;
+                                age > 7200
+                            })
+                            .map(|s| s.id.clone())
+                            .collect();
+                        for id in &stale_ids {
+                            if let Ok(session) = mgr.end_session(id, None) {
+                                cleanup_state.with_db(|db| db.save_av_session(&session));
+                                if let Some(ch) = &session.channel {
+                                    let ch = ch.clone();
+                                    drop(mgr);
+                                    crate::connection::messaging::broadcast_av_state_pub(
+                                        &cleanup_state, &ch, id, "ended", "server", 0, "",
+                                    );
+                                    mgr = cleanup_state.av_sessions.lock();
+                                }
+                            }
+                        }
+                        if !stale_ids.is_empty() {
+                            tracing::info!("Auto-ended {} stale AV sessions", stale_ids.len());
+                        }
+                        // Prune ended sessions older than 1 hour from memory
+                        mgr.prune_ended(3600);
                     }
                     // Prune stale IP rate limiter entries
                     {
@@ -1810,6 +1919,10 @@ pub(crate) async fn process_s2s_message(
         S2sMessage::PolicySync {
             event_id, origin, ..
         } => (event_id.clone(), origin.clone()),
+        S2sMessage::AvSessionCreated { event_id, origin, .. } => (event_id.clone(), origin.clone()),
+        S2sMessage::AvSessionJoined { event_id, origin, .. } => (event_id.clone(), origin.clone()),
+        S2sMessage::AvSessionLeft { event_id, origin, .. } => (event_id.clone(), origin.clone()),
+        S2sMessage::AvSessionEnded { event_id, origin, .. } => (event_id.clone(), origin.clone()),
         S2sMessage::CrdtSync { origin, .. } => (String::new(), origin.clone()),
         S2sMessage::PeerDisconnected { .. } => (String::new(), String::new()),
         S2sMessage::Hello { .. }
@@ -1849,7 +1962,11 @@ pub(crate) async fn process_s2s_message(
         | S2sMessage::Kick { .. }
         | S2sMessage::Ban { .. }
         | S2sMessage::Invite { .. }
-        | S2sMessage::ChannelCreated { .. }, crate::s2s::TrustLevel::Readonly) => {
+        | S2sMessage::ChannelCreated { .. }
+        | S2sMessage::AvSessionCreated { .. }
+        | S2sMessage::AvSessionJoined { .. }
+        | S2sMessage::AvSessionLeft { .. }
+        | S2sMessage::AvSessionEnded { .. }, crate::s2s::TrustLevel::Readonly) => {
             tracing::warn!(
                 peer = %authenticated_peer_id,
                 trust = "readonly",
@@ -3268,6 +3385,68 @@ pub(crate) async fn process_s2s_message(
             }
         }
 
+        // ── AV session federation ───────────────────────────────────
+
+        S2sMessage::AvSessionCreated {
+            session_id, channel, created_by_did, created_by_nick, title, iroh_ticket, ..
+        } => {
+            let ch = if channel.is_empty() { None } else { Some(channel.as_str()) };
+            state.av_sessions.lock().apply_remote_session_created(
+                &session_id, ch, &created_by_did, &created_by_nick,
+                title.as_deref(), iroh_ticket.as_deref(),
+                chrono::Utc::now().timestamp(),
+            );
+            // Notify local channel members
+            if !channel.is_empty() {
+                let title_str = title.as_deref().unwrap_or("voice session");
+                let count = state.av_sessions.lock().active_participant_count(&session_id);
+                crate::connection::messaging::broadcast_av_notice(
+                    state, &channel, &format!("{created_by_nick} started a voice session: {title_str} ({count} participant(s))"),
+                );
+            }
+            tracing::info!(session_id = %session_id, channel = %channel, "S2S: AV session created");
+        }
+
+        S2sMessage::AvSessionJoined { session_id, did, nick, .. } => {
+            state.av_sessions.lock().apply_remote_session_joined(&session_id, &did, &nick);
+            let mgr = state.av_sessions.lock();
+            if let Some(session) = mgr.get(&session_id) {
+                if let Some(ref ch) = session.channel {
+                    let count = mgr.active_participant_count(&session_id);
+                    let ch = ch.clone();
+                    drop(mgr);
+                    crate::connection::messaging::broadcast_av_notice(
+                        state, &ch, &format!("{nick} joined the voice session ({count} participant(s))"),
+                    );
+                }
+            }
+        }
+
+        S2sMessage::AvSessionLeft { session_id, did, .. } => {
+            let mgr_ref = &state.av_sessions;
+            let nick = mgr_ref.lock().get(&session_id)
+                .and_then(|s| s.participants.get(&did).map(|p| p.nick.clone()))
+                .unwrap_or_default();
+            mgr_ref.lock().apply_remote_session_left(&session_id, &did);
+            let mgr = mgr_ref.lock();
+            if let Some(session) = mgr.get(&session_id) {
+                if let Some(ref ch) = session.channel {
+                    let count = mgr.active_participant_count(&session_id);
+                    let ch = ch.clone();
+                    drop(mgr);
+                    crate::connection::messaging::broadcast_av_notice(
+                        state, &ch, &format!("{nick} left the voice session ({count} participant(s))"),
+                    );
+                }
+            }
+        }
+
+        S2sMessage::AvSessionEnded { session_id, ended_by, .. } => {
+            state.av_sessions.lock().apply_remote_session_ended(&session_id, ended_by.as_deref());
+            // Notification already sent by the originating server
+            tracing::info!(session_id = %session_id, "S2S: AV session ended");
+        }
+
         S2sMessage::PeerDisconnected { peer_id } => {
             // Clean up all remote_members whose origin matches this peer.
             // Without this, users from a disconnected server linger as ghosts
@@ -3488,6 +3667,8 @@ mod s2s_adversarial_tests {
             session_away: Mutex::new(HashMap::new()),
             server_iroh_id: Mutex::new(Some("test-server-id".to_string())),
             iroh_endpoint: Mutex::new(None),
+            av_sessions: Mutex::new(crate::av::AvSessionManager::new()),
+            av_media: Mutex::new(None),
             s2s_manager: Mutex::new(None),
             cluster_doc: crate::crdt::ClusterDoc::new("test-server-id"),
             db: None,
@@ -4154,6 +4335,8 @@ mod s2s_adversarial_tests {
             session_away: Mutex::new(HashMap::new()),
             server_iroh_id: Mutex::new(Some("test-server-id".to_string())),
             iroh_endpoint: Mutex::new(None),
+            av_sessions: Mutex::new(crate::av::AvSessionManager::new()),
+            av_media: Mutex::new(None),
             s2s_manager: Mutex::new(None),
             cluster_doc: crate::crdt::ClusterDoc::new("test-server-id"),
             db: Some(Mutex::new(db)),

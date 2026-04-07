@@ -730,7 +730,7 @@ pub async fn establish_iroh_connection(addr: &str) -> Result<EstablishedConnecti
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     tracing::debug!("Creating iroh endpoint...");
-    let endpoint = iroh::Endpoint::bind().await?;
+    let endpoint = iroh::Endpoint::bind(iroh::endpoint::presets::N0).await?;
 
     tracing::debug!("Connecting to iroh peer {addr}...");
     // Parse the endpoint ID (public key) and create an address.

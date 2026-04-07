@@ -14,7 +14,7 @@ echo "Preparing staging deploy in $TMPDIR..."
 cp "$REPO_ROOT/Cargo.toml" "$REPO_ROOT/Cargo.lock" "$TMPDIR/"
 
 # Copy all workspace members needed for 'cargo build -p freeq-server'
-for dir in freeq-sdk freeq-server freeq-auth-broker freeq-bots freeq-bot-id freeq-sdk-ffi freeq-windows-core; do
+for dir in freeq-sdk freeq-server freeq-auth-broker freeq-bots freeq-bot-id freeq-sdk-ffi freeq-windows-core freeq-av-client; do
     cp -r "$REPO_ROOT/$dir" "$TMPDIR/"
 done
 
@@ -41,7 +41,7 @@ EOF
 
 # Procfile — Miren needs explicit service definition; $PORT is set by Miren
 cat > "$TMPDIR/Procfile" << 'EOF'
-web: /app/freeq-server --listen-addr 127.0.0.1:16667 --web-addr 0.0.0.0:${PORT:-8080} --web-static-dir /app/web --server-name staging.freeq.at --db-path /app/data/freeq.db --data-dir /app/data --motd "freeq staging — https://freeq.at"
+web: /app/freeq-server --listen-addr 127.0.0.1:16667 --web-addr 0.0.0.0:${PORT:-8080} --web-static-dir /app/web --server-name staging.freeq.at --db-path /app/data/freeq.db --data-dir /app/data --iroh --motd "freeq staging — AV with iroh"
 EOF
 
 # Remove any nested .miren dirs that came from source copies
@@ -49,10 +49,10 @@ find "$TMPDIR" -mindepth 2 -name ".miren" -type d -exec rm -rf {} + 2>/dev/null 
 
 cd "$TMPDIR"
 echo "Deploying from $TMPDIR..."
-miren deploy -f
+miren deploy -f -C blueyard-projects
 
 echo "Setting route..."
-miren route set staging.freeq.at freeq-staging 2>/dev/null || true
+miren route set staging.freeq.at freeq-staging -C blueyard-projects 2>/dev/null || true
 
 # Cleanup
 rm -rf "$TMPDIR"

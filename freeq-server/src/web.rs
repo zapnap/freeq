@@ -204,6 +204,18 @@ pub fn router(state: Arc<SharedState>) -> Router {
         .route("/api/v1/agents/spawned", get(api_spawned_agents))
         .route("/api/v1/channels/{name}/budget", get(api_channel_budget))
         .route("/api/v1/channels/{name}/spend", get(api_channel_spend))
+        // AV call page + assets (served here so it's accessible through Miren's HTTPS)
+        .route("/av/call", get(av_call_page))
+        .route("/av/call.html", get(av_call_page))
+        .route("/av/assets/{filename}", get(av_asset))
+        // AV SFU WebSocket endpoint (MoQ over WebSocket for browser/native clients)
+        .route("/av/moq", get(av_moq_ws_root))
+        .route("/av/moq/{*path}", get(av_moq_ws))
+        // AV sessions
+        .route("/api/v1/sessions", get(api_sessions_list))
+        .route("/api/v1/sessions/{id}", get(api_session_detail))
+        .route("/api/v1/sessions/{id}/artifacts", get(api_session_artifacts).post(api_create_artifact))
+        .route("/api/v1/channels/{name}/sessions", get(api_channel_sessions))
         .route("/auth/mobile", get(auth_mobile_redirect))
         .route("/join/{channel}", get(channel_invite_page))
         .layer(axum::extract::DefaultBodyLimit::max(12 * 1024 * 1024)) // 12MB
@@ -2424,6 +2436,99 @@ fn html_escape(s: &str) -> String {
         .replace('\'', "&#x27;")
 }
 
+/// WebSocket MoQ endpoint (root path) — upgrades to MoQ session through the SFU cluster.
+#[cfg(feature = "av-native")]
+async fn av_moq_ws_root(
+    ws: axum::extract::WebSocketUpgrade,
+    State(state): State<Arc<crate::server::SharedState>>,
+) -> impl IntoResponse {
+    let sfu = state.sfu_state.lock().clone();
+    match sfu {
+        // qmux requires "webtransport" subprotocol for MoQ framing over WebSocket
+        Some(sfu) => ws
+            .protocols(["webtransport"])
+            .on_upgrade(move |socket| crate::av_sfu::handle_ws_moq(sfu, String::new(), socket))
+            .into_response(),
+        None => (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "SFU not initialized",
+        ).into_response(),
+    }
+}
+
+#[cfg(not(feature = "av-native"))]
+async fn av_moq_ws_root() -> impl IntoResponse {
+    (axum::http::StatusCode::SERVICE_UNAVAILABLE, "AV not enabled")
+}
+
+/// WebSocket MoQ endpoint with path — upgrades to MoQ session through the SFU cluster.
+/// Path format: {session_id}/{nick} for publish, {session_id} for subscribe.
+#[cfg(feature = "av-native")]
+async fn av_moq_ws(
+    ws: axum::extract::WebSocketUpgrade,
+    Path(path): Path<String>,
+    State(state): State<Arc<crate::server::SharedState>>,
+) -> impl IntoResponse {
+    tracing::info!(path = %path, "MoQ WebSocket upgrade with path");
+
+    let sfu = state.sfu_state.lock().clone();
+    match sfu {
+        Some(sfu) => ws
+            .protocols(["webtransport"])
+            .on_upgrade(move |socket| crate::av_sfu::handle_ws_moq(sfu, path, socket))
+            .into_response(),
+        None => (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "SFU not initialized",
+        ).into_response(),
+    }
+}
+
+#[cfg(not(feature = "av-native"))]
+async fn av_moq_ws() -> impl IntoResponse {
+    (axum::http::StatusCode::SERVICE_UNAVAILABLE, "AV not enabled")
+}
+
+/// Serve the AV call page (SFU web UI for browser audio).
+/// Sets its own CSP to allow inline scripts (the global middleware skips when CSP is already set).
+async fn av_call_page() -> impl IntoResponse {
+    (
+        axum::http::StatusCode::OK,
+        [
+            ("content-type", "text/html; charset=utf-8"),
+            ("content-security-policy", "default-src 'self'; script-src 'self' 'unsafe-inline' blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' wss: https:; media-src 'self' blob:; img-src 'self' data:; worker-src 'self' blob:"),
+        ],
+        include_str!("../static/av/call.html"),
+    )
+}
+
+/// Serve AV JS assets (moq-publish, moq-watch, etc).
+async fn av_asset(Path(filename): Path<String>) -> impl IntoResponse {
+    let files: &[(&str, &str)] = &[
+        ("watch-CQEo0ml-.js", include_str!("../static/av/assets/watch-CQEo0ml-.js")),
+        ("publish-0_tfMLVg.js", include_str!("../static/av/assets/publish-0_tfMLVg.js")),
+        ("time-Do1uKez-.js", include_str!("../static/av/assets/time-Do1uKez-.js")),
+        ("main-DGBFe0O7-CIZu5tmC.js", include_str!("../static/av/assets/main-DGBFe0O7-CIZu5tmC.js")),
+        ("main-DGBFe0O7-DQ8if_La.js", include_str!("../static/av/assets/main-DGBFe0O7-DQ8if_La.js")),
+        ("libav-opus-af-BlMWboA7-B4GfDr9_.js", include_str!("../static/av/assets/libav-opus-af-BlMWboA7-B4GfDr9_.js")),
+        ("libav-opus-af-BlMWboA7-CFTeN5TA.js", include_str!("../static/av/assets/libav-opus-af-BlMWboA7-CFTeN5TA.js")),
+    ];
+    for (name, body) in files {
+        if filename == *name {
+            return (
+                axum::http::StatusCode::OK,
+                [("content-type", "application/javascript; charset=utf-8".to_string())],
+                body.to_string(),
+            ).into_response();
+        }
+    }
+    (
+        axum::http::StatusCode::NOT_FOUND,
+        [("content-type", "text/plain".to_string())],
+        "not found".to_string(),
+    ).into_response()
+}
+
 async fn channel_invite_page(
     Path(channel): Path<String>,
     State(state): State<Arc<SharedState>>,
@@ -2918,8 +3023,185 @@ async fn security_headers(
     if !headers.contains_key("content-security-policy") {
         headers.insert(
             "Content-Security-Policy",
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data: blob:; media-src 'self' https: blob:; connect-src 'self' wss: https:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'".parse().unwrap(),
+            "default-src 'self'; script-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' https: data: blob:; media-src 'self' https: blob:; connect-src 'self' wss: https:; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'".parse().unwrap(),
         );
     }
     resp
+}
+
+// ── AV Sessions REST API ────────────────────────────────────────────
+
+/// GET /api/v1/sessions — list all active sessions.
+async fn api_sessions_list(
+    State(state): State<Arc<SharedState>>,
+) -> Json<serde_json::Value> {
+    let mgr = state.av_sessions.lock();
+    let sessions: Vec<serde_json::Value> = mgr
+        .active_sessions()
+        .into_iter()
+        .map(|s| session_to_json(s, &mgr))
+        .collect();
+    Json(serde_json::json!({ "sessions": sessions }))
+}
+
+/// GET /api/v1/sessions/{id} — session details.
+async fn api_session_detail(
+    State(state): State<Arc<SharedState>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    let mgr = state.av_sessions.lock();
+    let session = mgr.get(&id).ok_or((
+        axum::http::StatusCode::NOT_FOUND,
+        "Session not found".to_string(),
+    ))?;
+    Ok(Json(session_to_json(session, &mgr)))
+}
+
+/// GET /api/v1/sessions/{id}/artifacts — list session artifacts.
+async fn api_session_artifacts(
+    State(state): State<Arc<SharedState>>,
+    Path(id): Path<String>,
+) -> Json<serde_json::Value> {
+    let artifacts = state
+        .with_db(|db| db.list_av_artifacts(&id))
+        .unwrap_or_default();
+    let items: Vec<serde_json::Value> = artifacts
+        .iter()
+        .map(|a| {
+            serde_json::json!({
+                "id": a.id,
+                "session_id": a.session_id,
+                "kind": a.kind,
+                "created_at": a.created_at,
+                "created_by": a.created_by,
+                "content_ref": a.content_ref,
+                "content_type": a.content_type,
+                "visibility": a.visibility,
+                "title": a.title,
+            })
+        })
+        .collect();
+    Json(serde_json::json!({ "artifacts": items }))
+}
+
+/// POST /api/v1/sessions/{id}/artifacts — attach an artifact to a session.
+async fn api_create_artifact(
+    State(state): State<Arc<SharedState>>,
+    Path(id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    // Verify session exists
+    {
+        let mgr = state.av_sessions.lock();
+        if mgr.get(&id).is_none() {
+            return Err((axum::http::StatusCode::NOT_FOUND, "Session not found".to_string()));
+        }
+    }
+
+    let kind_str = body["kind"].as_str().unwrap_or("summary");
+    let kind: crate::av::ArtifactKind = serde_json::from_str(&format!("\"{kind_str}\""))
+        .unwrap_or(crate::av::ArtifactKind::Summary);
+    let content_ref = body["content_ref"].as_str().ok_or((
+        axum::http::StatusCode::BAD_REQUEST, "content_ref required".to_string(),
+    ))?;
+    let content_type = body["content_type"].as_str().unwrap_or("text/plain");
+    let visibility_str = body["visibility"].as_str().unwrap_or("participants");
+    let visibility: crate::av::ArtifactVisibility = serde_json::from_str(&format!("\"{visibility_str}\""))
+        .unwrap_or(crate::av::ArtifactVisibility::Participants);
+    let title = body["title"].as_str();
+    let created_by = body["created_by"].as_str();
+
+    let artifact = crate::av::AvArtifact {
+        id: ulid::Ulid::new().to_string(),
+        session_id: id.clone(),
+        kind,
+        created_at: chrono::Utc::now().timestamp(),
+        created_by: created_by.map(|s| s.to_string()),
+        content_ref: content_ref.to_string(),
+        content_type: content_type.to_string(),
+        visibility,
+        title: title.map(|s| s.to_string()),
+    };
+
+    state.with_db(|db| db.save_av_artifact(&artifact));
+
+    // If session is bound to a channel, post a notice about the new artifact
+    let channel = {
+        let mgr = state.av_sessions.lock();
+        mgr.get(&id).and_then(|s| s.channel.clone())
+    };
+    if let Some(channel) = channel {
+        let kind_label = kind_str;
+        let title_display = title.unwrap_or(kind_label);
+        crate::connection::messaging::broadcast_av_notice(
+            &state, &channel,
+            &format!("Session artifact available: {title_display} ({kind_label})"),
+        );
+    }
+
+    Ok(Json(serde_json::json!({
+        "id": artifact.id,
+        "session_id": artifact.session_id,
+        "kind": artifact.kind,
+        "created_at": artifact.created_at,
+    })))
+}
+
+/// GET /api/v1/channels/{name}/sessions — sessions in a channel (active + recent).
+async fn api_channel_sessions(
+    State(state): State<Arc<SharedState>>,
+    Path(name): Path<String>,
+) -> Json<serde_json::Value> {
+    let mgr = state.av_sessions.lock();
+
+    // Active session (if any)
+    let active = mgr.active_session_for_channel(&name).map(|s| session_to_json(s, &mgr));
+
+    // Recent ended sessions from DB
+    let recent = state
+        .with_db(|db| db.list_channel_av_sessions(&name, 20))
+        .unwrap_or_default();
+    let recent_json: Vec<serde_json::Value> = recent
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "id": s.id,
+                "created_by": s.created_by,
+                "created_at": s.created_at,
+                "state": s.state,
+                "title": s.title,
+            })
+        })
+        .collect();
+
+    Json(serde_json::json!({
+        "active": active,
+        "recent": recent_json,
+    }))
+}
+
+fn session_to_json(s: &crate::av::AvSession, mgr: &crate::av::AvSessionManager) -> serde_json::Value {
+    let participants: Vec<serde_json::Value> = s.participants.values()
+        .filter(|p| p.left_at.is_none())
+        .map(|p| serde_json::json!({
+            "did": p.did,
+            "nick": p.nick,
+            "role": p.role,
+            "joined_at": p.joined_at,
+        }))
+        .collect();
+    serde_json::json!({
+        "id": s.id,
+        "channel": s.channel,
+        "created_by": s.created_by,
+        "created_by_nick": s.created_by_nick,
+        "created_at": s.created_at,
+        "state": s.state,
+        "title": s.title,
+        "participants": participants,
+        "participant_count": mgr.active_participant_count(&s.id),
+        "media_backend": s.media_backend,
+        "recording_enabled": s.recording_enabled,
+        "iroh_ticket": s.iroh_ticket,
+    })
 }

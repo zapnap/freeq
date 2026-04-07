@@ -72,5 +72,7 @@ vs/
 /freeq-windows-app/.vs
 .env.secrets
 freeq-macos/FreeqSDK.xcframework/macos-arm64/libfreeq_sdk_ffi.a
+data/
+node_modules/
 /Freeq.WinUI/.vs
 .gstack/

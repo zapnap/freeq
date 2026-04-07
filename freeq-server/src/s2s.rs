@@ -380,6 +380,53 @@ pub enum S2sMessage {
         origin: String,
     },
 
+    // ── AV session federation ───────────────────────────────────────
+
+    /// An AV session was created (voice/video call started).
+    #[serde(rename = "av_session_created")]
+    AvSessionCreated {
+        #[serde(default)]
+        event_id: String,
+        session_id: String,
+        channel: String,
+        created_by_did: String,
+        created_by_nick: String,
+        title: Option<String>,
+        iroh_ticket: Option<String>,
+        origin: String,
+    },
+
+    /// A user joined an AV session.
+    #[serde(rename = "av_session_joined")]
+    AvSessionJoined {
+        #[serde(default)]
+        event_id: String,
+        session_id: String,
+        did: String,
+        nick: String,
+        origin: String,
+    },
+
+    /// A user left an AV session.
+    #[serde(rename = "av_session_left")]
+    AvSessionLeft {
+        #[serde(default)]
+        event_id: String,
+        session_id: String,
+        did: String,
+        origin: String,
+    },
+
+    /// An AV session ended.
+    #[serde(rename = "av_session_ended")]
+    AvSessionEnded {
+        #[serde(default)]
+        event_id: String,
+        session_id: String,
+        ended_by: Option<String>,
+        origin: String,
+    },
+
     /// Internal event: a peer's S2S link has disconnected.
     /// Not sent over the wire — synthesized locally so the event processor
     /// can clean up remote_members for that peer's origin.

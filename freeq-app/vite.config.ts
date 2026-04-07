@@ -31,6 +31,11 @@ export default defineConfig({
         target: FREEQ_WEB,
         changeOrigin: false,
       },
+      '/av': {
+        target: FREEQ_WEB,
+        ws: true,
+        changeOrigin: false,
+      },
     },
   },
 })

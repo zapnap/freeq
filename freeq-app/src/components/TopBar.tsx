@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useStore } from '../store';
 import { setTopic as sendTopic } from '../irc/client';
+import { SessionIndicator } from './SessionIndicator';
 import { fetchProfile, type ATProfile } from '../lib/profiles';
 
 interface TopBarProps {
@@ -149,6 +150,9 @@ export function TopBar({ onToggleSidebar, onToggleMembers, membersOpen }: TopBar
           <span className="flex-1" />
         )}
       </div>
+
+      {/* AV session indicator */}
+      {isChannel && <SessionIndicator channel={activeChannel} />}
 
       {/* Settings gear (channels only) */}
       {isChannel && (

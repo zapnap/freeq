@@ -45,6 +45,9 @@ function saveJoinedChannels() {
 // Background WHOIS lookups (suppress output for these)
 const backgroundWhois = new Set<string>();
 
+// Buffer for reassembling chunked WebRTC signaling messages
+// P2P signaling removed — audio flows through SFU at /av/call
+
 // ── Public API (called by UI) ──
 
 export function connect(url: string, desiredNick: string, channels?: string[]) {
@@ -831,6 +834,22 @@ async function handleLine(rawLine: string) {
       if (noticeActorClass && from && (target.startsWith('#') || target.startsWith('&'))) {
         store.addMember(target, { nick: from, actorClass: noticeActorClass });
       }
+      // Capture AV session ticket from server NOTICE
+      const ticketMatch = text.match(/^AV ticket: (.+)$/);
+      if (ticketMatch) {
+        const ticket = ticketMatch[1];
+        // Find the active session we're in and attach the ticket
+        const activeId = store.activeAvSession;
+        if (activeId) {
+          const session = store.avSessions.get(activeId);
+          if (session) {
+            store.updateAvSession({ ...session, irohTicket: ticket });
+          }
+        }
+        // Don't display this as a regular message
+        break;
+      }
+
       // Handle pin/unpin sync broadcasts (update local state, then show server's message)
       const pinMsgid = msg.tags?.['+freeq.at/pin'];
       const unpinMsgid = msg.tags?.['+freeq.at/unpin'];
@@ -886,6 +905,16 @@ async function handleLine(rawLine: string) {
       const typing = msg.tags['+typing'];
       if (typing) {
         store.setTyping(bufName, from, typing === 'active');
+      }
+
+      // Handle AV session state updates
+      const avState = msg.tags['+freeq.at/av-state'];
+      const avId = msg.tags['+freeq.at/av-id'];
+      if (avState && avId) {
+        const avActor = msg.tags['+freeq.at/av-actor'] || '';
+        const avCount = parseInt(msg.tags['+freeq.at/av-participants'] || '0', 10);
+        const avTitle = msg.tags['+freeq.at/av-title'];
+        handleAvSessionState(avId, avState, target, avActor, avCount, avTitle);
       }
       break;
     }
@@ -1250,3 +1279,176 @@ function handleAuthenticate(msg: IRCMessage) {
     raw('AUTHENTICATE +');
   }
 }
+
+// ── AV session helpers ──
+
+function handleAvSessionState(
+  sessionId: string,
+  action: string,
+  channel: string,
+  actorNick: string,
+  _participantCount: number,
+  title?: string,
+) {
+  const store = useStore.getState();
+  const existing = store.avSessions.get(sessionId);
+
+  switch (action) {
+    case 'started': {
+      const session: import('../store').AvSession = {
+        id: sessionId,
+        channel,
+        createdBy: '', // DID not in TAGMSG; will be filled from REST if needed
+        createdByNick: actorNick,
+        title: title || undefined,
+        participants: new Map([[actorNick, {
+          did: '',
+          nick: actorNick,
+          role: 'host' as const,
+          joinedAt: new Date(),
+        }]]),
+        state: 'active',
+        startedAt: new Date(),
+      };
+      store.updateAvSession(session);
+      // If we started it, mark us as in the session
+      if (actorNick.toLowerCase() === nick.toLowerCase()) {
+        store.setActiveAvSession(sessionId);
+      }
+      break;
+    }
+    case 'joined': {
+      if (existing && existing.state === 'active') {
+        const updated = { ...existing, participants: new Map(existing.participants) };
+        updated.participants.set(actorNick, {
+          did: '',
+          nick: actorNick,
+          role: 'speaker' as const,
+          joinedAt: new Date(),
+        });
+        store.updateAvSession(updated);
+        if (actorNick.toLowerCase() === nick.toLowerCase()) {
+          store.setActiveAvSession(existing.id);
+        }
+        // Audio handled by SFU popup window — no P2P connection needed here
+      }
+      break;
+    }
+    case 'left': {
+      if (existing && existing.state === 'active') {
+        const updated = { ...existing, participants: new Map(existing.participants) };
+        updated.participants.delete(actorNick);
+        store.updateAvSession(updated);
+      }
+      break;
+    }
+    case 'ended': {
+      if (existing) {
+        store.updateAvSession({ ...existing, state: 'ended', participants: new Map() });
+        // Remove ended sessions after a brief delay (so UI can show "ended" state)
+        setTimeout(() => store.removeAvSession(sessionId), 5000);
+      }
+      // If we were in this session, clear active
+      if (store.activeAvSession === sessionId) {
+        store.setActiveAvSession(null);
+      }
+      break;
+    }
+  }
+}
+
+/// Start or join an AV session in a channel.
+/// If a session already exists, joins it instead of starting a new one.
+export async function startAvSession(channel: string, title?: string) {
+  const store = useStore.getState();
+  if (!store.authDid) {
+    store.addSystemMessage(channel, 'You must be signed in with AT Protocol to start a voice session.');
+    return;
+  }
+
+  if (store.connectionState !== 'connected') {
+    store.addSystemMessage(channel, 'Cannot start voice session: not connected to server.');
+    return;
+  }
+
+  // Check if there's already an active session in this channel
+  try {
+    const resp = await fetch(`/api/v1/channels/${encodeURIComponent(channel)}/sessions`);
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data.active && data.active.state === 'Active') {
+        // Session exists — join it instead
+        console.log('[av] Session already exists, joining:', data.active.id);
+        store.addSystemMessage(channel, `Joining existing voice session (${data.active.participant_count} participants)`);
+        joinAvSession(channel, data.active.id);
+        store.setAvAudioActive(true);
+        return;
+      }
+    }
+  } catch (e) {
+    console.warn('[av] Failed to check existing sessions:', e);
+    // Continue to create — server will handle dedup
+  }
+
+  // No active session — start a new one
+  store.addSystemMessage(channel, 'Starting voice session...');
+  const tags: Record<string, string> = { '+freeq.at/av-start': '' };
+  if (title) tags['+freeq.at/av-title'] = title;
+  const line = format('TAGMSG', [channel], tags);
+  console.log('[av] startAvSession:', line);
+  raw(line);
+}
+
+/// Join an AV session (by ID or channel's active session).
+export function joinAvSession(channel: string, sessionId?: string) {
+  const tags: Record<string, string> = { '+freeq.at/av-join': '' };
+  if (sessionId) tags['+freeq.at/av-id'] = sessionId;
+  raw(format('TAGMSG', [channel], tags));
+}
+
+/// Leave the current AV session.
+export function leaveAvSession(channel: string, sessionId: string) {
+  const tags: Record<string, string> = {
+    '+freeq.at/av-leave': '',
+    '+freeq.at/av-id': sessionId,
+  };
+  raw(format('TAGMSG', [channel], tags));
+  useStore.getState().setActiveAvSession(null);
+}
+
+/// End an AV session (host/ops only).
+export function endAvSession(channel: string, sessionId: string) {
+  const tags: Record<string, string> = {
+    '+freeq.at/av-end': '',
+    '+freeq.at/av-id': sessionId,
+  };
+  raw(format('TAGMSG', [channel], tags));
+}
+
+/// Send a WebRTC signaling message to a specific user (via TAGMSG DM).
+/// Large messages (SDP offers/answers) are chunked to stay under IRC line limits.
+export function sendAvSignal(targetNick: string, data: string) {
+  const encoded = encodeURIComponent(data);
+  // IRC tag values + overhead must fit in ~7KB (server limit 8KB minus command/prefix)
+  const MAX_CHUNK = 4000;
+
+  if (encoded.length <= MAX_CHUNK) {
+    const tags: Record<string, string> = { '+freeq.at/av-signal': encoded };
+    raw(format('TAGMSG', [targetNick], tags));
+  } else {
+    // Chunk the signal — receiver reassembles
+    const id = Math.random().toString(36).slice(2, 8);
+    const chunks = Math.ceil(encoded.length / MAX_CHUNK);
+    for (let i = 0; i < chunks; i++) {
+      const chunk = encoded.slice(i * MAX_CHUNK, (i + 1) * MAX_CHUNK);
+      const tags: Record<string, string> = {
+        '+freeq.at/av-signal': chunk,
+        '+freeq.at/av-chunk': `${id}:${i}:${chunks}`,
+      };
+      raw(format('TAGMSG', [targetNick], tags));
+    }
+    console.log(`[webrtc] Sent ${chunks} chunks to ${targetNick} (${encoded.length} bytes)`);
+  }
+}
+
+// P2P WebRTC audio removed — audio flows through SFU popup window at /av/call

@@ -121,7 +121,23 @@ pub(super) fn handle_tagmsg(
         }
     }
 
-    // ── Persist reactions ──
+    // Log av-signal relay for debugging
+    if tags.contains_key("+freeq.at/av-signal") {
+        tracing::info!(
+            from = %conn.nick_or_star(),
+            target = %target,
+            "Relaying WebRTC signal TAGMSG"
+        );
+    }
+
+    // ── AV session control (+freeq.at/av-*) ──
+    // av-signal is a relay tag (WebRTC signaling) — must be forwarded, not consumed
+    if let Some(av_tag) = tags.keys().find(|k| k.starts_with("+freeq.at/av-") && !k.contains("signal") && !k.contains("chunk")) {
+        handle_av_tagmsg(conn, target, tags, av_tag, state);
+        return; // AV control tags are consumed server-side; don't relay
+    }
+
+    // ── Persist reactions (+react with +reply) ──
     if let (Some(emoji), Some(target_msgid)) = (tags.get("+react"), tags.get("+reply")) {
         let nick = conn.nick_or_star().to_string();
         let did = conn.authenticated_did.clone();
@@ -1630,4 +1646,491 @@ fn handle_delete(conn: &Connection, target: &str, original_msgid: &str, state: &
         }
         // Note: For federated DM deletes, we'd need S2S support — not implemented yet
     }
+}
+
+// ── AV session control ─────────────────────────────────────────────
+
+/// Send a line to a specific session.
+fn send_to(state: &Arc<SharedState>, session_id: &str, line: String) {
+    if let Some(tx) = state.connections.lock().get(session_id) {
+        let _ = tx.try_send(line);
+    }
+}
+
+/// Handle TAGMSG with +freeq.at/av-* tags (session lifecycle control).
+fn handle_av_tagmsg(
+    conn: &super::Connection,
+    target: &str,
+    tags: &std::collections::HashMap<String, String>,
+    av_tag: &str,
+    state: &Arc<SharedState>,
+) {
+    let nick = conn.nick_or_star().to_string();
+    // Use DID if authenticated, otherwise use nick as fallback identity
+    let did = conn.authenticated_did.clone()
+        .unwrap_or_else(|| format!("guest:{nick}"));
+
+    let session_id = tags.get("+freeq.at/av-id").cloned().unwrap_or_default();
+
+    match av_tag {
+        "+freeq.at/av-start" => {
+            let title = tags.get("+freeq.at/av-title").map(|s| s.as_str());
+            let channel = if target.starts_with('#') || target.starts_with('&') {
+                Some(target)
+            } else {
+                None
+            };
+
+            let mut mgr = state.av_sessions.lock();
+            match mgr.create_session(channel, &did, &nick, title) {
+                Ok(session) => {
+                    let session_id = session.id.clone();
+                    let participant_count = mgr.active_participant_count(&session_id);
+
+                    // Persist to DB
+                    if let Some(s) = mgr.get(&session_id) {
+                        state.with_db(|db| db.save_av_session(s));
+                    }
+
+                    drop(mgr);
+
+                    // Broadcast session start to channel
+                    let title_display = title.unwrap_or("voice session");
+                    broadcast_av_state(state, target, &session_id, "started", &nick, participant_count, title_display);
+
+                    // Create iroh-live Room for native client P2P audio.
+                    // Browser clients use MoQ SFU; native clients join the Room directly.
+                    {
+                        let backend = state.av_media.lock().clone();
+                        let state2 = state.clone();
+                        let sid = session_id.clone();
+                        let conn_id = conn.id.clone();
+                        let nick2 = nick.clone();
+                        tokio::spawn(async move {
+                            if let Some(backend) = backend.as_ref() {
+                                match crate::av_media::MediaBackend::create_room(backend.as_ref(), &sid).await {
+                                    Ok(ticket) => {
+                                        // Store ticket in session
+                                        let mut mgr = state2.av_sessions.lock();
+                                        if let Some(s) = mgr.sessions.get_mut(&sid) {
+                                            s.iroh_ticket = Some(ticket.clone());
+                                        }
+                                        if let Some(s) = mgr.get(&sid) {
+                                            state2.with_db(|db| db.save_av_session(s));
+                                        }
+                                        drop(mgr);
+                                        // Send ticket to creator
+                                        let notice = Message::from_server(
+                                            &state2.server_name,
+                                            "NOTICE",
+                                            vec![&nick2, &format!("AV ticket: {ticket}")],
+                                        );
+                                        send_to(&state2, &conn_id, format!("{notice}\r\n"));
+
+                                        // Start the MoQ↔Room bridge
+                                        #[cfg(feature = "av-native")]
+                                        {
+                                            if let Some((room_handle, room_events)) = backend.take_room_for_bridge(&sid) {
+                                                let sfu = state2.sfu_state.lock().clone();
+                                                if let Some(sfu) = sfu {
+                                                    let bridge = crate::av_bridge::start_bridge(
+                                                        sid.clone(),
+                                                        sfu.cluster.clone(),
+                                                        sfu.auth.clone(),
+                                                        room_handle,
+                                                        room_events,
+                                                    );
+                                                    // Store bridge handle to keep it alive
+                                                    state2.av_bridges.lock().insert(sid.clone(), bridge);
+                                                    tracing::info!(session = %sid, "MoQ↔Room bridge started");
+                                                } else {
+                                                    tracing::warn!(session = %sid, "SFU not available — bridge not started");
+                                                }
+                                            }
+                                        }
+
+                                        tracing::info!(session = %sid, "iroh-live room created");
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(session = %sid, error = %e, "Failed to create iroh-live room");
+                                    }
+                                }
+                            }
+                        });
+                    }
+
+                    // Send session ID back to creator
+                    let notice = Message::from_server(
+                        &state.server_name,
+                        "NOTICE",
+                        vec![&nick, &format!("AV session started: {session_id}")],
+                    );
+                    send_to(state, &conn.id, format!("{notice}\r\n"));
+
+                    // Broadcast via S2S
+                    broadcast_av_s2s(state, "created", &session_id, channel, &did, &nick, title, None);
+
+                    tracing::info!(session_id = %session_id, channel = ?channel, did = %did, "AV session created");
+                }
+                Err(e) => {
+                    let reply = Message::from_server(
+                        &state.server_name,
+                        "NOTICE",
+                        vec![&nick, &format!("Cannot start session: {e}")],
+                    );
+                    send_to(state, &conn.id, format!("{reply}\r\n"));
+                }
+            }
+        }
+
+        "+freeq.at/av-join" => {
+            if session_id.is_empty() {
+                // Try to join the channel's active session
+                let mgr = state.av_sessions.lock();
+                if let Some(s) = mgr.active_session_for_channel(target) {
+                    let id = s.id.clone();
+                    drop(mgr);
+                    // Re-call with the session ID
+                    let mut tags2 = tags.clone();
+                    tags2.insert("+freeq.at/av-id".to_string(), id);
+                    return handle_av_tagmsg(conn, target, &tags2, av_tag, state);
+                }
+                let reply = Message::from_server(
+                    &state.server_name,
+                    "NOTICE",
+                    vec![&nick, "No active session in this channel"],
+                );
+                send_to(state, &conn.id, format!("{reply}\r\n"));
+                return;
+            }
+
+            let mut mgr = state.av_sessions.lock();
+            match mgr.join_session(&session_id, &did, &nick) {
+                Ok(session) => {
+                    let participant_count = mgr.active_participant_count(&session_id);
+                    let channel = session.channel.clone();
+
+                    if let Some(s) = mgr.get(&session_id) {
+                        state.with_db(|db| db.save_av_session(s));
+                    }
+                    drop(mgr);
+
+                    // Send iroh-live RoomTicket to joiner (for native clients)
+                    if let Some(ticket) = &session.iroh_ticket {
+                        let ticket_notice = Message::from_server(
+                            &state.server_name,
+                            "NOTICE",
+                            vec![&nick, &format!("AV ticket: {ticket}")],
+                        );
+                        send_to(state, &conn.id, format!("{ticket_notice}\r\n"));
+                    }
+
+                    // Ensure bridge is running for this session.
+                    // The bridge may have been cleaned up if the session creator disconnected
+                    // while other participants remained (session stayed active but bridge was orphaned).
+                    #[cfg(feature = "av-native")]
+                    {
+                        let has_bridge = state.av_bridges.lock().contains_key(&session_id);
+                        if !has_bridge {
+                            let backend = state.av_media.lock().clone();
+                            if let Some(backend) = backend.as_ref() {
+                                if let Some((room_handle, room_events)) = backend.take_room_for_bridge(&session_id) {
+                                    let sfu = state.sfu_state.lock().clone();
+                                    if let Some(sfu) = sfu {
+                                        let bridge = crate::av_bridge::start_bridge(
+                                            session_id.clone(),
+                                            sfu.cluster.clone(),
+                                            sfu.auth.clone(),
+                                            room_handle,
+                                            room_events,
+                                        );
+                                        state.av_bridges.lock().insert(session_id.clone(), bridge);
+                                        tracing::info!(session = %session_id, "MoQ↔Room bridge (re)started on join");
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Broadcast updated state
+                    broadcast_av_state(state, target, &session_id, "joined", &nick, participant_count, "");
+
+                    // S2S
+                    broadcast_av_s2s(state, "joined", &session_id, channel.as_deref(), &did, &nick, None, None);
+
+                    tracing::info!(session_id = %session_id, did = %did, "AV session joined");
+                }
+                Err(e) => {
+                    let reply = Message::from_server(
+                        &state.server_name,
+                        "NOTICE",
+                        vec![&nick, &format!("Cannot join session: {e}")],
+                    );
+                    send_to(state, &conn.id, format!("{reply}\r\n"));
+                }
+            }
+        }
+
+        "+freeq.at/av-leave" => {
+            let mut mgr = state.av_sessions.lock();
+            match mgr.leave_session(&session_id, &did) {
+                Ok((session, should_end)) => {
+                    let participant_count = if should_end { 0 } else {
+                        mgr.active_participant_count(&session_id)
+                    };
+                    let channel = session.channel.clone();
+
+                    if let Some(s) = mgr.get(&session_id) {
+                        state.with_db(|db| db.save_av_session(s));
+                    }
+                    drop(mgr);
+
+                    if should_end {
+                        broadcast_av_state(state, target, &session_id, "ended", &nick, 0, "");
+                        broadcast_av_s2s(state, "ended", &session_id, channel.as_deref(), &did, &nick, None, Some(&did));
+                        // Close iroh-live room and bridge
+                        #[cfg(feature = "av-native")]
+                        { state.av_bridges.lock().remove(&session_id); }
+                        let backend = state.av_media.lock().clone();
+                        let sid = session_id.clone();
+                        tokio::spawn(async move {
+                            if let Some(backend) = backend.as_ref() {
+                                let _ = crate::av_media::MediaBackend::close_room(backend.as_ref(), &sid).await;
+                            }
+                        });
+                    } else {
+                        broadcast_av_state(state, target, &session_id, "left", &nick, participant_count, "");
+                        broadcast_av_s2s(state, "left", &session_id, channel.as_deref(), &did, &nick, None, None);
+                    }
+
+                    tracing::info!(session_id = %session_id, did = %did, ended = should_end, "AV session left");
+                }
+                Err(e) => {
+                    let reply = Message::from_server(
+                        &state.server_name,
+                        "NOTICE",
+                        vec![&nick, &format!("Cannot leave session: {e}")],
+                    );
+                    send_to(state, &conn.id, format!("{reply}\r\n"));
+                }
+            }
+        }
+
+        "+freeq.at/av-end" => {
+            let mgr = state.av_sessions.lock();
+            let can_end = mgr.can_end_session(&session_id, &did)
+                || state.server_opers.lock().contains(&conn.id);
+            // Also check if user is channel op
+            let is_chan_op = if target.starts_with('#') || target.starts_with('&') {
+                let channels = state.channels.lock();
+                channels.get(target).map(|ch| ch.ops.contains(&conn.id) || ch.did_ops.contains(&did)).unwrap_or(false)
+            } else {
+                false
+            };
+            drop(mgr);
+
+            if !can_end && !is_chan_op {
+                let reply = Message::from_server(
+                    &state.server_name,
+                    "NOTICE",
+                    vec![&nick, "Only the session host or channel ops can end a session"],
+                );
+                send_to(state, &conn.id, format!("{reply}\r\n"));
+                return;
+            }
+
+            let mut mgr = state.av_sessions.lock();
+            match mgr.end_session(&session_id, Some(&did)) {
+                Ok(session) => {
+                    let channel = session.channel.clone();
+                    state.with_db(|db| db.save_av_session(&session));
+                    drop(mgr);
+
+                    broadcast_av_state(state, target, &session_id, "ended", &nick, 0, "");
+                    broadcast_av_s2s(state, "ended", &session_id, channel.as_deref(), &did, &nick, None, Some(&did));
+
+                    // Close iroh-live room and bridge
+                    {
+                        #[cfg(feature = "av-native")]
+                        { state.av_bridges.lock().remove(&session_id); }
+                        let backend = state.av_media.lock().clone();
+                        let sid = session_id.clone();
+                        tokio::spawn(async move {
+                            if let Some(backend) = backend.as_ref() {
+                                if let Err(e) = crate::av_media::MediaBackend::close_room(backend.as_ref(), &sid).await {
+                                    tracing::warn!(session = %sid, error = %e, "Failed to close iroh-live room");
+                                }
+                            }
+                        });
+                    }
+
+                    tracing::info!(session_id = %session_id, did = %did, "AV session ended");
+                }
+                Err(e) => {
+                    drop(mgr);
+                    let reply = Message::from_server(
+                        &state.server_name,
+                        "NOTICE",
+                        vec![&nick, &format!("Cannot end session: {e}")],
+                    );
+                    send_to(state, &conn.id, format!("{reply}\r\n"));
+                }
+            }
+        }
+
+        _ => {
+            tracing::debug!(tag = %av_tag, "Unknown AV tag — ignored");
+        }
+    }
+}
+
+/// Broadcast a plain NOTICE to all channel members (used for AV session events from S2S).
+pub fn broadcast_av_notice(state: &Arc<SharedState>, channel: &str, text: &str) {
+    let notice = Message::from_server(&state.server_name, "NOTICE", vec![channel, text]);
+    let line = format!("{notice}\r\n");
+    let members: Vec<String> = state
+        .channels
+        .lock()
+        .get(channel)
+        .map(|ch| ch.members.iter().cloned().collect())
+        .unwrap_or_default();
+    let conns = state.connections.lock();
+    for member in &members {
+        if let Some(tx) = conns.get(member) {
+            let _ = tx.try_send(line.clone());
+        }
+    }
+}
+
+/// Broadcast AV session state to all channel members via TAGMSG (public for disconnect cleanup).
+pub fn broadcast_av_state_pub(
+    state: &Arc<SharedState>,
+    target: &str,
+    session_id: &str,
+    action: &str,
+    actor_nick: &str,
+    participant_count: usize,
+    title: &str,
+) {
+    broadcast_av_state(state, target, session_id, action, actor_nick, participant_count, title);
+}
+
+/// Broadcast AV session state to all channel members via TAGMSG.
+fn broadcast_av_state(
+    state: &Arc<SharedState>,
+    target: &str,
+    session_id: &str,
+    action: &str,
+    actor_nick: &str,
+    participant_count: usize,
+    title: &str,
+) {
+    let mut tags = std::collections::HashMap::new();
+    tags.insert("+freeq.at/av-state".to_string(), action.to_string());
+    tags.insert("+freeq.at/av-id".to_string(), session_id.to_string());
+    tags.insert("+freeq.at/av-participants".to_string(), participant_count.to_string());
+    tags.insert("+freeq.at/av-actor".to_string(), actor_nick.to_string());
+    if !title.is_empty() {
+        tags.insert("+freeq.at/av-title".to_string(), title.to_string());
+    }
+    let time_tag = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S.000Z").to_string();
+    tags.insert("time".to_string(), time_tag);
+
+    let tag_msg = super::super::irc::Message {
+        tags,
+        prefix: Some(state.server_name.clone()),
+        command: "TAGMSG".to_string(),
+        params: vec![target.to_string()],
+    };
+    let line = format!("{tag_msg}\r\n");
+
+    // Also send a human-readable NOTICE for clients that don't parse tags
+    let notice_text = match action {
+        "started" => format!("{actor_nick} started a voice session{}", if title.is_empty() { String::new() } else { format!(": {title}") }),
+        "joined" => format!("{actor_nick} joined the voice session ({participant_count} participants)"),
+        "left" => format!("{actor_nick} left the voice session ({participant_count} participants)"),
+        "ended" => format!("{actor_nick} ended the voice session"),
+        _ => return,
+    };
+    let notice = Message::from_server(
+        &state.server_name,
+        "NOTICE",
+        vec![target, &notice_text],
+    );
+    let notice_line = format!("{notice}\r\n");
+
+    // Broadcast to channel members
+    if target.starts_with('#') || target.starts_with('&') {
+        let members: Vec<String> = state
+            .channels
+            .lock()
+            .get(target)
+            .map(|ch| ch.members.iter().cloned().collect())
+            .unwrap_or_default();
+
+        let tag_caps = state.cap_message_tags.lock();
+        let conns = state.connections.lock();
+        for member in &members {
+            if let Some(tx) = conns.get(member) {
+                if tag_caps.contains(member) {
+                    let _ = tx.try_send(line.clone());
+                } else {
+                    let _ = tx.try_send(notice_line.clone());
+                }
+            }
+        }
+    }
+}
+
+/// Broadcast AV session event via S2S federation.
+fn broadcast_av_s2s(
+    state: &Arc<SharedState>,
+    action: &str,
+    session_id: &str,
+    channel: Option<&str>,
+    did: &str,
+    nick: &str,
+    title: Option<&str>,
+    ended_by: Option<&str>,
+) {
+    let s2s = state.s2s_manager.lock();
+    let Some(ref mgr) = *s2s else { return };
+
+    let event_id = mgr.next_event_id();
+    let origin = mgr.server_id.clone();
+
+    let msg = match action {
+        "created" => crate::s2s::S2sMessage::AvSessionCreated {
+            event_id,
+            session_id: session_id.to_string(),
+            channel: channel.unwrap_or("").to_string(),
+            created_by_did: did.to_string(),
+            created_by_nick: nick.to_string(),
+            title: title.map(|s| s.to_string()),
+            iroh_ticket: None, // TODO: add when iroh-live is integrated
+            origin,
+        },
+        "joined" => crate::s2s::S2sMessage::AvSessionJoined {
+            event_id,
+            session_id: session_id.to_string(),
+            did: did.to_string(),
+            nick: nick.to_string(),
+            origin,
+        },
+        "left" => crate::s2s::S2sMessage::AvSessionLeft {
+            event_id,
+            session_id: session_id.to_string(),
+            did: did.to_string(),
+            origin,
+        },
+        "ended" => crate::s2s::S2sMessage::AvSessionEnded {
+            event_id,
+            session_id: session_id.to_string(),
+            ended_by: ended_by.map(|s| s.to_string()),
+            origin,
+        },
+        _ => return,
+    };
+
+    mgr.broadcast(msg);
 }

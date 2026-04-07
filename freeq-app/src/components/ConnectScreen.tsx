@@ -220,6 +220,12 @@ export function ConnectScreen() {
     if (brokerAutoAttempts >= MAX_BROKER_AUTO_ATTEMPTS) return;
     const brokerToken = localStorage.getItem(LS_BROKER_TOKEN);
     if (!brokerToken) return;
+    // If brokerOrigin is the same as webOrigin, there's no external broker —
+    // the server handles auth directly via /auth/login. Don't try /session.
+    if (brokerOrigin === webOrigin) {
+      localStorage.removeItem(LS_BROKER_TOKEN); // stale token from a different server
+      return;
+    }
 
     brokerAutoAttempts++;
     setAutoConnecting(true);

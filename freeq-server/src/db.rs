@@ -390,6 +390,48 @@ impl Db {
             ",
         )?;
 
+        // AV sessions tables
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS av_sessions (
+                id               TEXT PRIMARY KEY,
+                channel          TEXT,
+                created_by       TEXT NOT NULL,
+                created_at       INTEGER NOT NULL,
+                ended_at         INTEGER,
+                ended_by         TEXT,
+                title            TEXT,
+                iroh_ticket      TEXT,
+                backend          TEXT NOT NULL DEFAULT '\"iroh-live\"',
+                recording        BOOLEAN NOT NULL DEFAULT FALSE,
+                max_participants INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_av_sessions_channel ON av_sessions(channel, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS av_participants (
+                session_id  TEXT NOT NULL REFERENCES av_sessions(id),
+                did         TEXT NOT NULL,
+                nick        TEXT NOT NULL,
+                joined_at   INTEGER NOT NULL,
+                left_at     INTEGER,
+                role        TEXT NOT NULL DEFAULT '\"speaker\"',
+                PRIMARY KEY (session_id, did)
+            );
+
+            CREATE TABLE IF NOT EXISTS av_artifacts (
+                id           TEXT PRIMARY KEY,
+                session_id   TEXT NOT NULL REFERENCES av_sessions(id),
+                kind         TEXT NOT NULL,
+                created_at   INTEGER NOT NULL,
+                created_by   TEXT,
+                content_ref  TEXT NOT NULL,
+                content_type TEXT NOT NULL,
+                visibility   TEXT NOT NULL DEFAULT '\"participants\"',
+                title        TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_av_artifacts_session ON av_artifacts(session_id);
+            ",
+        )?;
+
         Ok(())
     }
 
@@ -2218,5 +2260,176 @@ impl Db {
             Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
             Err(_) => Vec::new(),
         }
+    }
+
+    // ── AV sessions ────────────────────────────────────────────────────
+
+    pub fn save_av_session(&self, session: &crate::av::AvSession) -> SqlResult<()> {
+        use crate::av::AvSessionState;
+        let (ended_at, ended_by) = match &session.state {
+            AvSessionState::Active => (None, None),
+            AvSessionState::Ended { ended_at, ended_by } => {
+                (Some(*ended_at), ended_by.clone())
+            }
+        };
+        self.conn.execute(
+            "INSERT INTO av_sessions (id, channel, created_by, created_at, ended_at, ended_by, title, iroh_ticket, backend, recording, max_participants)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ON CONFLICT(id) DO UPDATE SET
+                ended_at=excluded.ended_at,
+                ended_by=excluded.ended_by",
+            params![
+                session.id,
+                session.channel,
+                session.created_by,
+                session.created_at,
+                ended_at,
+                ended_by,
+                session.title,
+                session.iroh_ticket,
+                serde_json::to_string(&session.media_backend).unwrap_or_default(),
+                session.recording_enabled,
+                session.max_participants,
+            ],
+        )?;
+        for p in session.participants.values() {
+            self.conn.execute(
+                "INSERT INTO av_participants (session_id, did, nick, joined_at, left_at, role)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(session_id, did) DO UPDATE SET
+                    left_at=excluded.left_at, role=excluded.role",
+                params![
+                    session.id, p.did, p.nick, p.joined_at, p.left_at,
+                    serde_json::to_string(&p.role).unwrap_or_default(),
+                ],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn save_av_artifact(&self, artifact: &crate::av::AvArtifact) -> SqlResult<()> {
+        self.conn.execute(
+            "INSERT INTO av_artifacts (id, session_id, kind, created_at, created_by, content_ref, content_type, visibility, title)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                artifact.id, artifact.session_id,
+                serde_json::to_string(&artifact.kind).unwrap_or_default(),
+                artifact.created_at, artifact.created_by,
+                artifact.content_ref, artifact.content_type,
+                serde_json::to_string(&artifact.visibility).unwrap_or_default(),
+                artifact.title,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_av_artifacts(&self, session_id: &str) -> SqlResult<Vec<crate::av::AvArtifact>> {
+        use crate::av::{AvArtifact, ArtifactKind, ArtifactVisibility};
+        let mut stmt = self.conn.prepare(
+            "SELECT id, session_id, kind, created_at, created_by, content_ref, content_type, visibility, title
+             FROM av_artifacts WHERE session_id = ?1 ORDER BY created_at",
+        )?;
+        let rows = stmt.query_map([session_id], |row: &rusqlite::Row| {
+            let kind_str: String = row.get(2)?;
+            let vis_str: String = row.get(7)?;
+            Ok(AvArtifact {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                kind: serde_json::from_str(&kind_str).unwrap_or(ArtifactKind::Summary),
+                created_at: row.get(3)?,
+                created_by: row.get(4)?,
+                content_ref: row.get(5)?,
+                content_type: row.get(6)?,
+                visibility: serde_json::from_str(&vis_str).unwrap_or(ArtifactVisibility::Participants),
+                title: row.get(8)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// Load all active (non-ended) AV sessions with their participants. Used on server restart.
+    pub fn load_active_av_sessions(&self) -> SqlResult<Vec<crate::av::AvSession>> {
+        use crate::av::{AvSession, AvSessionState, AvParticipant, ParticipantRole, MediaBackendType};
+        use std::collections::HashMap;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, channel, created_by, created_at, title, iroh_ticket, backend, recording, max_participants
+             FROM av_sessions WHERE ended_at IS NULL",
+        )?;
+        let mut sessions: Vec<AvSession> = stmt.query_map([], |row: &rusqlite::Row| {
+            let backend_str: String = row.get(6)?;
+            Ok(AvSession {
+                id: row.get(0)?,
+                channel: row.get(1)?,
+                created_by: row.get(2)?,
+                created_by_nick: String::new(),
+                created_at: row.get(3)?,
+                state: AvSessionState::Active,
+                participants: HashMap::new(),
+                title: row.get(4)?,
+                iroh_ticket: row.get(5)?,
+                media_backend: serde_json::from_str(&backend_str).unwrap_or(MediaBackendType::IrohLive),
+                recording_enabled: row.get(7)?,
+                max_participants: row.get(8)?,
+            })
+        })?.filter_map(|r| r.ok()).collect();
+
+        // Load participants for each session
+        for session in &mut sessions {
+            let mut pstmt = self.conn.prepare(
+                "SELECT did, nick, joined_at, left_at, role FROM av_participants WHERE session_id = ?1",
+            )?;
+            let participants: Vec<AvParticipant> = pstmt.query_map([&session.id], |row: &rusqlite::Row| {
+                let role_str: String = row.get(4)?;
+                Ok(AvParticipant {
+                    did: row.get(0)?,
+                    nick: row.get(1)?,
+                    joined_at: row.get(2)?,
+                    left_at: row.get(3)?,
+                    role: serde_json::from_str(&role_str).unwrap_or(ParticipantRole::Speaker),
+                    tracks: vec![],
+                })
+            })?.filter_map(|r| r.ok()).collect();
+            for p in participants {
+                // Also recover created_by_nick from the host participant
+                if p.did == session.created_by {
+                    session.created_by_nick = p.nick.clone();
+                }
+                session.participants.insert(p.did.clone(), p);
+            }
+        }
+        Ok(sessions)
+    }
+
+    pub fn list_channel_av_sessions(&self, channel: &str, limit: u32) -> SqlResult<Vec<crate::av::AvSession>> {
+        use crate::av::{AvSession, AvSessionState, MediaBackendType};
+        use std::collections::HashMap;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, channel, created_by, created_at, ended_at, ended_by, title, iroh_ticket, backend, recording, max_participants
+             FROM av_sessions WHERE channel = ?1 ORDER BY created_at DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![channel, limit], |row: &rusqlite::Row| {
+            let ended_at: Option<i64> = row.get(4)?;
+            let ended_by: Option<String> = row.get(5)?;
+            let backend_str: String = row.get(8)?;
+            let state = match ended_at {
+                Some(ea) => AvSessionState::Ended { ended_at: ea, ended_by },
+                None => AvSessionState::Active,
+            };
+            Ok(AvSession {
+                id: row.get(0)?,
+                channel: row.get(1)?,
+                created_by: row.get(2)?,
+                created_by_nick: String::new(),
+                created_at: row.get(3)?,
+                state,
+                participants: HashMap::new(),
+                title: row.get(6)?,
+                iroh_ticket: row.get(7)?,
+                media_backend: serde_json::from_str(&backend_str).unwrap_or(MediaBackendType::IrohLive),
+                recording_enabled: row.get(9)?,
+                max_participants: row.get(10)?,
+            })
+        })?;
+        rows.collect()
     }
 }
