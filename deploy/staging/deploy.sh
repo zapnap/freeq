@@ -13,15 +13,18 @@ echo "Preparing staging deploy in $TMPDIR..."
 # Copy workspace root files
 cp "$REPO_ROOT/Cargo.toml" "$REPO_ROOT/Cargo.lock" "$TMPDIR/"
 
-# Copy all workspace members needed for 'cargo build -p freeq-server'
-for dir in freeq-sdk freeq-server freeq-auth-broker freeq-bots freeq-bot-id freeq-sdk-ffi freeq-windows-core freeq-av-client; do
-    cp -r "$REPO_ROOT/$dir" "$TMPDIR/"
-done
+# Copy workspace members that freeq-server ACTUALLY depends on
+cp -r "$REPO_ROOT/freeq-sdk" "$TMPDIR/"
+cp -r "$REPO_ROOT/freeq-server" "$TMPDIR/"
+# freeq-av-client is needed if av-native feature is enabled
+[ -d "$REPO_ROOT/freeq-av-client" ] && cp -r "$REPO_ROOT/freeq-av-client" "$TMPDIR/"
 
-# Stub freeq-tui (workspace member but not needed at runtime)
-mkdir -p "$TMPDIR/freeq-tui/src"
-cp "$REPO_ROOT/freeq-tui/Cargo.toml" "$TMPDIR/freeq-tui/"
-echo "fn main() {}" > "$TMPDIR/freeq-tui/src/main.rs"
+# Stub ALL other workspace members — Cargo needs them to exist but we don't compile them.
+# Copy the full source tree so Cargo.toml references resolve, but cargo-chef/build
+# will only compile freeq-server and its actual deps (freeq-sdk).
+for dir in freeq-tui freeq-auth-broker freeq-bots freeq-bot-id freeq-sdk-ffi freeq-windows-core; do
+    [ -d "$REPO_ROOT/$dir" ] && cp -r "$REPO_ROOT/$dir" "$TMPDIR/"
+done
 
 # Copy web client source (without node_modules/dist/tauri)
 cp -r "$REPO_ROOT/freeq-app" "$TMPDIR/web-client"
