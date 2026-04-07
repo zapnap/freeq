@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useStore } from '../store';
-import { joinChannel, partChannel, disconnect, startAvSession } from '../irc/client';
+import { joinChannel, partChannel, disconnect, startAvSession, endAvSession, getNick } from '../irc/client';
 import { SpeakerIcon } from './SessionIndicator';
 import { fetchProfile, getCachedProfile } from '../lib/profiles';
 
@@ -365,9 +365,20 @@ function VoiceStatus({ channel }: { channel: string }) {
         ))}
       </div>
       {isConnected ? (
-        <div className="text-[10px] text-success font-medium flex items-center gap-1">
-          <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />
-          Connected
+        <div className="flex items-center justify-between">
+          <div className="text-[10px] text-success font-medium flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />
+            Connected
+          </div>
+          {session.createdByNick.toLowerCase() === getNick().toLowerCase() && (
+            <button
+              onClick={(e) => { e.stopPropagation(); useStore.getState().setAvAudioActive(false); useStore.getState().setAvCameraOn(false); endAvSession(channel, session.id); }}
+              className="text-[10px] text-danger hover:text-danger/80"
+              title="End session for everyone"
+            >
+              End
+            </button>
+          )}
         </div>
       ) : (
         <button

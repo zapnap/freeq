@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import type { AvParticipant, AvSession } from '../store';
 import { useStore } from '../store';
-import { setTopic as sendTopic } from '../irc/client';
-import { SessionIndicator } from './SessionIndicator';
+import { setTopic as sendTopic, startAvSession } from '../irc/client';
+import { SpeakerIcon } from './SessionIndicator';
 import { fetchProfile, type ATProfile } from '../lib/profiles';
 
 interface TopBarProps {
@@ -70,7 +71,7 @@ export function TopBar({ onToggleSidebar, onToggleMembers, membersOpen }: TopBar
         />
       )}
 
-      {/* Channel / DM name */}
+      {/* Channel / DM name + voice icon */}
       <div className="flex items-center gap-2 min-w-0 shrink">
         {isChannel && <span className="text-accent text-base font-bold shrink-0">#</span>}
         {isDM && <span className="text-fg-dim text-base shrink-0">💬</span>}
@@ -81,12 +82,12 @@ export function TopBar({ onToggleSidebar, onToggleMembers, membersOpen }: TopBar
           <span className="text-success text-xs shrink-0" title="End-to-end encrypted channel">🔒</span>
         )}
         {isDM && !ch?.isEncrypted && (() => {
-          // Show lock if DM partner has a DID (E2EE capable)
           const partnerDid = ch?.members.values().next().value?.did;
           return partnerDid ? (
             <span className="text-success text-xs shrink-0" title="End-to-end encrypted DM">🔒</span>
           ) : null;
         })()}
+        {isChannel && <VoiceButton channel={activeChannel} />}
       </div>
 
       {/* Identity stats */}
@@ -151,8 +152,7 @@ export function TopBar({ onToggleSidebar, onToggleMembers, membersOpen }: TopBar
         )}
       </div>
 
-      {/* AV session indicator */}
-      {isChannel && <SessionIndicator channel={activeChannel} />}
+      {/* AV session — controls moved to CallPanel + Sidebar */}
 
       {/* Settings gear (channels only) */}
       {isChannel && (
@@ -205,5 +205,67 @@ export function TopBar({ onToggleSidebar, onToggleMembers, membersOpen }: TopBar
       </div>
     )}
     </>
+  );
+}
+
+/** Speaker icon next to channel name — starts/joins voice with one click.
+ *  Glows green when in an active call. */
+function VoiceButton({ channel }: { channel: string }) {
+  const avSessions = useStore((s) => s.avSessions);
+  const activeAvSession = useStore((s) => s.activeAvSession);
+  const avAudioActive = useStore((s) => s.avAudioActive);
+  const authDid = useStore((s) => s.authDid);
+  const connectionState = useStore((s) => s.connectionState);
+
+  // Poll REST API to discover sessions (same logic that was in SessionIndicator)
+  useEffect(() => {
+    if (connectionState !== 'connected' || !channel.startsWith('#')) return;
+    let cancelled = false;
+    async function poll() {
+      try {
+        const resp = await fetch(`/api/v1/channels/${encodeURIComponent(channel)}/sessions`);
+        if (!resp.ok || cancelled) return;
+        const data = await resp.json();
+        if (cancelled || !data.active) return;
+        const store = useStore.getState();
+        if (!store.avSessions.get(data.active.id)) {
+          const participants = new Map<string, AvParticipant>();
+          for (const p of data.active.participants || []) {
+            participants.set(p.nick, { did: p.did || '', nick: p.nick, role: p.role || 'speaker', joinedAt: new Date(p.joined_at * 1000) });
+          }
+          store.updateAvSession({
+            id: data.active.id, channel: data.active.channel, createdBy: data.active.created_by || '',
+            createdByNick: data.active.created_by_nick || '', title: data.active.title || undefined,
+            participants, state: 'active', startedAt: new Date(data.active.created_at * 1000),
+            irohTicket: data.active.iroh_ticket || undefined,
+          });
+        }
+      } catch { /* ignore */ }
+    }
+    poll();
+    const timer = setInterval(poll, 5000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [channel, connectionState]);
+
+  if (!authDid || connectionState !== 'connected') return null;
+
+  const session = [...avSessions.values()].find(
+    (s) => s.channel?.toLowerCase() === channel.toLowerCase() && s.state === 'active'
+  );
+
+  const isInCall = session && activeAvSession === session.id && avAudioActive;
+
+  return (
+    <button
+      onClick={() => startAvSession(channel)}
+      className={`shrink-0 p-1 rounded-md transition-all ${
+        isInCall
+          ? 'text-success bg-success/15 shadow-[0_0_8px_rgba(34,197,94,0.3)]'
+          : 'text-fg-dim hover:text-accent hover:bg-bg-tertiary'
+      }`}
+      title={isInCall ? 'In voice call' : session ? 'Join voice call' : 'Start voice call'}
+    >
+      <SpeakerIcon size={14} />
+    </button>
   );
 }
