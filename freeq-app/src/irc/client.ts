@@ -1390,13 +1390,15 @@ export async function startAvSession(channel: string, title?: string) {
     // Continue to create — server will handle dedup
   }
 
-  // No active session — start a new one
+  // No active session — start a new one and auto-connect audio
   store.addSystemMessage(channel, 'Starting voice session...');
   const tags: Record<string, string> = { '+freeq.at/av-start': '' };
   if (title) tags['+freeq.at/av-title'] = title;
   const line = format('TAGMSG', [channel], tags);
   console.log('[av] startAvSession:', line);
   raw(line);
+  // Audio activates immediately — CallPanel will connect when session state arrives
+  store.setAvAudioActive(true);
 }
 
 /// Join an AV session (by ID or channel's active session).

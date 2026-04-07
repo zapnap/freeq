@@ -4,7 +4,7 @@ import { joinAvSession, leaveAvSession, endAvSession, startAvSession, getNick } 
 import type { AvSession, AvParticipant } from '../store';
 
 /** Shows active AV session status in the channel header.
- *  Polls the REST API to discover sessions (doesn't rely solely on TAGMSG). */
+ *  Polls the REST API to discover sessions. One-click to start/join + connect audio. */
 export function SessionIndicator({ channel }: { channel: string }) {
   const avSessions = useStore((s) => s.avSessions);
   const activeAvSession = useStore((s) => s.activeAvSession);
@@ -14,11 +14,9 @@ export function SessionIndicator({ channel }: { channel: string }) {
 
   const isConnected = connectionState === 'connected';
 
-  // Poll REST API for active session on this channel (catches sessions started
-  // before we joined the channel or missed TAGMSG broadcasts)
+  // Poll REST API for active session on this channel
   useEffect(() => {
     if (!isConnected || !channel.startsWith('#')) return;
-
     let cancelled = false;
 
     async function poll() {
@@ -32,7 +30,6 @@ export function SessionIndicator({ channel }: { channel: string }) {
           const store = useStore.getState();
           const existing = store.avSessions.get(data.active.id);
           if (!existing) {
-            // Session exists on server but not in our store — add it
             const participants = new Map<string, AvParticipant>();
             for (const p of data.active.participants || []) {
               participants.set(p.nick, {
@@ -66,51 +63,50 @@ export function SessionIndicator({ channel }: { channel: string }) {
     return () => { cancelled = true; clearInterval(timer); };
   }, [channel, isConnected]);
 
-  // Find active session for this channel
   const session = [...avSessions.values()].find(
     (s) => s.channel?.toLowerCase() === channel.toLowerCase() && s.state === 'active'
   );
 
+  // No session — show speaker icon to start one
   if (!session) {
     if (!authDid) return null;
     return (
       <button
         onClick={() => startAvSession(channel)}
         disabled={!isConnected}
-        className={`text-xs px-2 py-1 rounded-lg flex items-center gap-1 ${
+        className={`p-1.5 rounded-lg ${
           isConnected
             ? 'text-fg-dim hover:text-accent hover:bg-bg-tertiary'
             : 'text-fg-dim/40 cursor-not-allowed'
         }`}
-        title={isConnected ? "Start a voice session" : "Not connected"}
+        title={isConnected ? 'Start voice/video session' : 'Not connected'}
       >
-        <PhoneIcon />
+        <SpeakerIcon size={16} />
       </button>
     );
   }
 
-  const isInSession = activeAvSession === session.id;
+  const isInSession = activeAvSession === session.id && avAudioActive;
   const participantCount = session.participants.size;
   const myNick = getNick();
   const isHost = session.createdByNick.toLowerCase() === myNick.toLowerCase();
 
-  const handleJoinWithAudio = () => {
+  // One-click join: joins session + connects audio immediately
+  const handleJoin = () => {
     joinAvSession(channel, session.id);
     useStore.getState().setAvAudioActive(true);
   };
 
   const handleLeave = () => {
     useStore.getState().setAvAudioActive(false);
+    useStore.getState().setAvCameraOn(false);
     leaveAvSession(channel, session.id);
   };
 
   const handleEnd = () => {
     useStore.getState().setAvAudioActive(false);
+    useStore.getState().setAvCameraOn(false);
     endAvSession(channel, session.id);
-  };
-
-  const handleConnectAudio = () => {
-    useStore.getState().setAvAudioActive(true);
   };
 
   return (
@@ -118,14 +114,14 @@ export function SessionIndicator({ channel }: { channel: string }) {
       <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium ${
         isInSession ? 'bg-success/15 text-success' : 'bg-accent/10 text-accent'
       }`}>
-        <span className="w-2 h-2 rounded-full bg-current animate-pulse" />
+        <SpeakerIcon size={12} />
         <span>{session.title || 'Voice'}</span>
         <span className="opacity-60">({participantCount})</span>
       </div>
 
       {!isInSession && (
         <button
-          onClick={handleJoinWithAudio}
+          onClick={handleJoin}
           className="text-xs px-2.5 py-1 rounded-lg bg-accent text-white hover:bg-accent/90 font-medium"
         >
           Join
@@ -134,15 +130,6 @@ export function SessionIndicator({ channel }: { channel: string }) {
 
       {isInSession && (
         <div className="flex items-center gap-1">
-          {!avAudioActive && (
-            <button
-              onClick={handleConnectAudio}
-              className="text-xs px-2 py-1 rounded-lg bg-success/15 text-success hover:bg-success/25 font-medium flex items-center gap-1"
-              title="Connect audio"
-            >
-              <MicIcon /> Audio
-            </button>
-          )}
           <button
             onClick={handleLeave}
             className="text-xs px-2 py-1 rounded-lg bg-danger/10 text-danger hover:bg-danger/20 font-medium"
@@ -164,19 +151,12 @@ export function SessionIndicator({ channel }: { channel: string }) {
   );
 }
 
-function PhoneIcon() {
+export function SpeakerIcon({ size = 14 }: { size?: number }) {
   return (
-    <svg className="w-3.5 h-3.5" viewBox="0 0 16 16" fill="currentColor">
-      <path d="M3.654 1.328a.678.678 0 0 0-1.015-.063L1.605 2.3c-.483.484-.661 1.169-.45 1.77a17.568 17.568 0 0 0 4.168 6.608 17.569 17.569 0 0 0 6.608 4.168c.601.211 1.286.033 1.77-.45l1.034-1.034a.678.678 0 0 0-.063-1.015l-2.307-1.794a.678.678 0 0 0-.58-.122l-2.19.547a1.745 1.745 0 0 1-1.657-.459L5.482 8.062a1.745 1.745 0 0 1-.46-1.657l.548-2.19a.678.678 0 0 0-.122-.58L3.654 1.328zM1.884.511a1.745 1.745 0 0 1 2.612.163L6.29 2.98c.329.423.445.974.315 1.494l-.547 2.19a.678.678 0 0 0 .178.643l2.457 2.457a.678.678 0 0 0 .644.178l2.189-.547a1.745 1.745 0 0 1 1.494.315l2.306 1.794c.829.645.905 1.87.163 2.611l-1.034 1.034c-.74.74-1.846 1.065-2.877.702a18.634 18.634 0 0 1-7.01-4.42 18.634 18.634 0 0 1-4.42-7.009c-.362-1.03-.037-2.137.703-2.877L1.885.511z"/>
-    </svg>
-  );
-}
-
-function MicIcon() {
-  return (
-    <svg className="w-3 h-3" viewBox="0 0 16 16" fill="currentColor">
-      <path d="M3.5 6.5A.5.5 0 0 1 4 7v1a4 4 0 0 0 8 0V7a.5.5 0 0 1 1 0v1a5 5 0 0 1-4.5 4.975V15h3a.5.5 0 0 1 0 1h-7a.5.5 0 0 1 0-1h3v-2.025A5 5 0 0 1 3 8V7a.5.5 0 0 1 .5-.5z"/>
-      <path d="M10 8a2 2 0 1 1-4 0V3a2 2 0 1 1 4 0v5zM8 0a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V3a3 3 0 0 0-3-3z"/>
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="currentColor">
+      <path d="M11.536 14.01A8.473 8.473 0 0 0 14.026 8a8.473 8.473 0 0 0-2.49-6.01l-.708.707A7.476 7.476 0 0 1 13.025 8c0 2.071-.84 3.946-2.197 5.303l.708.707z"/>
+      <path d="M10.121 12.596A6.48 6.48 0 0 0 12.025 8a6.48 6.48 0 0 0-1.904-4.596l-.707.707A5.483 5.483 0 0 1 11.025 8a5.483 5.483 0 0 1-1.61 3.89l.706.706z"/>
+      <path d="M8.707 11.182A4.486 4.486 0 0 0 10.025 8a4.486 4.486 0 0 0-1.318-3.182L8 5.525A3.489 3.489 0 0 1 9.025 8 3.49 3.49 0 0 1 8 10.475l.707.707zM6.717 3.55A.5.5 0 0 1 7 4v8a.5.5 0 0 1-.812.39L3.825 10.5H1.5A.5.5 0 0 1 1 10V6a.5.5 0 0 1 .5-.5h2.325l2.363-1.89a.5.5 0 0 1 .529-.06z"/>
     </svg>
   );
 }

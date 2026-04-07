@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useStore } from '../store';
-import { joinChannel, partChannel, disconnect } from '../irc/client';
+import { joinChannel, partChannel, disconnect, startAvSession } from '../irc/client';
+import { SpeakerIcon } from './SessionIndicator';
 import { fetchProfile, getCachedProfile } from '../lib/profiles';
 
 interface SidebarProps {
@@ -322,7 +323,61 @@ function ChannelButton({ ch, isActive, onSelect, icon, showPreview }: {
       position={ctxMenu}
       onClose={() => setCtxMenu(null)}
     />}
+    {ch.name.startsWith('#') && <VoiceStatus channel={ch.name} />}
     </>
+  );
+}
+
+/** Shows active voice session status inline under a channel in the sidebar. */
+function VoiceStatus({ channel }: { channel: string }) {
+  const avSessions = useStore((s) => s.avSessions);
+  const activeAvSession = useStore((s) => s.activeAvSession);
+  const avAudioActive = useStore((s) => s.avAudioActive);
+
+  const session = [...avSessions.values()].find(
+    (s) => s.channel?.toLowerCase() === channel.toLowerCase() && s.state === 'active'
+  );
+
+  if (!session) return null;
+
+  const isConnected = activeAvSession === session.id && avAudioActive;
+  const participants = [...session.participants.values()];
+
+  return (
+    <div className="mx-2 mb-1 px-2.5 py-2 rounded-lg bg-bg-tertiary/60 border border-border/50">
+      <div className="flex items-center gap-1.5 text-[11px] text-success font-medium mb-1.5">
+        <SpeakerIcon size={11} />
+        <span>Voice</span>
+        <span className="text-fg-dim font-normal">· {participants.length} in call</span>
+      </div>
+      <div className="flex flex-wrap gap-1 mb-2">
+        {participants.map((p) => (
+          <div
+            key={p.nick}
+            className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-bg-secondary text-[10px] text-fg-muted"
+            title={p.nick}
+          >
+            <span className="w-4 h-4 rounded-full bg-accent/20 flex items-center justify-center text-accent text-[8px] font-bold shrink-0">
+              {p.nick.slice(0, 1).toUpperCase()}
+            </span>
+            <span className="truncate max-w-[60px]">{p.nick}</span>
+          </div>
+        ))}
+      </div>
+      {isConnected ? (
+        <div className="text-[10px] text-success font-medium flex items-center gap-1">
+          <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />
+          Connected
+        </div>
+      ) : (
+        <button
+          onClick={(e) => { e.stopPropagation(); startAvSession(channel); }}
+          className="w-full text-[11px] py-1.5 rounded-md bg-accent text-white hover:bg-accent/90 font-medium transition-colors"
+        >
+          Join Voice
+        </button>
+      )}
+    </div>
   );
 }
 
