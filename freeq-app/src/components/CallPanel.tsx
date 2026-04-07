@@ -285,9 +285,9 @@ export function CallPanel() {
       )}
 
       {/* Controls bar */}
-      <div className="flex items-center gap-2 px-3 py-1.5 text-sm">
-        <div className="flex items-center gap-1.5 text-success font-medium">
-          <span className="w-2 h-2 rounded-full bg-success animate-pulse" />
+      <div className="flex items-center gap-3 px-4 py-2">
+        <div className="flex items-center gap-1.5 text-success font-medium text-sm">
+          <span className="w-2.5 h-2.5 rounded-full bg-success animate-pulse" />
           <span>{avCameraOn ? 'Video' : 'Voice'} ({participantCount})</span>
         </div>
 
@@ -296,31 +296,36 @@ export function CallPanel() {
         {/* Mute */}
         <button
           onClick={handleMuteToggle}
-          className={`text-xs px-2 py-1 rounded-lg font-medium flex items-center gap-1 ${
-            avMuted ? 'bg-danger/15 text-danger' : 'bg-bg-tertiary text-fg-dim hover:text-fg'
+          className={`p-2 rounded-full transition-colors ${
+            avMuted
+              ? 'bg-danger text-white hover:bg-danger/80'
+              : 'bg-bg-tertiary text-fg hover:bg-bg-tertiary/80'
           }`}
+          title={avMuted ? 'Unmute' : 'Mute'}
         >
-          {avMuted ? <MicOffIcon /> : <MicIcon />}
-          {avMuted ? 'Unmute' : 'Mute'}
+          {avMuted ? <MicOffIcon size={18} /> : <MicIcon size={18} />}
         </button>
 
         {/* Camera */}
         <button
           onClick={handleCameraToggle}
-          className={`text-xs px-2 py-1 rounded-lg font-medium flex items-center gap-1 ${
-            avCameraOn ? 'bg-accent/15 text-accent' : 'bg-bg-tertiary text-fg-dim hover:text-fg'
+          className={`p-2 rounded-full transition-colors ${
+            avCameraOn
+              ? 'bg-accent text-white hover:bg-accent/80'
+              : 'bg-bg-tertiary text-fg hover:bg-bg-tertiary/80'
           }`}
+          title={avCameraOn ? 'Turn off camera' : 'Turn on camera'}
         >
-          {avCameraOn ? <CameraOnIcon /> : <CameraOffIcon />}
-          {avCameraOn ? 'Camera' : 'Camera'}
+          {avCameraOn ? <CameraOnIcon size={18} /> : <CameraOffIcon size={18} />}
         </button>
 
         {/* Leave */}
         <button
           onClick={handleLeave}
-          className="text-xs px-2 py-1 rounded-lg bg-danger/10 text-danger hover:bg-danger/20 font-medium"
+          className="p-2 rounded-full bg-danger text-white hover:bg-danger/80 transition-colors"
+          title="Leave call"
         >
-          Leave
+          <PhoneOffIcon size={18} />
         </button>
       </div>
 
@@ -347,36 +352,44 @@ function AvatarTile({ name, avatarUrl }: { name: string; avatarUrl?: string | nu
   );
 }
 
-function MicIcon() {
+function MicIcon({ size = 14 }: { size?: number }) {
   return (
-    <svg className="w-3 h-3 inline" viewBox="0 0 16 16" fill="currentColor">
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="currentColor">
       <path d="M3.5 6.5A.5.5 0 0 1 4 7v1a4 4 0 0 0 8 0V7a.5.5 0 0 1 1 0v1a5 5 0 0 1-4.5 4.975V15h3a.5.5 0 0 1 0 1h-7a.5.5 0 0 1 0-1h3v-2.025A5 5 0 0 1 3 8V7a.5.5 0 0 1 .5-.5z"/>
       <path d="M10 8a2 2 0 1 1-4 0V3a2 2 0 1 1 4 0v5zM8 0a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V3a3 3 0 0 0-3-3z"/>
     </svg>
   );
 }
 
-function MicOffIcon() {
+function MicOffIcon({ size = 14 }: { size?: number }) {
   return (
-    <svg className="w-3 h-3 inline" viewBox="0 0 16 16" fill="currentColor">
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="currentColor">
       <path d="M13 8c0 .564-.094 1.107-.266 1.613l-.814-.814A4.02 4.02 0 0 0 12 8V7a.5.5 0 0 1 1 0v1zm-5 4c.818 0 1.578-.245 2.212-.667l.718.719a4.973 4.973 0 0 1-2.43.923V15h3a.5.5 0 0 1 0 1h-7a.5.5 0 0 1 0-1h3v-2.025A5 5 0 0 1 3 8V7a.5.5 0 0 1 1 0v1a4 4 0 0 0 4 4zm3-9v4.879L5.158 2.037A3.001 3.001 0 0 1 11 3z"/>
       <path d="M9.486 10.607 5 6.12V8a3 3 0 0 0 4.486 2.607zm-7.84-1.96-.001-.001 1.442-1.442-.001-.001L14.96.33l.708.707L1.354 15.354l-.707-.707L4.14 11.153A4.985 4.985 0 0 1 3 8V7a.5.5 0 0 1 1 0v1c0 .455.076.897.216 1.306l.59-.59A4.02 4.02 0 0 1 4 8z"/>
     </svg>
   );
 }
 
-function CameraOnIcon() {
+function CameraOnIcon({ size = 14 }: { size?: number }) {
   return (
-    <svg className="w-3 h-3 inline" viewBox="0 0 16 16" fill="currentColor">
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="currentColor">
       <path fillRule="evenodd" d="M0 5a2 2 0 0 1 2-2h7.5a2 2 0 0 1 1.983 1.738l3.11-1.382A1 1 0 0 1 16 4.269v7.462a1 1 0 0 1-1.406.913l-3.111-1.382A2 2 0 0 1 9.5 13H2a2 2 0 0 1-2-2V5z"/>
     </svg>
   );
 }
 
-function CameraOffIcon() {
+function CameraOffIcon({ size = 14 }: { size?: number }) {
   return (
-    <svg className="w-3 h-3 inline" viewBox="0 0 16 16" fill="currentColor">
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="currentColor">
       <path fillRule="evenodd" d="M10.961 12.365a1.99 1.99 0 0 0 .522-1.103l3.11 1.382A1 1 0 0 0 16 11.731V4.269a1 1 0 0 0-1.406-.913l-3.111 1.382A2 2 0 0 0 9.5 3H4.272l6.69 9.365zm-10.114-9A2 2 0 0 0 0 5v6a2 2 0 0 0 2 2h5.728L.847 3.366zm9.746 11.925-14-19 .646-.708 14 19-.646.708z"/>
+    </svg>
+  );
+}
+
+function PhoneOffIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="currentColor">
+      <path d="M10.68 4.236a.4.4 0 0 0-.358-.221H5.68a.4.4 0 0 0-.358.221L3.566 7.7a.4.4 0 0 0 .036.407l1.571 2.16-.426.733a.4.4 0 0 0 .047.444l1.602 1.837a.4.4 0 0 0 .603 0l1.602-1.837a.4.4 0 0 0 .047-.444l-.426-.733 1.571-2.16a.4.4 0 0 0 .036-.407L10.68 4.236z" transform="rotate(135 8 8)"/>
     </svg>
   );
 }
