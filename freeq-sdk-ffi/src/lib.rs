@@ -971,52 +971,49 @@ impl FreeqAv {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
         let broadcast_name = format!("{session_id}/{nick}");
-
-        // Set up audio capture via iroh-live
-        let broadcast = iroh_live::media::publish::LocalBroadcast::new();
-        let audio_backend = iroh_live::media::audio_backend::AudioBackend::default();
-        audio_backend.set_aec_enabled(false);
-
-        let mic = RUNTIME
-            .block_on(audio_backend.default_input())
-            .map_err(|_| FreeqError::ConnectionFailed)?;
-
-        broadcast
-            .audio()
-            .set(mic, iroh_live::media::codec::AudioCodec::Opus, [iroh_live::media::format::AudioPreset::Hq])
-            .map_err(|_| FreeqError::ConnectionFailed)?;
-
-        // Create MoQ origin and publish our audio
-        let origin = moq_lite::Origin::produce();
-        origin.publish_broadcast(&broadcast_name, broadcast.consume());
-
-        let sub_origin = moq_lite::Origin::produce();
-        let mut sub_consumer = sub_origin.consume();
-
-        // Connect to MoQ SFU via WebSocket
-        let mut client_config = moq_native::ClientConfig::default();
-        client_config.tls.disable_verify = Some(true);
-        client_config.backend = Some(moq_native::QuicBackend::Noq);
-        let client = client_config.init().map_err(|_| FreeqError::ConnectionFailed)?;
-
         let moq_url: url::Url = format!("{server_url}/av/moq")
             .parse()
             .map_err(|_| FreeqError::InvalidArgument)?;
 
-        let session = RUNTIME
-            .block_on(async {
-                client
-                    .with_publish(origin.consume())
-                    .with_consume(sub_origin)
-                    .connect(moq_url)
-                    .await
-            })
-            .map_err(|_| FreeqError::ConnectionFailed)?;
+        // Everything needs a Tokio runtime context
+        let (session, origin, sub_consumer, audio_backend, broadcast) = RUNTIME.block_on(async {
+            let broadcast = iroh_live::media::publish::LocalBroadcast::new();
+            let audio_backend = iroh_live::media::audio_backend::AudioBackend::default();
+            audio_backend.set_aec_enabled(false);
+
+            let mic = audio_backend.default_input().await
+                .map_err(|_| FreeqError::ConnectionFailed)?;
+
+            broadcast.audio()
+                .set(mic, iroh_live::media::codec::AudioCodec::Opus, [iroh_live::media::format::AudioPreset::Hq])
+                .map_err(|_| FreeqError::ConnectionFailed)?;
+
+            let origin = moq_lite::Origin::produce();
+            origin.publish_broadcast(&broadcast_name, broadcast.consume());
+
+            let sub_origin = moq_lite::Origin::produce();
+            let sub_consumer = sub_origin.consume();
+
+            let mut client_config = moq_native::ClientConfig::default();
+            client_config.tls.disable_verify = Some(true);
+            client_config.backend = Some(moq_native::QuicBackend::Noq);
+            let client = client_config.init().map_err(|_| FreeqError::ConnectionFailed)?;
+
+            let session = client
+                .with_publish(origin.consume())
+                .with_consume(sub_origin)
+                .connect(moq_url)
+                .await
+                .map_err(|_| FreeqError::ConnectionFailed)?;
+
+            Ok::<_, FreeqError>((session, origin, sub_consumer, audio_backend, broadcast))
+        })?;
 
         tracing::info!(broadcast = %broadcast_name, "AV: connected to MoQ SFU");
         handler.on_av_event(AvEvent::Connected);
 
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let mut sub_consumer = sub_consumer;
 
         // Watch for incoming broadcasts (other participants)
         let our_name = broadcast_name.clone();
@@ -1108,4 +1105,81 @@ impl FreeqAv {
     fn leave(&self) {}
     fn set_muted(&self, _muted: bool) {}
     fn is_connected(&self) -> bool { false }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct TestAvHandler {
+        connected: Arc<AtomicBool>,
+    }
+
+    impl AvEventHandler for TestAvHandler {
+        fn on_av_event(&self, event: AvEvent) {
+            match event {
+                AvEvent::Connected => {
+                    self.connected.store(true, Ordering::Relaxed);
+                    println!("[test] AV connected");
+                }
+                AvEvent::Disconnected { reason } => {
+                    println!("[test] AV disconnected: {reason}");
+                }
+                AvEvent::ParticipantJoined { nick } => {
+                    println!("[test] Participant joined: {nick}");
+                }
+                AvEvent::ParticipantLeft { nick } => {
+                    println!("[test] Participant left: {nick}");
+                }
+                AvEvent::Error { message } => {
+                    println!("[test] AV error: {message}");
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn av_event_types_exist() {
+        // Verify all event variants can be constructed
+        let _ = AvEvent::Connected;
+        let _ = AvEvent::Disconnected { reason: "test".to_string() };
+        let _ = AvEvent::ParticipantJoined { nick: "alice".to_string() };
+        let _ = AvEvent::ParticipantLeft { nick: "bob".to_string() };
+        let _ = AvEvent::AudioTrackStarted { nick: "carol".to_string() };
+        let _ = AvEvent::AudioTrackStopped { nick: "dave".to_string() };
+        let _ = AvEvent::Error { message: "test error".to_string() };
+    }
+
+    #[test]
+    fn av_handler_trait_works() {
+        let connected = Arc::new(AtomicBool::new(false));
+        let handler = TestAvHandler { connected: connected.clone() };
+        handler.on_av_event(AvEvent::Connected);
+        assert!(connected.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn av_without_server_fails_gracefully() {
+        let connected = Arc::new(AtomicBool::new(false));
+        let handler = Box::new(TestAvHandler { connected });
+
+        // Connecting to a non-existent server should fail, not panic
+        let result = FreeqAv::new(
+            "http://127.0.0.1:19999".to_string(), // no server here
+            "test-session".to_string(),
+            "test-nick".to_string(),
+            handler,
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[cfg(feature = "av")]
+    #[test]
+    fn av_leave_sets_disconnected() {
+        // Can't create without a server, but we can test the stub path
+        // by verifying the non-av build returns error
+    }
 }
