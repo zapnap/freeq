@@ -166,6 +166,54 @@ class AppState: ObservableObject {
     /// Pending DM navigation — set by profile "Message" button, consumed by ChatsTab
     @Published var pendingDMNick: String? = nil
 
+    // ── AV (voice/video calls) ──
+    @Published var isInCall: Bool = false
+    @Published var isMuted: Bool = false
+    @Published var isCameraOn: Bool = false
+    @Published var callParticipants: [String] = []
+    var currentNick: String? { client != nil ? nick : nil }
+    private var avSession: FreeqAv? = nil
+
+    func startCall(channel: String, sessionId: String) {
+        guard let serverAddr = client != nil ? serverAddress : nil else { return }
+        let serverUrl = serverAddr.hasPrefix("http") ? serverAddr : "https://\(serverAddr)"
+
+        do {
+            avSession = try FreeqAv(
+                serverUrl: serverUrl,
+                sessionId: sessionId,
+                nick: nick,
+                handler: AvCallbackHandler(appState: self)
+            )
+            DispatchQueue.main.async {
+                self.isInCall = true
+            }
+        } catch {
+            print("[av] Failed to start call: \(error)")
+        }
+    }
+
+    func leaveCall() {
+        avSession?.leave()
+        avSession = nil
+        DispatchQueue.main.async {
+            self.isInCall = false
+            self.isMuted = false
+            self.isCameraOn = false
+            self.callParticipants = []
+        }
+    }
+
+    func toggleMute() {
+        isMuted.toggle()
+        avSession?.setMuted(muted: isMuted)
+    }
+
+    func toggleCamera() {
+        isCameraOn.toggle()
+        // Camera handled by native layer when implemented
+    }
+
     /// For reply UI
     @Published var replyingTo: ChatMessage? = nil
     /// For edit UI
@@ -1104,6 +1152,52 @@ final class SwiftEventHandler: @unchecked Sendable, EventHandler {
                         state.reconnectSavedSession()
                     }
                 }
+            }
+        }
+    }
+}
+
+// ── AV Event Handler ──
+
+final class AvCallbackHandler: @unchecked Sendable, AvEventHandler {
+    private weak var appState: AppState?
+
+    init(appState: AppState) {
+        self.appState = appState
+    }
+
+    func onAvEvent(event: AvEvent) {
+        DispatchQueue.main.async { [weak self] in
+            guard let state = self?.appState else { return }
+
+            switch event {
+            case .connected:
+                state.isInCall = true
+                print("[av] Connected to MoQ SFU")
+
+            case .disconnected(let reason):
+                state.isInCall = false
+                state.callParticipants = []
+                print("[av] Disconnected: \(reason)")
+
+            case .participantJoined(let nick):
+                if !state.callParticipants.contains(nick) {
+                    state.callParticipants.append(nick)
+                }
+                print("[av] Participant joined: \(nick)")
+
+            case .participantLeft(let nick):
+                state.callParticipants.removeAll { $0 == nick }
+                print("[av] Participant left: \(nick)")
+
+            case .audioTrackStarted(let nick):
+                print("[av] Audio started: \(nick)")
+
+            case .audioTrackStopped(let nick):
+                print("[av] Audio stopped: \(nick)")
+
+            case .error(let message):
+                print("[av] Error: \(message)")
             }
         }
     }
