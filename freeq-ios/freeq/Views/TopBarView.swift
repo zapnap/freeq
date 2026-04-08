@@ -62,6 +62,23 @@ struct TopBarView: View {
             }
             .buttonStyle(.plain)
 
+            // Voice call button — next to channel name
+            if appState.activeChannel?.hasPrefix("#") == true {
+                Button(action: {
+                    if let channel = appState.activeChannel {
+                        // Start or join voice via IRC TAGMSG
+                        appState.startOrJoinVoice(channel: channel)
+                    }
+                }) {
+                    Image(systemName: "speaker.wave.2.fill")
+                        .font(.system(size: 14))
+                        .foregroundColor(appState.isInCall ? Theme.success : Theme.textMuted)
+                        .frame(width: 32, height: 32)
+                        .background(appState.isInCall ? Theme.success.opacity(0.15) : Color.clear)
+                        .cornerRadius(8)
+                }
+            }
+
             Spacer()
 
             // Member count badge

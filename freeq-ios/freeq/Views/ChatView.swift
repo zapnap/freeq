@@ -56,6 +56,11 @@ struct ChatView: View {
                     showingSearch: $showingSearch
                 )
 
+                // Voice/video call panel
+                if appState.isInCall, let channel = appState.activeChannel {
+                    CallView(channel: channel)
+                }
+
                 ZStack {
                     if let channel = appState.activeChannelState {
                         MessageListView(channel: channel)

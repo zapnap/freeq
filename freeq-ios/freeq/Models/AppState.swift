@@ -211,7 +211,35 @@ class AppState: ObservableObject {
 
     func toggleCamera() {
         isCameraOn.toggle()
-        // Camera handled by native layer when implemented
+    }
+
+    /// Start or join a voice session on a channel.
+    func startOrJoinVoice(channel: String) {
+        guard !isInCall else { return }
+        do {
+            try client?.sendRaw(line: "@+freeq.at/av-start TAGMSG \(channel)")
+        } catch {
+            print("[av] Failed to send av-start: \(error)")
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            self?.fetchAndJoinSession(channel: channel)
+        }
+    }
+
+    private func fetchAndJoinSession(channel: String) {
+        let base = serverAddress.hasPrefix("http") ? serverAddress : "https://\(serverAddress)"
+        let encoded = channel.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? channel
+        guard let url = URL(string: "\(base)/api/v1/channels/\(encoded)/sessions") else { return }
+
+        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+            guard let data = data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let active = json["active"] as? [String: Any],
+                  let sessionId = active["id"] as? String else { return }
+            DispatchQueue.main.async {
+                self?.startCall(channel: channel, sessionId: sessionId)
+            }
+        }.resume()
     }
 
     /// For reply UI
