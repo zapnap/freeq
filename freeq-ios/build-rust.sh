@@ -22,14 +22,16 @@ fi
 
 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 
+FEATURES="--features av"
+
 echo "==> Building for iOS device (aarch64-apple-ios)..."
-cargo build -p freeq-sdk-ffi --lib --release --target aarch64-apple-ios
+IPHONEOS_DEPLOYMENT_TARGET=18.0 cargo rustc -p freeq-sdk-ffi $FEATURES --release --target aarch64-apple-ios --lib --crate-type staticlib
 
 echo "==> Building for iOS simulator (aarch64-apple-ios-sim)..."
-cargo build -p freeq-sdk-ffi --lib --release --target aarch64-apple-ios-sim
+IPHONEOS_DEPLOYMENT_TARGET=18.0 cargo rustc -p freeq-sdk-ffi $FEATURES --release --target aarch64-apple-ios-sim --lib --crate-type staticlib
 
 echo "==> Building host binary for bindgen..."
-cargo build -p freeq-sdk-ffi --lib --release
+cargo build -p freeq-sdk-ffi $FEATURES --lib --release
 cargo build -p freeq-sdk-ffi --bin uniffi-bindgen
 
 echo "==> Generating Swift bindings..."

@@ -34,3 +34,8 @@ targets:
     dependencies:
       - framework: FreeqSDK.xcframework
         embed: false
+      - sdk: AVFAudio.framework
+      - sdk: AudioToolbox.framework
+      - sdk: CoreAudio.framework
+      - sdk: Network.framework
+      - sdk: Security.framework
