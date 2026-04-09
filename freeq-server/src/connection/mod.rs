@@ -162,6 +162,7 @@ pub struct Connection {
     pub(crate) cap_account_notify: bool,
     pub(crate) cap_extended_join: bool,
     pub(crate) cap_away_notify: bool,
+    pub(crate) cap_account_tag: bool,
     /// Client understands E2EE messages (won't get synthetic notices instead).
     #[allow(dead_code)]
     pub(crate) cap_e2ee: bool,
@@ -200,6 +201,7 @@ impl Connection {
             cap_account_notify: false,
             cap_extended_join: false,
             cap_away_notify: false,
+            cap_account_tag: false,
             cap_e2ee: false,
             is_oper: false,
             client_info: None,
@@ -2760,6 +2762,7 @@ fn cleanup_session_state(state: &Arc<SharedState>, session_id: &str) {
     state.cap_account_notify.lock().remove(session_id);
     state.cap_extended_join.lock().remove(session_id);
     state.cap_away_notify.lock().remove(session_id);
+    state.cap_account_tag.lock().remove(session_id);
     state.server_opers.lock().remove(session_id);
     state.session_actor_class.lock().remove(session_id);
     state.agent_presence.lock().remove(session_id);

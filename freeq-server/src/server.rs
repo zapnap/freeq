@@ -451,6 +451,9 @@ pub struct SharedState {
     pub cap_account_notify: Mutex<HashSet<String>>,
     pub cap_extended_join: Mutex<HashSet<String>>,
     pub cap_away_notify: Mutex<HashSet<String>>,
+    /// Sessions that have negotiated account-tag capability (IRCv3).
+    /// When set, outbound PRIVMSG/NOTICE includes `account=<did>` if sender is authenticated.
+    pub cap_account_tag: Mutex<HashSet<String>>,
     /// Sessions that have OPER (server operator) status.
     pub server_opers: Mutex<HashSet<String>>,
     /// Actor class per session (default: Human, omitted from map).
@@ -942,6 +945,7 @@ impl Server {
             cap_account_notify: Mutex::new(HashSet::new()),
             cap_extended_join: Mutex::new(HashSet::new()),
             cap_away_notify: Mutex::new(HashSet::new()),
+            cap_account_tag: Mutex::new(HashSet::new()),
             server_opers: Mutex::new(HashSet::new()),
             session_actor_class: Mutex::new(HashMap::new()),
             provenance_declarations: Mutex::new(HashMap::new()),
@@ -3651,6 +3655,7 @@ mod s2s_adversarial_tests {
             cap_account_notify: Mutex::new(HashSet::new()),
             cap_extended_join: Mutex::new(HashSet::new()),
             cap_away_notify: Mutex::new(HashSet::new()),
+            cap_account_tag: Mutex::new(HashSet::new()),
             server_opers: Mutex::new(HashSet::new()),
             session_actor_class: Mutex::new(HashMap::new()),
             provenance_declarations: Mutex::new(HashMap::new()),
@@ -4319,6 +4324,7 @@ mod s2s_adversarial_tests {
             cap_account_notify: Mutex::new(HashSet::new()),
             cap_extended_join: Mutex::new(HashSet::new()),
             cap_away_notify: Mutex::new(HashSet::new()),
+            cap_account_tag: Mutex::new(HashSet::new()),
             server_opers: Mutex::new(HashSet::new()),
             session_actor_class: Mutex::new(HashMap::new()),
             provenance_declarations: Mutex::new(HashMap::new()),

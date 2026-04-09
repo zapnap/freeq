@@ -1689,6 +1689,7 @@ async fn handle_cap_response<W: AsyncWrite + Unpin>(
                 "echo-message",
                 "away-notify",
                 "account-notify",
+                "account-tag",
                 "extended-join",
                 "draft/chathistory",
             ] {

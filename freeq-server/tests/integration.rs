@@ -2906,6 +2906,160 @@ async fn message_signing_authenticated_user() {
     server_handle.abort();
 }
 
+// ── Test: IRCv3 account-tag — channel + DM, gated on cap negotiation ──
+
+#[tokio::test]
+async fn account_tag_on_channel_and_dm() {
+    let private_key = PrivateKey::generate_secp256k1();
+    let did_str = "did:plc:accounttagtest";
+    let doc = did::make_test_did_document(did_str, &private_key.public_key_multibase());
+
+    let mut docs = HashMap::new();
+    docs.insert(did_str.to_string(), doc);
+    let resolver = DidResolver::static_map(docs);
+
+    let (addr, server_handle) = start_test_server(resolver).await;
+
+    // Authenticated sender
+    let signer: Arc<dyn ChallengeSigner> =
+        Arc::new(KeySigner::new(did_str.to_string(), private_key));
+    let config_auth = ConnectConfig {
+        server_addr: addr.to_string(),
+        nick: "authsender".to_string(),
+        user: "authsender".to_string(),
+        realname: "Auth".to_string(),
+        ..Default::default()
+    };
+    let (handle_auth, mut events_auth) = client::connect(config_auth, Some(signer));
+    expect_event(
+        &mut events_auth,
+        2000,
+        |e| matches!(e, Event::Authenticated { .. }),
+        "auth authenticated",
+    )
+    .await;
+    expect_event(
+        &mut events_auth,
+        2000,
+        |e| matches!(e, Event::Registered { .. }),
+        "auth registered",
+    )
+    .await;
+
+    // Receiver — guest, but the SDK still negotiates account-tag, so they should
+    // see the `account` tag on messages from the authenticated sender.
+    let config_recv = ConnectConfig {
+        server_addr: addr.to_string(),
+        nick: "receiver".to_string(),
+        user: "receiver".to_string(),
+        realname: "Receiver".to_string(),
+        ..Default::default()
+    };
+    let (handle_recv, mut events_recv) = client::connect(config_recv, None);
+    expect_event(
+        &mut events_recv,
+        2000,
+        |e| matches!(e, Event::Registered { .. }),
+        "receiver registered",
+    )
+    .await;
+
+    // ── Channel case ──
+    handle_auth.join("#acct").await.unwrap();
+    expect_event(
+        &mut events_auth,
+        2000,
+        |e| matches!(e, Event::Joined { channel, .. } if channel == "#acct"),
+        "auth joined channel",
+    )
+    .await;
+    handle_recv.join("#acct").await.unwrap();
+    expect_event(
+        &mut events_recv,
+        2000,
+        |e| matches!(e, Event::Joined { channel, .. } if channel == "#acct"),
+        "receiver joined channel",
+    )
+    .await;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    while events_auth.try_recv().is_ok() {}
+    while events_recv.try_recv().is_ok() {}
+
+    handle_auth
+        .privmsg("#acct", "channel hello")
+        .await
+        .unwrap();
+
+    let chan_msg = expect_event(
+        &mut events_recv,
+        2000,
+        |e| matches!(e, Event::Message { text, target, .. } if text == "channel hello" && target == "#acct"),
+        "receiver got channel msg",
+    )
+    .await;
+
+    if let Event::Message { tags, .. } = &chan_msg {
+        let account = tags.get("account");
+        assert_eq!(
+            account.map(|s| s.as_str()),
+            Some(did_str),
+            "channel message from authenticated user should carry account=<did>. Tags: {:?}",
+            tags
+        );
+    }
+
+    // ── DM case ──
+    handle_auth
+        .privmsg("receiver", "dm hello")
+        .await
+        .unwrap();
+
+    let dm_msg = expect_event(
+        &mut events_recv,
+        2000,
+        |e| matches!(e, Event::Message { text, target, .. } if text == "dm hello" && target == "receiver"),
+        "receiver got DM",
+    )
+    .await;
+
+    if let Event::Message { tags, .. } = &dm_msg {
+        let account = tags.get("account");
+        assert_eq!(
+            account.map(|s| s.as_str()),
+            Some(did_str),
+            "DM from authenticated user should carry account=<did>. Tags: {:?}",
+            tags
+        );
+    }
+
+    // ── Negative case: guest sender ──
+    // The receiver should NOT see an account tag for messages from a guest
+    // (no DID = no account tag), even though it negotiated account-tag.
+    handle_recv
+        .privmsg("#acct", "from guest")
+        .await
+        .unwrap();
+    let guest_msg = expect_event(
+        &mut events_auth,
+        2000,
+        |e| matches!(e, Event::Message { text, .. } if text == "from guest"),
+        "auth got guest msg",
+    )
+    .await;
+    if let Event::Message { tags, .. } = &guest_msg {
+        assert!(
+            !tags.contains_key("account"),
+            "Message from guest should NOT carry account tag. Tags: {:?}",
+            tags
+        );
+    }
+
+    handle_auth.quit(None).await.unwrap();
+    handle_recv.quit(None).await.unwrap();
+    server_handle.abort();
+}
+
 // ── Test: Client-signed message can be verified by server's /api/v1/signing-keys/{did} ──
 
 #[tokio::test]

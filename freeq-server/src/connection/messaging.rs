@@ -525,24 +525,46 @@ pub(super) fn handle_privmsg(
 
         let tag_caps = state.cap_message_tags.lock();
         let time_caps = state.cap_server_time.lock();
+        let account_caps = state.cap_account_tag.lock();
         let echo_caps = state.cap_echo_message.lock();
         let conns = state.connections.lock();
+        let sender_did = conn.authenticated_did.as_deref();
         for member_session in &members {
             // echo-message: include sender if they requested it
             if member_session == &conn.id && !echo_caps.contains(member_session) {
                 continue;
             }
             if let Some(tx) = conns.get(member_session) {
-                let line = if tag_caps.contains(member_session) {
-                    if time_caps.contains(member_session) {
-                        &tagged_line_with_time
+                let has_tags = tag_caps.contains(member_session);
+                let has_time = time_caps.contains(member_session);
+                let wants_account =
+                    sender_did.is_some() && account_caps.contains(member_session);
+                let line: String = if !has_tags {
+                    plain_line.clone()
+                } else if !wants_account {
+                    if has_time {
+                        tagged_line_with_time.clone()
                     } else {
-                        &tagged_line
+                        tagged_line.clone()
                     }
                 } else {
-                    &plain_line
+                    // Per-recipient build with `account` tag injected.
+                    // IRCv3 account-tag spec requires this only for opted-in clients.
+                    let mut recip_tags = if has_time {
+                        full_tags_with_time.clone()
+                    } else {
+                        full_tags.clone()
+                    };
+                    recip_tags.insert("account".to_string(), sender_did.unwrap().to_string());
+                    let tag_msg = irc::Message {
+                        tags: recip_tags,
+                        prefix: Some(hostmask.clone()),
+                        command: command.to_string(),
+                        params: vec![target.to_string(), text.to_string()],
+                    };
+                    format!("{tag_msg}\r\n")
                 };
-                let _ = tx.try_send(line.clone());
+                let _ = tx.try_send(line);
             }
         }
 
@@ -590,7 +612,43 @@ pub(super) fn handle_privmsg(
         };
         let tagged_line_with_time = {
             let tag_msg = irc::Message {
-                tags: pm_tags_with_time,
+                tags: pm_tags_with_time.clone(),
+                prefix: Some(hostmask.clone()),
+                command: command.to_string(),
+                params: vec![target.to_string(), text.to_string()],
+            };
+            format!("{tag_msg}\r\n")
+        };
+
+        // Build the line for a recipient based on their negotiated caps.
+        // Honors message-tags, server-time, and account-tag (per IRCv3 spec).
+        let sender_did_for_dm = conn.authenticated_did.clone();
+        let build_dm_line = |recipient_session: &str| -> String {
+            let has_tags = state.cap_message_tags.lock().contains(recipient_session);
+            if !has_tags {
+                return plain_line.clone();
+            }
+            let has_time = state.cap_server_time.lock().contains(recipient_session);
+            let wants_account = sender_did_for_dm.is_some()
+                && state.cap_account_tag.lock().contains(recipient_session);
+            if !wants_account {
+                return if has_time {
+                    tagged_line_with_time.clone()
+                } else {
+                    tagged_line.clone()
+                };
+            }
+            let mut recip_tags = if has_time {
+                pm_tags_with_time.clone()
+            } else {
+                pm_tags.clone()
+            };
+            recip_tags.insert(
+                "account".to_string(),
+                sender_did_for_dm.clone().unwrap(),
+            );
+            let tag_msg = irc::Message {
+                tags: recip_tags,
                 prefix: Some(hostmask.clone()),
                 command: command.to_string(),
                 params: vec![target.to_string(), text.to_string()],
@@ -650,19 +708,9 @@ pub(super) fn handle_privmsg(
                 let conns = state.connections.lock();
                 // Deliver to all target sessions
                 for target_session in &target_sessions {
-                    let has_tags = state.cap_message_tags.lock().contains(target_session);
-                    let has_time = state.cap_server_time.lock().contains(target_session);
-                    let line = if has_tags {
-                        if has_time {
-                            &tagged_line_with_time
-                        } else {
-                            &tagged_line
-                        }
-                    } else {
-                        &plain_line
-                    };
+                    let line = build_dm_line(target_session);
                     if let Some(tx) = conns.get(target_session) {
-                        if let Err(_e) = tx.try_send(line.clone()) {
+                        if let Err(_e) = tx.try_send(line) {
                             let target_nick = state.nick_to_session.lock().get_nick(target_session).map(|s| s.to_string()).unwrap_or_default();
                             tracing::warn!(
                                 from = %conn.nick.as_deref().unwrap_or("?"),
@@ -692,36 +740,16 @@ pub(super) fn handle_privmsg(
                         // Original sender — use echo-message cap
                         let sender_has_echo = state.cap_echo_message.lock().contains(&conn.id);
                         if sender_has_echo {
-                            let has_tags = state.cap_message_tags.lock().contains(&conn.id);
-                            let has_time = state.cap_server_time.lock().contains(&conn.id);
-                            let echo_line = if has_tags {
-                                if has_time {
-                                    &tagged_line_with_time
-                                } else {
-                                    &tagged_line
-                                }
-                            } else {
-                                &plain_line
-                            };
+                            let echo_line = build_dm_line(&conn.id);
                             if let Some(tx) = conns.get(&conn.id) {
-                                let _ = tx.try_send(echo_line.clone());
+                                let _ = tx.try_send(echo_line);
                             }
                         }
                     } else {
                         // Other sessions of sender — deliver as if they received it
-                        let has_tags = state.cap_message_tags.lock().contains(sender_session);
-                        let has_time = state.cap_server_time.lock().contains(sender_session);
-                        let line = if has_tags {
-                            if has_time {
-                                &tagged_line_with_time
-                            } else {
-                                &tagged_line
-                            }
-                        } else {
-                            &plain_line
-                        };
+                        let line = build_dm_line(sender_session);
                         if let Some(tx) = conns.get(sender_session) {
-                            let _ = tx.try_send(line.clone());
+                            let _ = tx.try_send(line);
                         }
                     }
                 }
@@ -732,19 +760,9 @@ pub(super) fn handle_privmsg(
                 // echo-message: echo DM back to sender even for relayed messages
                 let sender_has_echo = state.cap_echo_message.lock().contains(&conn.id);
                 if sender_has_echo {
-                    let sender_has_tags = state.cap_message_tags.lock().contains(&conn.id);
-                    let sender_has_time = state.cap_server_time.lock().contains(&conn.id);
-                    let echo_line = if sender_has_tags {
-                        if sender_has_time {
-                            &tagged_line_with_time
-                        } else {
-                            &tagged_line
-                        }
-                    } else {
-                        &plain_line
-                    };
+                    let echo_line = build_dm_line(&conn.id);
                     if let Some(tx) = state.connections.lock().get(&conn.id) {
-                        let _ = tx.try_send(echo_line.clone());
+                        let _ = tx.try_send(echo_line);
                     }
                 }
             }
