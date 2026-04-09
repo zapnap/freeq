@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react';
-import type { AvParticipant, AvSession } from '../store';
+import { useState, useEffect } from 'react';
+import type { AvParticipant } from '../store';
 import { useStore } from '../store';
 import { setTopic as sendTopic, startAvSession } from '../irc/client';
 import { SpeakerIcon } from './SessionIndicator';
