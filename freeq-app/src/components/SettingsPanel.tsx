@@ -53,7 +53,6 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
             {connectedServer && (() => {
               const stripped = connectedServer.replace(/^wss?:\/\//, '').replace(/\/.*$/, '');
               const isProxy = /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(stripped);
-              // @ts-expect-error injected by vite define
               const target = typeof __FREEQ_TARGET__ === 'string' ? __FREEQ_TARGET__.replace(/^https?:\/\//, '') : null;
               return <InfoRow label="Server" value={isProxy && target ? `${target} (via proxy)` : stripped} />;
             })()}
