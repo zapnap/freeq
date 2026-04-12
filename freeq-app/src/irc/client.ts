@@ -5,7 +5,7 @@
  * Internally, all protocol handling is delegated to the SDK's FreeqClient.
  */
 
-import { FreeqClient, format, type Message, type Member } from '@freeq/sdk';
+import { FreeqClient, format } from '@freeq/sdk';
 import { useStore } from '../store';
 import { notify } from '../lib/notifications';
 import { prefetchProfiles } from '@freeq/sdk';
