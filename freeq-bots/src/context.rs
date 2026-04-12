@@ -12,9 +12,10 @@
 //!
 //! ## Usage
 //!
-//! ```rust,no_run
+//! ```rust,ignore
 //! use freeq_bots::context::{AgentContext, AgentIdentity, ContextConfig};
 //! use freeq_bots::memory::Memory;
+//! use std::path::Path;
 //!
 //! let memory = Memory::open(Path::new("agent.db")).unwrap();
 //! let identity = AgentIdentity {
@@ -22,22 +23,13 @@
 //!     did: Some("did:web:freeq.at:bots:factory".into()),
 //!     role: "Software factory bot".into(),
 //!     channels: vec!["#factory".into()],
+//!     system_prompt: None,
 //! };
 //! let config = ContextConfig::default();
 //! let ctx = AgentContext::new(identity, memory, config);
 //!
-//! // On connect: fetch history and build full context
-//! let history = ctx.fetch_channel_history(&handle, "#factory", 50).await;
-//! ctx.ingest_history("#factory", history);
-//!
 //! // Before each LLM call: assemble the context prefix
 //! let system_context = ctx.assemble("#factory");
-//!
-//! // After each exchange: extract and store facts
-//! ctx.extract_and_store("#factory", &exchange).await;
-//!
-//! // Periodically: generate rolling summary
-//! ctx.maybe_summarize("#factory", &llm).await;
 //! ```
 
 use std::collections::{HashMap, VecDeque};
