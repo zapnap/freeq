@@ -370,12 +370,20 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-async fn health() -> &'static str {
-    "ok-v3"
+async fn health() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "status": "ok",
+        "version": env!("CARGO_PKG_VERSION"),
+        "git_commit": env!("GIT_HASH"),
+    }))
 }
 
-async fn health_v3() -> &'static str {
-    "ok-v3"
+async fn health_v3() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "status": "ok",
+        "version": env!("CARGO_PKG_VERSION"),
+        "git_commit": env!("GIT_HASH"),
+    }))
 }
 
 async fn client_metadata(State(state): State<Arc<BrokerState>>) -> Json<serde_json::Value> {
@@ -697,8 +705,17 @@ async fn auth_callback(
     ];
 
     let client = reqwest::Client::new();
+    // CRITICAL: include any nonce we already have from the PAR step on the FIRST
+    // attempt. The PDS consumes the auth code on a failed token request even when
+    // the failure is "use_dpop_nonce", so a retry with a fresh nonce gets
+    // `invalid_grant: Invalid code`. Sending the known nonce up front avoids this.
     let dpop_proof = dpop_key
-        .proof("POST", &pending.token_endpoint, None, None)
+        .proof(
+            "POST",
+            &pending.token_endpoint,
+            pending.dpop_nonce.as_deref(),
+            None,
+        )
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1169,6 +1186,7 @@ fn is_valid_return_to(url: &str) -> bool {
     // Allow known origins
     let allowed = [
         "https://irc.freeq.at",
+        "https://staging.freeq.at",
         "http://localhost:",
         "http://localhost/",
         "http://127.0.0.1:",

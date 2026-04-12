@@ -161,6 +161,12 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
               <a href="https://github.com/chad/freeq" target="_blank" className="text-accent hover:underline">
                 github.com/chad/freeq
               </a>
+              {typeof __GIT_COMMIT__ === 'string' && __GIT_COMMIT__ !== 'unknown' && (
+                <>
+                  <br />
+                  <span className="text-fg-dim/50">Build {__GIT_COMMIT__}</span>
+                </>
+              )}
             </p>
           </Section>
         </div>

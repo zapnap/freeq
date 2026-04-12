@@ -347,6 +347,8 @@ async fn handle_ws(socket: WebSocket, state: Arc<SharedState>, ip: std::net::IpA
 #[derive(Serialize)]
 struct HealthResponse {
     server_name: String,
+    version: &'static str,
+    git_commit: &'static str,
     connections: usize,
     channels: usize,
     uptime_secs: u64,
@@ -1078,6 +1080,8 @@ async fn api_health(State(state): State<Arc<SharedState>>) -> Json<HealthRespons
         .count();
     Json(HealthResponse {
         server_name: state.server_name.clone(),
+        version: env!("CARGO_PKG_VERSION"),
+        git_commit: env!("GIT_HASH"),
         connections,
         channels,
         uptime_secs: uptime,

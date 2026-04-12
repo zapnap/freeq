@@ -9,7 +9,10 @@ cd "$(dirname "$0")"
 rm -rf docs
 cp -r ../docs ./docs
 
-echo "Deploying freeq-site..."
+# Write git commit hash for the /version endpoint
+git -C .. rev-parse --short HEAD 2>/dev/null > .git_commit || echo "unknown" > .git_commit
+
+echo "Deploying freeq-site (commit: $(cat .git_commit))..."
 miren deploy -f
 
 echo "Deployed! Docs will be at https://www.freeq.at/docs/"
