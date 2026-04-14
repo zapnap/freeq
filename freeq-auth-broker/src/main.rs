@@ -370,12 +370,17 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
+const GIT_COMMIT_FILE: &str = include_str!("../git_commit.txt");
+
 fn git_commit() -> String {
-    let runtime = std::env::var("GIT_HASH").ok().filter(|s| !s.is_empty());
-    runtime.unwrap_or_else(|| {
-        let built_in = env!("GIT_HASH");
-        if built_in.is_empty() { "unknown".to_string() } else { built_in.to_string() }
-    })
+    if let Ok(v) = std::env::var("GIT_HASH") {
+        if !v.is_empty() { return v; }
+    }
+    let trimmed = GIT_COMMIT_FILE.trim();
+    if !trimmed.is_empty() { return trimmed.to_string(); }
+    let built_in = env!("GIT_HASH");
+    if !built_in.is_empty() { return built_in.to_string(); }
+    "unknown".to_string()
 }
 
 async fn health() -> Json<serde_json::Value> {
