@@ -3,7 +3,8 @@
 set -e
 cd "$(dirname "$0")"
 
-git -C .. rev-parse --short HEAD 2>/dev/null > .git_commit || echo "unknown" > .git_commit
+HASH=$(git -C .. rev-parse --short HEAD 2>/dev/null || echo unknown)
+echo "$HASH" > .git_commit
 
-echo "Deploying freeq-auth-broker (commit: $(cat .git_commit))..."
-miren deploy -f
+echo "Deploying freeq-auth-broker (commit: $HASH)..."
+miren deploy -f -e "GIT_HASH=$HASH"

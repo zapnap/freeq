@@ -370,11 +370,19 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
+fn git_commit() -> String {
+    let runtime = std::env::var("GIT_HASH").ok().filter(|s| !s.is_empty());
+    runtime.unwrap_or_else(|| {
+        let built_in = env!("GIT_HASH");
+        if built_in.is_empty() { "unknown".to_string() } else { built_in.to_string() }
+    })
+}
+
 async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "status": "ok",
         "version": env!("CARGO_PKG_VERSION"),
-        "git_commit": env!("GIT_HASH"),
+        "git_commit": git_commit(),
     }))
 }
 
@@ -382,7 +390,7 @@ async fn health_v3() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "status": "ok",
         "version": env!("CARGO_PKG_VERSION"),
-        "git_commit": env!("GIT_HASH"),
+        "git_commit": git_commit(),
     }))
 }
 
