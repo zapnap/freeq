@@ -210,6 +210,8 @@ export function unpinMessage(channel: string, msgid: string) {
 
 // ── AV Session ──
 
+let pendingAvStart: { channel: string; did: string } | null = null;
+
 export async function startAvSession(channel: string, title?: string) {
   const store = useStore.getState();
   if (!store.authDid) {
@@ -237,6 +239,7 @@ export async function startAvSession(channel: string, title?: string) {
   }
 
   store.addSystemMessage(channel, 'Starting voice session...');
+  pendingAvStart = { channel, did: store.authDid };
   const tags: Record<string, string> = { '+freeq.at/av-start': '' };
   if (title) tags['+freeq.at/av-title'] = title;
   client?.raw(format('TAGMSG', [channel], tags));
@@ -245,7 +248,10 @@ export async function startAvSession(channel: string, title?: string) {
 
 export function joinAvSession(channel: string, sessionId?: string) {
   const tags: Record<string, string> = { '+freeq.at/av-join': '' };
-  if (sessionId) tags['+freeq.at/av-id'] = sessionId;
+  if (sessionId) {
+    tags['+freeq.at/av-id'] = sessionId;
+    useStore.getState().setActiveAvSession(sessionId);
+  }
   client?.raw(format('TAGMSG', [channel], tags));
 }
 
@@ -469,7 +475,17 @@ function wireEvents(c: FreeqClient) {
   });
 
   c.on('avSessionUpdate', (session) => {
-    s().updateAvSession(session as import('../store').AvSession);
+    const sess = session as import('../store').AvSession;
+    s().updateAvSession(sess);
+    if (
+      pendingAvStart &&
+      sess.channel === pendingAvStart.channel &&
+      sess.createdBy === pendingAvStart.did &&
+      !s().activeAvSession
+    ) {
+      s().setActiveAvSession(sess.id);
+      pendingAvStart = null;
+    }
   });
 
   c.on('avSessionRemoved', (id) => {
