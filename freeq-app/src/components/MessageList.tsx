@@ -625,7 +625,7 @@ function FullMessage({ msg, channel, onNickClick }: MessageProps) {
   // Find DID for this user — check channel members reactively, fall back to authDid for self
   const member = useStore((s) => s.channels.get(channel.toLowerCase())?.members.get(msg.from.toLowerCase()));
   const selfDid = useStore((s) => msg.isSelf ? s.authDid : null);
-  const did = member?.did || selfDid || undefined;
+  const did = member?.did || selfDid || msg.tags?.account || undefined;
 
   const openEmojiPicker = (e: React.MouseEvent) => {
     setPickerPos({ x: e.clientX, y: e.clientY });

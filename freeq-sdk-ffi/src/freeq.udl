@@ -14,6 +14,7 @@ dictionary IrcMessage {
     boolean is_action;
     boolean is_signed;
     i64 timestamp_ms;
+    string? account;
 };
 
 dictionary IrcMember {

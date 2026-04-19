@@ -1458,10 +1458,11 @@ public struct IrcMessage {
     public var isAction: Bool
     public var isSigned: Bool
     public var timestampMs: Int64
+    public var account: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(fromNick: String, target: String, text: String, msgid: String?, replyTo: String?, replacesMsgid: String?, editOf: String?, batchId: String?, pinMsgid: String?, unpinMsgid: String?, isAction: Bool, isSigned: Bool, timestampMs: Int64) {
+    public init(fromNick: String, target: String, text: String, msgid: String?, replyTo: String?, replacesMsgid: String?, editOf: String?, batchId: String?, pinMsgid: String?, unpinMsgid: String?, isAction: Bool, isSigned: Bool, timestampMs: Int64, account: String?) {
         self.fromNick = fromNick
         self.target = target
         self.text = text
@@ -1475,6 +1476,7 @@ public struct IrcMessage {
         self.isAction = isAction
         self.isSigned = isSigned
         self.timestampMs = timestampMs
+        self.account = account
     }
 }
 
@@ -1524,6 +1526,9 @@ extension IrcMessage: Equatable, Hashable {
         if lhs.timestampMs != rhs.timestampMs {
             return false
         }
+        if lhs.account != rhs.account {
+            return false
+        }
         return true
     }
 
@@ -1541,6 +1546,7 @@ extension IrcMessage: Equatable, Hashable {
         hasher.combine(isAction)
         hasher.combine(isSigned)
         hasher.combine(timestampMs)
+        hasher.combine(account)
     }
 }
 
@@ -1565,7 +1571,8 @@ public struct FfiConverterTypeIrcMessage: FfiConverterRustBuffer {
                 unpinMsgid: FfiConverterOptionString.read(from: &buf), 
                 isAction: FfiConverterBool.read(from: &buf), 
                 isSigned: FfiConverterBool.read(from: &buf), 
-                timestampMs: FfiConverterInt64.read(from: &buf)
+                timestampMs: FfiConverterInt64.read(from: &buf), 
+                account: FfiConverterOptionString.read(from: &buf)
         )
     }
 
@@ -1583,6 +1590,7 @@ public struct FfiConverterTypeIrcMessage: FfiConverterRustBuffer {
         FfiConverterBool.write(value.isAction, into: &buf)
         FfiConverterBool.write(value.isSigned, into: &buf)
         FfiConverterInt64.write(value.timestampMs, into: &buf)
+        FfiConverterOptionString.write(value.account, into: &buf)
     }
 }
 

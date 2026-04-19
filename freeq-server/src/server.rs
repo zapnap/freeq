@@ -857,11 +857,15 @@ impl Server {
                     .get_messages(name, crate::server::MAX_HISTORY, None)
                     .map_err(|e| anyhow::anyhow!("Failed to load messages for {name}: {e}"))?;
                 for msg in messages {
+                    let mut tags = msg.tags;
+                    if let Some(ref did) = msg.sender_did {
+                        tags.insert("account".to_string(), did.clone());
+                    }
                     ch.history.push_back(HistoryMessage {
                         from: msg.sender,
                         text: msg.text,
                         timestamp: msg.timestamp,
-                        tags: msg.tags,
+                        tags,
                         msgid: msg.msgid,
                     });
                 }

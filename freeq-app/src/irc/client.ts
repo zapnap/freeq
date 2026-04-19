@@ -386,6 +386,9 @@ function wireEvents(c: FreeqClient) {
   });
 
   c.on('message', (channel, message) => {
+    // Prefetch avatar by DID if available (from account-tag)
+    if (message.tags?.account) prefetchProfiles([message.tags.account]);
+
     // Ensure DM buffer exists
     const isChannel = channel.startsWith('#') || channel.startsWith('&');
     if (!isChannel && !useStore.getState().channels.has(channel.toLowerCase())) {
@@ -431,6 +434,10 @@ function wireEvents(c: FreeqClient) {
   });
 
   c.on('historyBatch', (channel, messages) => {
+    // Prefetch avatars by DID for history messages
+    const dids = messages.map((m: any) => m.tags?.account).filter(Boolean);
+    if (dids.length) prefetchProfiles(dids);
+
     // Insert history messages at the beginning
     const store = useStore.getState();
     const ch = store.channels.get(channel.toLowerCase());

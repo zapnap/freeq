@@ -30,6 +30,7 @@ pub struct IrcMessage {
     pub is_action: bool,
     pub is_signed: bool,
     pub timestamp_ms: i64,
+    pub account: Option<String>,
 }
 
 pub struct TagEntry {
@@ -416,6 +417,7 @@ fn convert_event(event: &freeq_sdk::event::Event) -> FreeqEvent {
                     is_action,
                     is_signed: tags.contains_key("+freeq.at/sig"),
                     timestamp_ms: ts,
+                    account: tags.get("account").cloned(),
                 },
             }
         }

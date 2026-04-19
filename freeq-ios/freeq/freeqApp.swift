@@ -72,7 +72,6 @@ struct FreeqApp: App {
         }
 
         guard let token = components.queryItems?.first(where: { $0.name == "token" })?.value,
-              let brokerToken = components.queryItems?.first(where: { $0.name == "broker_token" })?.value,
               let nick = components.queryItems?.first(where: { $0.name == "nick" })?.value,
               let did = components.queryItems?.first(where: { $0.name == "did" })?.value
         else {
@@ -80,12 +79,13 @@ struct FreeqApp: App {
             return
         }
 
+        let brokerToken = components.queryItems?.first(where: { $0.name == "broker_token" })?.value
         let handle = components.queryItems?.first(where: { $0.name == "handle" })?.value ?? nick
 
         // Save session
         UserDefaults.standard.set(handle, forKey: "freeq.handle")
         UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "freeq.lastLogin")
-        KeychainHelper.save(key: "brokerToken", value: brokerToken)
+        if let brokerToken { KeychainHelper.save(key: "brokerToken", value: brokerToken) }
         UserDefaults.standard.removeObject(forKey: "freeq.loginPending")
 
         // Connect

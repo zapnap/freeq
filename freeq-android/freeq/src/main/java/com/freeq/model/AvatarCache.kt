@@ -34,20 +34,31 @@ object AvatarCache {
         return profileCache[key]
     }
 
-    fun prefetch(nick: String) {
+    fun prefetch(nick: String, did: String? = null) {
         val key = nick.lowercase()
         // Skip guest nicks - they're not Bluesky accounts (avoid false positives like guest111.bsky.social)
         if (key.startsWith("guest") || key.startsWith("web")) return
         if (cache.containsKey(key) || pending.contains(key) || failed.contains(key)) return
         pending.add(key)
-        scope.launch { fetchAvatar(nick, key) }
+        scope.launch { fetchAvatar(nick, key, did) }
     }
 
     fun prefetchAll(nicks: List<String>) {
         nicks.forEach { prefetch(it) }
     }
 
-    private suspend fun fetchAvatar(nick: String, key: String) {
+    private suspend fun fetchAvatar(nick: String, key: String, did: String? = null) {
+        // Try DID first — most reliable
+        if (!did.isNullOrEmpty()) {
+            val result = resolveProfile(did)
+            if (result != null) {
+                profileCache[key] = result
+                result.avatar?.let { cache[key] = it }
+                pending.remove(key)
+                return
+            }
+        }
+
         val handles = if (nick.contains(".")) listOf(nick) else listOf("$nick.bsky.social")
 
         for (handle in handles) {

@@ -139,6 +139,8 @@ class AppState: ObservableObject {
     @Published var connectionState: ConnectionState = .disconnected
     @Published var nick: String = ""
     @Published var serverAddress: String = ServerConfig.ircServer
+    // For deployments using embedded auth (no standalone broker), use ServerConfig.apiBaseUrl:
+    // @Published var authBrokerBase: String = ServerConfig.apiBaseUrl
     @Published var authBrokerBase: String = "https://auth.freeq.at"
     @Published var channels: [ChannelState] = []
     @Published var activeChannel: String? = nil
@@ -929,6 +931,13 @@ final class SwiftEventHandler: @unchecked Sendable, EventHandler {
             let target = ircMsg.target
             let from = ircMsg.fromNick
             let isSelf = from.lowercased() == state.nick.lowercased()
+
+            // Prefetch avatar using DID if available (from account-tag)
+            if let did = ircMsg.account {
+                Task { @MainActor in
+                    AvatarCache.shared.prefetch(from, did: did)
+                }
+            }
 
             // Decode multiline: \\n → newline (server encodes newlines as literal \n)
             let decodedText = ircMsg.text.replacingOccurrences(of: "\\n", with: "\n")

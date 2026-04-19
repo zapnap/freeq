@@ -300,11 +300,8 @@ struct ConnectView: View {
         error = nil
 
         let serverBase = appState.authBrokerBase
-        // Use return_to pointing to the IRC server's mobile redirect page.
-        // The broker will redirect there with #oauth=base64json after auth.
-        // That page then redirects to freeq://auth?... which iOS handles.
         let returnTo = "\(ServerConfig.apiBaseUrl)/auth/mobile".addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-        let loginURL = "\(serverBase)/auth/login?handle=\(handle.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? handle)&return_to=\(returnTo)"
+        let loginURL = "\(serverBase)/auth/login?handle=\(handle.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? handle)&mobile=1&return_to=\(returnTo)"
 
         guard let url = URL(string: loginURL) else {
             error = "Invalid handle"

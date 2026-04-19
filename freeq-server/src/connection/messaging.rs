@@ -490,13 +490,17 @@ pub(super) fn handle_privmsg(
         // Store in channel history
         if command == "PRIVMSG" {
             use crate::server::{HistoryMessage, MAX_HISTORY};
+            let mut history_tags = full_tags.clone();
+            if let Some(did) = conn.authenticated_did.as_deref() {
+                history_tags.insert("account".to_string(), did.to_string());
+            }
             let mut channels = state.channels.lock();
             if let Some(ch) = channels.get_mut(target) {
                 ch.history.push_back(HistoryMessage {
                     from: hostmask.clone(),
                     text: text.to_string(),
                     timestamp,
-                    tags: full_tags.clone(),
+                    tags: history_tags,
                     msgid: Some(msgid.clone()),
                 });
                 while ch.history.len() > MAX_HISTORY {
@@ -1024,6 +1028,9 @@ pub(super) fn handle_chathistory(
             if let Some(ref replaces) = row.replaces_msgid {
                 tags.entry("+draft/edit".to_string())
                     .or_insert_with(|| replaces.clone());
+            }
+            if let Some(ref did) = row.sender_did {
+                tags.insert("account".to_string(), did.clone());
             }
         }
         if has_time {

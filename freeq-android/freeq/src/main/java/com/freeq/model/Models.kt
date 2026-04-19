@@ -779,6 +779,11 @@ class AndroidEventHandler(private val state: AppState) : EventHandler {
                 val ircMsg = event.msg
                 val isSelf = ircMsg.fromNick.equals(state.nick.value, ignoreCase = true)
 
+                // Prefetch avatar using DID if available (from account-tag)
+                ircMsg.account?.let { did ->
+                    AvatarCache.prefetch(ircMsg.fromNick, did)
+                }
+
                 // Handle pin/unpin sync broadcasts
                 if (ircMsg.pinMsgid != null && ircMsg.target.startsWith("#")) {
                     PinCache.addPin(ircMsg.target, ircMsg.pinMsgid!!)

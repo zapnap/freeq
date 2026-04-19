@@ -3297,6 +3297,217 @@ async fn dm_history_authenticated() {
     server_handle.abort();
 }
 
+// ── Test: CHATHISTORY includes account (DID) tag ─────────────────────
+
+#[tokio::test]
+async fn chathistory_includes_account_tag() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("acct_tag.db");
+    let db_str = db_path.to_str().unwrap();
+
+    let key_alice = PrivateKey::generate_secp256k1();
+    let did_alice = "did:plc:acctalice";
+    let doc_alice = did::make_test_did_document(did_alice, &key_alice.public_key_multibase());
+
+    let mut docs = HashMap::new();
+    docs.insert(did_alice.to_string(), doc_alice);
+    let resolver = DidResolver::static_map(docs);
+
+    let (addr, server_handle) = start_test_server_with_db(resolver, db_str).await;
+
+    // Alice connects and authenticates
+    let signer_alice: Arc<dyn ChallengeSigner> =
+        Arc::new(KeySigner::new(did_alice.to_string(), key_alice));
+    let config_alice = ConnectConfig {
+        server_addr: addr.to_string(),
+        nick: "acctalice".to_string(),
+        user: "acctalice".to_string(),
+        realname: "Alice".to_string(),
+        ..Default::default()
+    };
+    let (handle_alice, mut events_alice) = client::connect(config_alice, Some(signer_alice));
+    expect_event(
+        &mut events_alice,
+        3000,
+        |e| matches!(e, Event::Authenticated { .. }),
+        "Alice authed",
+    )
+    .await;
+    expect_event(
+        &mut events_alice,
+        2000,
+        |e| matches!(e, Event::Registered { .. }),
+        "Alice registered",
+    )
+    .await;
+
+    // Alice joins a channel and sends a message
+    handle_alice.join("#accttest").await.unwrap();
+    expect_event(
+        &mut events_alice,
+        2000,
+        |e| matches!(e, Event::Joined { .. }),
+        "Alice joined",
+    )
+    .await;
+
+    handle_alice.privmsg("#accttest", "hello from alice").await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Request CHATHISTORY
+    handle_alice
+        .history_latest("#accttest", 50)
+        .await
+        .unwrap();
+
+    expect_event(
+        &mut events_alice,
+        2000,
+        |e| matches!(e, Event::BatchStart { batch_type, .. } if batch_type == "chathistory"),
+        "Chathistory batch start",
+    )
+    .await;
+
+    let hist_msg = expect_event(
+        &mut events_alice,
+        2000,
+        |e| matches!(e, Event::Message { text, .. } if text == "hello from alice"),
+        "Alice sees message in history",
+    )
+    .await;
+
+    // The history message should have the account tag with Alice's DID
+    if let Event::Message { tags, .. } = &hist_msg {
+        let account = tags.get("account");
+        assert_eq!(
+            account.map(|s| s.as_str()),
+            Some(did_alice),
+            "CHATHISTORY message should include account tag with sender DID, got tags: {tags:?}"
+        );
+    } else {
+        panic!("Expected Message event");
+    }
+
+    expect_event(
+        &mut events_alice,
+        2000,
+        |e| matches!(e, Event::BatchEnd { .. }),
+        "Chathistory batch end",
+    )
+    .await;
+
+    handle_alice.quit(None).await.unwrap();
+    server_handle.abort();
+}
+
+// ── Test: JOIN history replay includes account (DID) tag ─────────────
+
+#[tokio::test]
+async fn join_history_includes_account_tag() {
+    let key_alice = PrivateKey::generate_secp256k1();
+    let did_alice = "did:plc:joinhist";
+    let doc_alice = did::make_test_did_document(did_alice, &key_alice.public_key_multibase());
+
+    let mut docs = HashMap::new();
+    docs.insert(did_alice.to_string(), doc_alice);
+    let resolver = DidResolver::static_map(docs);
+
+    let (addr, server_handle) = start_test_server(resolver).await;
+
+    // Alice connects and authenticates
+    let signer_alice: Arc<dyn ChallengeSigner> =
+        Arc::new(KeySigner::new(did_alice.to_string(), key_alice));
+    let config_alice = ConnectConfig {
+        server_addr: addr.to_string(),
+        nick: "joinalice".to_string(),
+        user: "joinalice".to_string(),
+        realname: "Alice".to_string(),
+        ..Default::default()
+    };
+    let (handle_alice, mut events_alice) = client::connect(config_alice, Some(signer_alice));
+    expect_event(
+        &mut events_alice,
+        3000,
+        |e| matches!(e, Event::Authenticated { .. }),
+        "Alice authed",
+    )
+    .await;
+    expect_event(
+        &mut events_alice,
+        2000,
+        |e| matches!(e, Event::Registered { .. }),
+        "Alice registered",
+    )
+    .await;
+
+    // Alice joins and sends a message
+    handle_alice.join("#joinhisttest").await.unwrap();
+    expect_event(
+        &mut events_alice,
+        2000,
+        |e| matches!(e, Event::Joined { .. }),
+        "Alice joined",
+    )
+    .await;
+
+    handle_alice.privmsg("#joinhisttest", "hello from alice").await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Bob joins as guest — should see Alice's message in JOIN history replay
+    let config_bob = ConnectConfig {
+        server_addr: addr.to_string(),
+        nick: "joinbob".to_string(),
+        user: "joinbob".to_string(),
+        realname: "Bob".to_string(),
+        ..Default::default()
+    };
+    let (handle_bob, mut events_bob) = client::connect(config_bob, None);
+    expect_event(
+        &mut events_bob,
+        2000,
+        |e| matches!(e, Event::Registered { .. }),
+        "Bob registered",
+    )
+    .await;
+
+    handle_bob.join("#joinhisttest").await.unwrap();
+
+    // Bob should see Alice's message in the JOIN history replay with account tag
+    let hist_msg = expect_event(
+        &mut events_bob,
+        2000,
+        |e| matches!(e, Event::Message { text, .. } if text == "hello from alice"),
+        "Bob sees Alice's message in JOIN history",
+    )
+    .await;
+
+    if let Event::Message { tags, .. } = &hist_msg {
+        assert_eq!(
+            tags.get("account").map(|s| s.as_str()),
+            Some(did_alice),
+            "JOIN history should include account tag, got tags: {tags:?}"
+        );
+        assert!(
+            tags.contains_key("msgid"),
+            "JOIN history should include msgid tag, got tags: {tags:?}"
+        );
+        assert!(
+            tags.contains_key("time"),
+            "JOIN history should include time tag, got tags: {tags:?}"
+        );
+        assert!(
+            tags.contains_key("batch"),
+            "JOIN history should include batch tag, got tags: {tags:?}"
+        );
+    } else {
+        panic!("Expected Message event");
+    }
+
+    handle_alice.quit(None).await.unwrap();
+    handle_bob.quit(None).await.unwrap();
+    server_handle.abort();
+}
+
 // ── Test: Guest cannot access DM history ─────────────────────────────
 
 #[tokio::test]

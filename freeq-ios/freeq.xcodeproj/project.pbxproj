@@ -1,0 +1,536 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		014D479059F416C096AC45EF /* PinnedMessagesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DF1180A85E6505A55D9F225 /* PinnedMessagesView.swift */; };
+		022C97385E4C6E436BF8FA82 /* JoinChannelSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F2B162069D9FEB43A008621 /* JoinChannelSheet.swift */; };
+		034DA442BA9FD61498908C7D /* TopBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80CFE290867A9C265DD11465 /* TopBarView.swift */; };
+		0707953E63730121B32C90F1 /* freeqApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10926193239F585762C38F1 /* freeqApp.swift */; };
+		07EAC0950152FE617E007E47 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B6F0AEDEB8636FE22D4DE83 /* ChatView.swift */; };
+		0D90DB6A860ED297CC10A2CF /* CallView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1613B43E3F87D0A8567A57BB /* CallView.swift */; };
+		1AF9A87111E0AB6A8533B406 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = EA65B8D6263AAF104F9B06CE /* Security.framework */; };
+		208776B8A3D2C2D1877AE9BA /* MainTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75671806EACCE62066D1B53F /* MainTabView.swift */; };
+		2319759DBFF8EEDBBA34CD02 /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34D75D9768B423C15C80F711 /* SidebarView.swift */; };
+		2638BD02F7EB739F42DCB80B /* FreeqLogo.swift in Sources */ = {isa = PBXBuildFile; fileRef = B46D635B8FB436FDCECA93FE /* FreeqLogo.swift */; };
+		2750E2A554136E50881B2E2E /* UserProfileSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95D94CB373FB8CFD1EAD366F /* UserProfileSheet.swift */; };
+		29A01537002089A232C6A1CB /* MemberListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39851CF7C369A289DB8E3E93 /* MemberListView.swift */; };
+		328A732022FC49EB4D04542C /* ToastView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E434E1E24A88662FBDFFCA35 /* ToastView.swift */; };
+		60A3F828F885713C7D9FA3FB /* MotdSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5770C0CB2F73315874C61C7 /* MotdSheet.swift */; };
+		62CD219C257D8D55C7419990 /* CoreAudio.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0115700FA5AE53FD60E9FEAA /* CoreAudio.framework */; };
+		6B98C423EE9A7D82D1973063 /* NetworkMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DDE25216F85C26CCEE21C66 /* NetworkMonitor.swift */; };
+		6FCCCE776FF655CBB045B733 /* LinkPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A59A5F928CAB65BE2BEF71E /* LinkPreview.swift */; };
+		74F15A4EE7F80408B8A358C7 /* ImageLightbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DE07EAC6B16A20177585C57 /* ImageLightbox.swift */; };
+		74F43C40A1FAB663ECDA4B0A /* YouTubeThumb.swift in Sources */ = {isa = PBXBuildFile; fileRef = 471DB6E8285B3DE882A52E79 /* YouTubeThumb.swift */; };
+		7CE09F1FC8607BC12D448A0D /* ServerConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = A968D5C7244372A54881C91E /* ServerConfig.swift */; };
+		7DD2F0049B92D709EA8B4910 /* AVFAudio.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 77A2F5FB32DA2A3EA346FB5C /* AVFAudio.framework */; };
+		8051F4C388919E36E3F7D21B /* ChannelSettingsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9AB6B0F16CF373F92D0294D /* ChannelSettingsSheet.swift */; };
+		80DC207188B4EA44C3787CA2 /* Notifications.swift in Sources */ = {isa = PBXBuildFile; fileRef = D528FB66B3A58A4A06E4379C /* Notifications.swift */; };
+		8BEC773AE22BCFA9F1F3E701 /* Network.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 9DFC6E8F6927C989B299B239 /* Network.framework */; };
+		95571CB3A530D8A2555D2BE3 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB66829DE40DA60667ECBB43 /* AppState.swift */; };
+		9ADC4B8DCD3BCB087C8FF8C2 /* ChatDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01B51AD480FA3889B5B5D29 /* ChatDetailView.swift */; };
+		A6E303F99C6393665AE44025 /* ThreadView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83E16EC2E4202D7B88D8DEDE /* ThreadView.swift */; };
+		B198511552ED975806FF24E9 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CC6F468E7EEBA9A6B686019 /* ContentView.swift */; };
+		B757EEF191C41D1327706DB2 /* FreeqSDK.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 71E14BE7827AB5FE22AC3FF6 /* FreeqSDK.xcframework */; };
+		B792746D241CB91D4B15E377 /* SearchSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = F40F27BC70CA9C7E4307D2A3 /* SearchSheet.swift */; };
+		BA97D2705780ACE7D35F1B5A /* AudioToolbox.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 652094AB12E394FEA901DE7E /* AudioToolbox.framework */; };
+		BBBACE23B6893E0329291726 /* BlueskyEmbed.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58407D4C1041AA5F085B8CDC /* BlueskyEmbed.swift */; };
+		BDDF0B841D6BE174B3422E91 /* MediaCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEAD9DB0C1ADE514854C57B0 /* MediaCapture.swift */; };
+		D0209F9328C9586D5B2849DE /* ConnectView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5623F20307924888306278FF /* ConnectView.swift */; };
+		D9574E81D14BBFA1BF8A463D /* freeq.swift in Sources */ = {isa = PBXBuildFile; fileRef = B439EEC100CBED133D3260B2 /* freeq.swift */; };
+		D96D2C4DCB89EED18C1AED57 /* ComposeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E160E4F6AA98C972AA5B794 /* ComposeView.swift */; };
+		DD3E3EE1D2C986B904CB5D82 /* PhotoPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81C517F4469AC28926160BA7 /* PhotoPicker.swift */; };
+		DEFDB6EC3FA34DAA0295C7CA /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = B28D17294C06F964661A5E97 /* KeychainHelper.swift */; };
+		E54F6F22FE39E885EFCBE309 /* SettingsTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B107817CBF9268860E40AC0 /* SettingsTab.swift */; };
+		E623701B0C3975E1362DFE23 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C056AC763D7872C28041B3E /* Theme.swift */; };
+		E64ACA5D2EE7181CC0ACBF67 /* AvatarCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEED28B3F67BF6EC64040A04 /* AvatarCache.swift */; };
+		E8B6AF1D0B70F78A65DA8D03 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 7C22534FE12207F730D56732 /* Assets.xcassets */; };
+		F426EA83410FB9AF6A40F5A5 /* MessageListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA5BB884CBB62EBEF230A05D /* MessageListView.swift */; };
+		F5578CDEA68BCCE1C35408EF /* DiscoverTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8114EBF122CE613364A0CAE7 /* DiscoverTab.swift */; };
+		F984D50CE55E26A76B8B7B8D /* ChatsTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4A25735A9E045465A3F1BAD /* ChatsTab.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		00499E45672763D6A58D9A8A /* freeq.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = freeq.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		0115700FA5AE53FD60E9FEAA /* CoreAudio.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreAudio.framework; path = System/Library/Frameworks/CoreAudio.framework; sourceTree = SDKROOT; };
+		0B6F0AEDEB8636FE22D4DE83 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
+		0F2B162069D9FEB43A008621 /* JoinChannelSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JoinChannelSheet.swift; sourceTree = "<group>"; };
+		1613B43E3F87D0A8567A57BB /* CallView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallView.swift; sourceTree = "<group>"; };
+		1DE07EAC6B16A20177585C57 /* ImageLightbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageLightbox.swift; sourceTree = "<group>"; };
+		34D75D9768B423C15C80F711 /* SidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarView.swift; sourceTree = "<group>"; };
+		39851CF7C369A289DB8E3E93 /* MemberListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemberListView.swift; sourceTree = "<group>"; };
+		3A59A5F928CAB65BE2BEF71E /* LinkPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkPreview.swift; sourceTree = "<group>"; };
+		471DB6E8285B3DE882A52E79 /* YouTubeThumb.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YouTubeThumb.swift; sourceTree = "<group>"; };
+		4C056AC763D7872C28041B3E /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		4CC6F468E7EEBA9A6B686019 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		5623F20307924888306278FF /* ConnectView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectView.swift; sourceTree = "<group>"; };
+		58407D4C1041AA5F085B8CDC /* BlueskyEmbed.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlueskyEmbed.swift; sourceTree = "<group>"; };
+		5B107817CBF9268860E40AC0 /* SettingsTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsTab.swift; sourceTree = "<group>"; };
+		5DDE25216F85C26CCEE21C66 /* NetworkMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkMonitor.swift; sourceTree = "<group>"; };
+		652094AB12E394FEA901DE7E /* AudioToolbox.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AudioToolbox.framework; path = System/Library/Frameworks/AudioToolbox.framework; sourceTree = SDKROOT; };
+		71E14BE7827AB5FE22AC3FF6 /* FreeqSDK.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = FreeqSDK.xcframework; sourceTree = "<group>"; };
+		75671806EACCE62066D1B53F /* MainTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainTabView.swift; sourceTree = "<group>"; };
+		77A2F5FB32DA2A3EA346FB5C /* AVFAudio.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFAudio.framework; path = System/Library/Frameworks/AVFAudio.framework; sourceTree = SDKROOT; };
+		7C22534FE12207F730D56732 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		80CFE290867A9C265DD11465 /* TopBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TopBarView.swift; sourceTree = "<group>"; };
+		8114EBF122CE613364A0CAE7 /* DiscoverTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoverTab.swift; sourceTree = "<group>"; };
+		81C517F4469AC28926160BA7 /* PhotoPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoPicker.swift; sourceTree = "<group>"; };
+		83E16EC2E4202D7B88D8DEDE /* ThreadView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadView.swift; sourceTree = "<group>"; };
+		95D94CB373FB8CFD1EAD366F /* UserProfileSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserProfileSheet.swift; sourceTree = "<group>"; };
+		9DF1180A85E6505A55D9F225 /* PinnedMessagesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PinnedMessagesView.swift; sourceTree = "<group>"; };
+		9DFC6E8F6927C989B299B239 /* Network.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Network.framework; path = System/Library/Frameworks/Network.framework; sourceTree = SDKROOT; };
+		9E160E4F6AA98C972AA5B794 /* ComposeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposeView.swift; sourceTree = "<group>"; };
+		A5770C0CB2F73315874C61C7 /* MotdSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MotdSheet.swift; sourceTree = "<group>"; };
+		A968D5C7244372A54881C91E /* ServerConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerConfig.swift; sourceTree = "<group>"; };
+		B28D17294C06F964661A5E97 /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
+		B439EEC100CBED133D3260B2 /* freeq.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = freeq.swift; sourceTree = "<group>"; };
+		B46D635B8FB436FDCECA93FE /* FreeqLogo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FreeqLogo.swift; sourceTree = "<group>"; };
+		C01B51AD480FA3889B5B5D29 /* ChatDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatDetailView.swift; sourceTree = "<group>"; };
+		C9AB6B0F16CF373F92D0294D /* ChannelSettingsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChannelSettingsSheet.swift; sourceTree = "<group>"; };
+		CA5BB884CBB62EBEF230A05D /* MessageListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageListView.swift; sourceTree = "<group>"; };
+		D10926193239F585762C38F1 /* freeqApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = freeqApp.swift; sourceTree = "<group>"; };
+		D528FB66B3A58A4A06E4379C /* Notifications.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Notifications.swift; sourceTree = "<group>"; };
+		DB66829DE40DA60667ECBB43 /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
+		E434E1E24A88662FBDFFCA35 /* ToastView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToastView.swift; sourceTree = "<group>"; };
+		E4A25735A9E045465A3F1BAD /* ChatsTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatsTab.swift; sourceTree = "<group>"; };
+		EA65B8D6263AAF104F9B06CE /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
+		F40F27BC70CA9C7E4307D2A3 /* SearchSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchSheet.swift; sourceTree = "<group>"; };
+		FEAD9DB0C1ADE514854C57B0 /* MediaCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaCapture.swift; sourceTree = "<group>"; };
+		FEED28B3F67BF6EC64040A04 /* AvatarCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvatarCache.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		323F50C5F8CC41EF7DA22A4A /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B757EEF191C41D1327706DB2 /* FreeqSDK.xcframework in Frameworks */,
+				7DD2F0049B92D709EA8B4910 /* AVFAudio.framework in Frameworks */,
+				BA97D2705780ACE7D35F1B5A /* AudioToolbox.framework in Frameworks */,
+				62CD219C257D8D55C7419990 /* CoreAudio.framework in Frameworks */,
+				8BEC773AE22BCFA9F1F3E701 /* Network.framework in Frameworks */,
+				1AF9A87111E0AB6A8533B406 /* Security.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		01499C2CDD8D0D2662C1FB6B = {
+			isa = PBXGroup;
+			children = (
+				B9AA2BA6F4072D3A9852C722 /* freeq */,
+				AF9191A9E128552E279DDF1F /* Generated */,
+				152C1C52D3AAEEF26B5EFFBB /* Frameworks */,
+				F62CC89110A6FF28365B0816 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		152C1C52D3AAEEF26B5EFFBB /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				652094AB12E394FEA901DE7E /* AudioToolbox.framework */,
+				77A2F5FB32DA2A3EA346FB5C /* AVFAudio.framework */,
+				0115700FA5AE53FD60E9FEAA /* CoreAudio.framework */,
+				71E14BE7827AB5FE22AC3FF6 /* FreeqSDK.xcframework */,
+				9DFC6E8F6927C989B299B239 /* Network.framework */,
+				EA65B8D6263AAF104F9B06CE /* Security.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		61E33474A1CF28E1773E8788 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				58407D4C1041AA5F085B8CDC /* BlueskyEmbed.swift */,
+				1613B43E3F87D0A8567A57BB /* CallView.swift */,
+				C9AB6B0F16CF373F92D0294D /* ChannelSettingsSheet.swift */,
+				C01B51AD480FA3889B5B5D29 /* ChatDetailView.swift */,
+				E4A25735A9E045465A3F1BAD /* ChatsTab.swift */,
+				0B6F0AEDEB8636FE22D4DE83 /* ChatView.swift */,
+				9E160E4F6AA98C972AA5B794 /* ComposeView.swift */,
+				5623F20307924888306278FF /* ConnectView.swift */,
+				8114EBF122CE613364A0CAE7 /* DiscoverTab.swift */,
+				B46D635B8FB436FDCECA93FE /* FreeqLogo.swift */,
+				1DE07EAC6B16A20177585C57 /* ImageLightbox.swift */,
+				0F2B162069D9FEB43A008621 /* JoinChannelSheet.swift */,
+				3A59A5F928CAB65BE2BEF71E /* LinkPreview.swift */,
+				75671806EACCE62066D1B53F /* MainTabView.swift */,
+				FEAD9DB0C1ADE514854C57B0 /* MediaCapture.swift */,
+				39851CF7C369A289DB8E3E93 /* MemberListView.swift */,
+				CA5BB884CBB62EBEF230A05D /* MessageListView.swift */,
+				A5770C0CB2F73315874C61C7 /* MotdSheet.swift */,
+				81C517F4469AC28926160BA7 /* PhotoPicker.swift */,
+				9DF1180A85E6505A55D9F225 /* PinnedMessagesView.swift */,
+				F40F27BC70CA9C7E4307D2A3 /* SearchSheet.swift */,
+				5B107817CBF9268860E40AC0 /* SettingsTab.swift */,
+				34D75D9768B423C15C80F711 /* SidebarView.swift */,
+				83E16EC2E4202D7B88D8DEDE /* ThreadView.swift */,
+				E434E1E24A88662FBDFFCA35 /* ToastView.swift */,
+				80CFE290867A9C265DD11465 /* TopBarView.swift */,
+				95D94CB373FB8CFD1EAD366F /* UserProfileSheet.swift */,
+				471DB6E8285B3DE882A52E79 /* YouTubeThumb.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		676C36EAFEA4BA9756D5A42C /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				DB66829DE40DA60667ECBB43 /* AppState.swift */,
+				FEED28B3F67BF6EC64040A04 /* AvatarCache.swift */,
+				B28D17294C06F964661A5E97 /* KeychainHelper.swift */,
+				5DDE25216F85C26CCEE21C66 /* NetworkMonitor.swift */,
+				D528FB66B3A58A4A06E4379C /* Notifications.swift */,
+				A968D5C7244372A54881C91E /* ServerConfig.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		AF9191A9E128552E279DDF1F /* Generated */ = {
+			isa = PBXGroup;
+			children = (
+				B439EEC100CBED133D3260B2 /* freeq.swift */,
+			);
+			path = Generated;
+			sourceTree = "<group>";
+		};
+		B9AA2BA6F4072D3A9852C722 /* freeq */ = {
+			isa = PBXGroup;
+			children = (
+				7C22534FE12207F730D56732 /* Assets.xcassets */,
+				4CC6F468E7EEBA9A6B686019 /* ContentView.swift */,
+				D10926193239F585762C38F1 /* freeqApp.swift */,
+				4C056AC763D7872C28041B3E /* Theme.swift */,
+				676C36EAFEA4BA9756D5A42C /* Models */,
+				61E33474A1CF28E1773E8788 /* Views */,
+			);
+			path = freeq;
+			sourceTree = "<group>";
+		};
+		F62CC89110A6FF28365B0816 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				00499E45672763D6A58D9A8A /* freeq.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		715097527A8802437490DEDD /* freeq */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 0F105F8BFDF6546C63D2203F /* Build configuration list for PBXNativeTarget "freeq" */;
+			buildPhases = (
+				C5CAD8FF792DB1121C984617 /* Sources */,
+				62F2BE05AD35A2334555DE91 /* Resources */,
+				323F50C5F8CC41EF7DA22A4A /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = freeq;
+			packageProductDependencies = (
+			);
+			productName = freeq;
+			productReference = 00499E45672763D6A58D9A8A /* freeq.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		1FEB93A706F8184FE3E2C445 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					715097527A8802437490DEDD = {
+						DevelopmentTeam = 3DT7XF7L4R;
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = CF425087341A09E5CC8DE165 /* Build configuration list for PBXProject "freeq" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 01499C2CDD8D0D2662C1FB6B;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				715097527A8802437490DEDD /* freeq */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		62F2BE05AD35A2334555DE91 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E8B6AF1D0B70F78A65DA8D03 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		C5CAD8FF792DB1121C984617 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				95571CB3A530D8A2555D2BE3 /* AppState.swift in Sources */,
+				E64ACA5D2EE7181CC0ACBF67 /* AvatarCache.swift in Sources */,
+				BBBACE23B6893E0329291726 /* BlueskyEmbed.swift in Sources */,
+				0D90DB6A860ED297CC10A2CF /* CallView.swift in Sources */,
+				8051F4C388919E36E3F7D21B /* ChannelSettingsSheet.swift in Sources */,
+				9ADC4B8DCD3BCB087C8FF8C2 /* ChatDetailView.swift in Sources */,
+				07EAC0950152FE617E007E47 /* ChatView.swift in Sources */,
+				F984D50CE55E26A76B8B7B8D /* ChatsTab.swift in Sources */,
+				D96D2C4DCB89EED18C1AED57 /* ComposeView.swift in Sources */,
+				D0209F9328C9586D5B2849DE /* ConnectView.swift in Sources */,
+				B198511552ED975806FF24E9 /* ContentView.swift in Sources */,
+				F5578CDEA68BCCE1C35408EF /* DiscoverTab.swift in Sources */,
+				2638BD02F7EB739F42DCB80B /* FreeqLogo.swift in Sources */,
+				74F15A4EE7F80408B8A358C7 /* ImageLightbox.swift in Sources */,
+				022C97385E4C6E436BF8FA82 /* JoinChannelSheet.swift in Sources */,
+				DEFDB6EC3FA34DAA0295C7CA /* KeychainHelper.swift in Sources */,
+				6FCCCE776FF655CBB045B733 /* LinkPreview.swift in Sources */,
+				208776B8A3D2C2D1877AE9BA /* MainTabView.swift in Sources */,
+				BDDF0B841D6BE174B3422E91 /* MediaCapture.swift in Sources */,
+				29A01537002089A232C6A1CB /* MemberListView.swift in Sources */,
+				F426EA83410FB9AF6A40F5A5 /* MessageListView.swift in Sources */,
+				60A3F828F885713C7D9FA3FB /* MotdSheet.swift in Sources */,
+				6B98C423EE9A7D82D1973063 /* NetworkMonitor.swift in Sources */,
+				80DC207188B4EA44C3787CA2 /* Notifications.swift in Sources */,
+				DD3E3EE1D2C986B904CB5D82 /* PhotoPicker.swift in Sources */,
+				014D479059F416C096AC45EF /* PinnedMessagesView.swift in Sources */,
+				B792746D241CB91D4B15E377 /* SearchSheet.swift in Sources */,
+				7CE09F1FC8607BC12D448A0D /* ServerConfig.swift in Sources */,
+				E54F6F22FE39E885EFCBE309 /* SettingsTab.swift in Sources */,
+				2319759DBFF8EEDBBA34CD02 /* SidebarView.swift in Sources */,
+				E623701B0C3975E1362DFE23 /* Theme.swift in Sources */,
+				A6E303F99C6393665AE44025 /* ThreadView.swift in Sources */,
+				328A732022FC49EB4D04542C /* ToastView.swift in Sources */,
+				034DA442BA9FD61498908C7D /* TopBarView.swift in Sources */,
+				2750E2A554136E50881B2E2E /* UserProfileSheet.swift in Sources */,
+				74F43C40A1FAB663ECDA4B0A /* YouTubeThumb.swift in Sources */,
+				D9574E81D14BBFA1BF8A463D /* freeq.swift in Sources */,
+				0707953E63730121B32C90F1 /* freeqApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		16C6BF0BFCC8B19EA7D221E5 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		A3A1E0B2CD98412B649829AC /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 3DT7XF7L4R;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\".\"",
+				);
+				INFOPLIST_FILE = freeq/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				OTHER_LDFLAGS = (
+					"-ObjC",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = at.freeq.ios;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		A72C21AF560BD64B4F92F5ED /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		D4FE5A33A1CC10A5535D1FC6 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 3DT7XF7L4R;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\".\"",
+				);
+				INFOPLIST_FILE = freeq/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				OTHER_LDFLAGS = (
+					"-ObjC",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = at.freeq.ios;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		0F105F8BFDF6546C63D2203F /* Build configuration list for PBXNativeTarget "freeq" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D4FE5A33A1CC10A5535D1FC6 /* Debug */,
+				A3A1E0B2CD98412B649829AC /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		CF425087341A09E5CC8DE165 /* Build configuration list for PBXProject "freeq" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A72C21AF560BD64B4F92F5ED /* Debug */,
+				16C6BF0BFCC8B19EA7D221E5 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 1FEB93A706F8184FE3E2C445 /* Project object */;
+}

@@ -654,11 +654,30 @@ internal open class UniffiForeignFutureStructVoid(
 internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
     fun callback(`callbackData`: Long,`result`: UniffiForeignFutureStructVoid.UniffiByValue,)
 }
+internal interface UniffiCallbackInterfaceAvEventHandlerMethod0 : com.sun.jna.Callback {
+    fun callback(`uniffiHandle`: Long,`event`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
+}
 internal interface UniffiCallbackInterfaceEventHandlerMethod0 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`event`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
 }
 internal interface UniffiCallbackInterfaceP2pEventHandlerMethod0 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`event`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
+}
+@Structure.FieldOrder("onAvEvent", "uniffiFree")
+internal open class UniffiVTableCallbackInterfaceAvEventHandler(
+    @JvmField internal var `onAvEvent`: UniffiCallbackInterfaceAvEventHandlerMethod0? = null,
+    @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+) : Structure() {
+    class UniffiByValue(
+        `onAvEvent`: UniffiCallbackInterfaceAvEventHandlerMethod0? = null,
+        `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+    ): UniffiVTableCallbackInterfaceAvEventHandler(`onAvEvent`,`uniffiFree`,), Structure.ByValue
+
+   internal fun uniffiSetValue(other: UniffiVTableCallbackInterfaceAvEventHandler) {
+        `onAvEvent` = other.`onAvEvent`
+        `uniffiFree` = other.`uniffiFree`
+    }
+
 }
 @Structure.FieldOrder("onEvent", "uniffiFree")
 internal open class UniffiVTableCallbackInterfaceEventHandler(
@@ -822,6 +841,18 @@ internal open class UniffiVTableCallbackInterfaceP2pEventHandler(
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -837,7 +868,13 @@ internal open class UniffiVTableCallbackInterfaceP2pEventHandler(
 // when the library is loaded.
 internal interface IntegrityCheckingUniffiLib : Library {
     // Integrity check functions only
-    fun uniffi_freeq_sdk_ffi_checksum_method_freeqclient_connect(
+    fun uniffi_freeq_sdk_ffi_checksum_method_freeqav_is_connected(
+): Short
+fun uniffi_freeq_sdk_ffi_checksum_method_freeqav_leave(
+): Short
+fun uniffi_freeq_sdk_ffi_checksum_method_freeqav_set_muted(
+): Short
+fun uniffi_freeq_sdk_ffi_checksum_method_freeqclient_connect(
 ): Short
 fun uniffi_freeq_sdk_ffi_checksum_method_freeqclient_current_nick(
 ): Short
@@ -893,11 +930,15 @@ fun uniffi_freeq_sdk_ffi_checksum_method_freeqp2p_send_message(
 ): Short
 fun uniffi_freeq_sdk_ffi_checksum_method_freeqp2p_shutdown(
 ): Short
+fun uniffi_freeq_sdk_ffi_checksum_constructor_freeqav_new(
+): Short
 fun uniffi_freeq_sdk_ffi_checksum_constructor_freeqclient_new(
 ): Short
 fun uniffi_freeq_sdk_ffi_checksum_constructor_freeqe2ee_new(
 ): Short
 fun uniffi_freeq_sdk_ffi_checksum_constructor_freeqp2p_new(
+): Short
+fun uniffi_freeq_sdk_ffi_checksum_method_aveventhandler_on_av_event(
 ): Short
 fun uniffi_freeq_sdk_ffi_checksum_method_eventhandler_on_event(
 ): Short
@@ -941,6 +982,7 @@ internal interface UniffiLib : Library {
             val lib = loadIndirect<UniffiLib>(componentName)
             // No need to check the contract version and checksums, since 
             // we already did that with `IntegrityCheckingUniffiLib` above.
+            uniffiCallbackInterfaceAvEventHandler.register(lib)
             uniffiCallbackInterfaceEventHandler.register(lib)
             uniffiCallbackInterfaceP2pEventHandler.register(lib)
             // Loading of library with integrity check done.
@@ -954,7 +996,19 @@ internal interface UniffiLib : Library {
     }
 
     // FFI functions
-    fun uniffi_freeq_sdk_ffi_fn_clone_freeqclient(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+    fun uniffi_freeq_sdk_ffi_fn_clone_freeqav(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Pointer
+fun uniffi_freeq_sdk_ffi_fn_free_freeqav(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_freeq_sdk_ffi_fn_constructor_freeqav_new(`serverUrl`: RustBuffer.ByValue,`sessionId`: RustBuffer.ByValue,`nick`: RustBuffer.ByValue,`handler`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Pointer
+fun uniffi_freeq_sdk_ffi_fn_method_freeqav_is_connected(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Byte
+fun uniffi_freeq_sdk_ffi_fn_method_freeqav_leave(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_freeq_sdk_ffi_fn_method_freeqav_set_muted(`ptr`: Pointer,`muted`: Byte,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_freeq_sdk_ffi_fn_clone_freeqclient(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Pointer
 fun uniffi_freeq_sdk_ffi_fn_free_freeqclient(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
@@ -1027,6 +1081,8 @@ fun uniffi_freeq_sdk_ffi_fn_method_freeqp2p_endpoint_id(`ptr`: Pointer,uniffi_ou
 fun uniffi_freeq_sdk_ffi_fn_method_freeqp2p_send_message(`ptr`: Pointer,`peerId`: RustBuffer.ByValue,`text`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_freeq_sdk_ffi_fn_method_freeqp2p_shutdown(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_freeq_sdk_ffi_fn_init_callback_vtable_aveventhandler(`vtable`: UniffiVTableCallbackInterfaceAvEventHandler,
 ): Unit
 fun uniffi_freeq_sdk_ffi_fn_init_callback_vtable_eventhandler(`vtable`: UniffiVTableCallbackInterfaceEventHandler,
 ): Unit
@@ -1158,6 +1214,15 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 }
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
+    if (lib.uniffi_freeq_sdk_ffi_checksum_method_freeqav_is_connected() != 41973.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_freeq_sdk_ffi_checksum_method_freeqav_leave() != 39649.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_freeq_sdk_ffi_checksum_method_freeqav_set_muted() != 7170.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_freeq_sdk_ffi_checksum_method_freeqclient_connect() != 3331.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1242,6 +1307,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_freeq_sdk_ffi_checksum_method_freeqp2p_shutdown() != 50660.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_freeq_sdk_ffi_checksum_constructor_freeqav_new() != 34209.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_freeq_sdk_ffi_checksum_constructor_freeqclient_new() != 42979.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1249,6 +1317,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_freeq_sdk_ffi_checksum_constructor_freeqp2p_new() != 22044.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_freeq_sdk_ffi_checksum_method_aveventhandler_on_av_event() != 24538.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_freeq_sdk_ffi_checksum_method_eventhandler_on_event() != 8369.toShort()) {
@@ -1554,6 +1625,275 @@ public object FfiConverterString: FfiConverter<String, RustBuffer.ByValue> {
         val byteBuf = toUtf8(value)
         buf.putInt(byteBuf.limit())
         buf.put(byteBuf)
+    }
+}
+
+
+// This template implements a class for working with a Rust struct via a Pointer/Arc<T>
+// to the live Rust struct on the other side of the FFI.
+//
+// Each instance implements core operations for working with the Rust `Arc<T>` and the
+// Kotlin Pointer to work with the live Rust struct on the other side of the FFI.
+//
+// There's some subtlety here, because we have to be careful not to operate on a Rust
+// struct after it has been dropped, and because we must expose a public API for freeing
+// theq Kotlin wrapper object in lieu of reliable finalizers. The core requirements are:
+//
+//   * Each instance holds an opaque pointer to the underlying Rust struct.
+//     Method calls need to read this pointer from the object's state and pass it in to
+//     the Rust FFI.
+//
+//   * When an instance is no longer needed, its pointer should be passed to a
+//     special destructor function provided by the Rust FFI, which will drop the
+//     underlying Rust struct.
+//
+//   * Given an instance, calling code is expected to call the special
+//     `destroy` method in order to free it after use, either by calling it explicitly
+//     or by using a higher-level helper like the `use` method. Failing to do so risks
+//     leaking the underlying Rust struct.
+//
+//   * We can't assume that calling code will do the right thing, and must be prepared
+//     to handle Kotlin method calls executing concurrently with or even after a call to
+//     `destroy`, and to handle multiple (possibly concurrent!) calls to `destroy`.
+//
+//   * We must never allow Rust code to operate on the underlying Rust struct after
+//     the destructor has been called, and must never call the destructor more than once.
+//     Doing so may trigger memory unsafety.
+//
+//   * To mitigate many of the risks of leaking memory and use-after-free unsafety, a `Cleaner`
+//     is implemented to call the destructor when the Kotlin object becomes unreachable.
+//     This is done in a background thread. This is not a panacea, and client code should be aware that
+//      1. the thread may starve if some there are objects that have poorly performing
+//     `drop` methods or do significant work in their `drop` methods.
+//      2. the thread is shared across the whole library. This can be tuned by using `android_cleaner = true`,
+//         or `android = true` in the [`kotlin` section of the `uniffi.toml` file](https://mozilla.github.io/uniffi-rs/kotlin/configuration.html).
+//
+// If we try to implement this with mutual exclusion on access to the pointer, there is the
+// possibility of a race between a method call and a concurrent call to `destroy`:
+//
+//    * Thread A starts a method call, reads the value of the pointer, but is interrupted
+//      before it can pass the pointer over the FFI to Rust.
+//    * Thread B calls `destroy` and frees the underlying Rust struct.
+//    * Thread A resumes, passing the already-read pointer value to Rust and triggering
+//      a use-after-free.
+//
+// One possible solution would be to use a `ReadWriteLock`, with each method call taking
+// a read lock (and thus allowed to run concurrently) and the special `destroy` method
+// taking a write lock (and thus blocking on live method calls). However, we aim not to
+// generate methods with any hidden blocking semantics, and a `destroy` method that might
+// block if called incorrectly seems to meet that bar.
+//
+// So, we achieve our goals by giving each instance an associated `AtomicLong` counter to track
+// the number of in-flight method calls, and an `AtomicBoolean` flag to indicate whether `destroy`
+// has been called. These are updated according to the following rules:
+//
+//    * The initial value of the counter is 1, indicating a live object with no in-flight calls.
+//      The initial value for the flag is false.
+//
+//    * At the start of each method call, we atomically check the counter.
+//      If it is 0 then the underlying Rust struct has already been destroyed and the call is aborted.
+//      If it is nonzero them we atomically increment it by 1 and proceed with the method call.
+//
+//    * At the end of each method call, we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+//    * When `destroy` is called, we atomically flip the flag from false to true.
+//      If the flag was already true we silently fail.
+//      Otherwise we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+// Astute readers may observe that this all sounds very similar to the way that Rust's `Arc<T>` works,
+// and indeed it is, with the addition of a flag to guard against multiple calls to `destroy`.
+//
+// The overall effect is that the underlying Rust struct is destroyed only when `destroy` has been
+// called *and* all in-flight method calls have completed, avoiding violating any of the expectations
+// of the underlying Rust code.
+//
+// This makes a cleaner a better alternative to _not_ calling `destroy()` as
+// and when the object is finished with, but the abstraction is not perfect: if the Rust object's `drop`
+// method is slow, and/or there are many objects to cleanup, and it's on a low end Android device, then the cleaner
+// thread may be starved, and the app will leak memory.
+//
+// In this case, `destroy`ing manually may be a better solution.
+//
+// The cleaner can live side by side with the manual calling of `destroy`. In the order of responsiveness, uniffi objects
+// with Rust peers are reclaimed:
+//
+// 1. By calling the `destroy` method of the object, which calls `rustObject.free()`. If that doesn't happen:
+// 2. When the object becomes unreachable, AND the Cleaner thread gets to call `rustObject.free()`. If the thread is starved then:
+// 3. The memory is reclaimed when the process terminates.
+//
+// [1] https://stackoverflow.com/questions/24376768/can-java-finalize-an-object-when-it-is-still-in-scope/24380219
+//
+
+
+public interface FreeqAvInterface {
+    
+    fun `isConnected`(): kotlin.Boolean
+    
+    fun `leave`()
+    
+    fun `setMuted`(`muted`: kotlin.Boolean)
+    
+    companion object
+}
+
+open class FreeqAv: Disposable, AutoCloseable, FreeqAvInterface
+{
+
+    constructor(pointer: Pointer) {
+        this.pointer = pointer
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(pointer))
+    }
+
+    /**
+     * This constructor can be used to instantiate a fake object. Only used for tests. Any
+     * attempt to actually use an object constructed this way will fail as there is no
+     * connected Rust object.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    constructor(noPointer: NoPointer) {
+        this.pointer = null
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(pointer))
+    }
+    constructor(`serverUrl`: kotlin.String, `sessionId`: kotlin.String, `nick`: kotlin.String, `handler`: AvEventHandler) :
+        this(
+    uniffiRustCallWithError(FreeqException) { _status ->
+    UniffiLib.INSTANCE.uniffi_freeq_sdk_ffi_fn_constructor_freeqav_new(
+        FfiConverterString.lower(`serverUrl`),FfiConverterString.lower(`sessionId`),FfiConverterString.lower(`nick`),FfiConverterTypeAvEventHandler.lower(`handler`),_status)
+}
+    )
+
+    protected val pointer: Pointer?
+    protected val cleanable: UniffiCleaner.Cleanable
+
+    private val wasDestroyed = AtomicBoolean(false)
+    private val callCounter = AtomicLong(1)
+
+    override fun destroy() {
+        // Only allow a single call to this method.
+        // TODO: maybe we should log a warning if called more than once?
+        if (this.wasDestroyed.compareAndSet(false, true)) {
+            // This decrement always matches the initial count of 1 given at creation time.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable.clean()
+            }
+        }
+    }
+
+    @Synchronized
+    override fun close() {
+        this.destroy()
+    }
+
+    internal inline fun <R> callWithPointer(block: (ptr: Pointer) -> R): R {
+        // Check and increment the call counter, to keep the object alive.
+        // This needs a compare-and-set retry loop in case of concurrent updates.
+        do {
+            val c = this.callCounter.get()
+            if (c == 0L) {
+                throw IllegalStateException("${this.javaClass.simpleName} object has already been destroyed")
+            }
+            if (c == Long.MAX_VALUE) {
+                throw IllegalStateException("${this.javaClass.simpleName} call counter would overflow")
+            }
+        } while (! this.callCounter.compareAndSet(c, c + 1L))
+        // Now we can safely do the method call without the pointer being freed concurrently.
+        try {
+            return block(this.uniffiClonePointer())
+        } finally {
+            // This decrement always matches the increment we performed above.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable.clean()
+            }
+        }
+    }
+
+    // Use a static inner class instead of a closure so as not to accidentally
+    // capture `this` as part of the cleanable's action.
+    private class UniffiCleanAction(private val pointer: Pointer?) : Runnable {
+        override fun run() {
+            pointer?.let { ptr ->
+                uniffiRustCall { status ->
+                    UniffiLib.INSTANCE.uniffi_freeq_sdk_ffi_fn_free_freeqav(ptr, status)
+                }
+            }
+        }
+    }
+
+    fun uniffiClonePointer(): Pointer {
+        return uniffiRustCall() { status ->
+            UniffiLib.INSTANCE.uniffi_freeq_sdk_ffi_fn_clone_freeqav(pointer!!, status)
+        }
+    }
+
+    override fun `isConnected`(): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    callWithPointer {
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_freeq_sdk_ffi_fn_method_freeqav_is_connected(
+        it, _status)
+}
+    }
+    )
+    }
+    
+
+    override fun `leave`()
+        = 
+    callWithPointer {
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_freeq_sdk_ffi_fn_method_freeqav_leave(
+        it, _status)
+}
+    }
+    
+    
+
+    override fun `setMuted`(`muted`: kotlin.Boolean)
+        = 
+    callWithPointer {
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_freeq_sdk_ffi_fn_method_freeqav_set_muted(
+        it, FfiConverterBoolean.lower(`muted`),_status)
+}
+    }
+    
+    
+
+    
+
+    
+    
+    companion object
+    
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeFreeqAv: FfiConverter<FreeqAv, Pointer> {
+
+    override fun lower(value: FreeqAv): Pointer {
+        return value.uniffiClonePointer()
+    }
+
+    override fun lift(value: Pointer): FreeqAv {
+        return FreeqAv(value)
+    }
+
+    override fun read(buf: ByteBuffer): FreeqAv {
+        // The Rust code always writes pointers as 8 bytes, and will
+        // fail to compile if they don't fit.
+        return lift(Pointer(buf.getLong()))
+    }
+
+    override fun allocationSize(value: FreeqAv) = 8UL
+
+    override fun write(value: FreeqAv, buf: ByteBuffer) {
+        // The Rust code always expects pointers written as 8 bytes,
+        // and will fail to compile if they don't fit.
+        buf.putLong(Pointer.nativeValue(lower(value)))
     }
 }
 
@@ -2733,7 +3073,8 @@ data class IrcMessage (
     var `unpinMsgid`: kotlin.String?, 
     var `isAction`: kotlin.Boolean, 
     var `isSigned`: kotlin.Boolean, 
-    var `timestampMs`: kotlin.Long
+    var `timestampMs`: kotlin.Long, 
+    var `account`: kotlin.String?
 ) {
     
     companion object
@@ -2758,6 +3099,7 @@ public object FfiConverterTypeIrcMessage: FfiConverterRustBuffer<IrcMessage> {
             FfiConverterBoolean.read(buf),
             FfiConverterBoolean.read(buf),
             FfiConverterLong.read(buf),
+            FfiConverterOptionalString.read(buf),
         )
     }
 
@@ -2774,7 +3116,8 @@ public object FfiConverterTypeIrcMessage: FfiConverterRustBuffer<IrcMessage> {
             FfiConverterOptionalString.allocationSize(value.`unpinMsgid`) +
             FfiConverterBoolean.allocationSize(value.`isAction`) +
             FfiConverterBoolean.allocationSize(value.`isSigned`) +
-            FfiConverterLong.allocationSize(value.`timestampMs`)
+            FfiConverterLong.allocationSize(value.`timestampMs`) +
+            FfiConverterOptionalString.allocationSize(value.`account`)
     )
 
     override fun write(value: IrcMessage, buf: ByteBuffer) {
@@ -2791,6 +3134,7 @@ public object FfiConverterTypeIrcMessage: FfiConverterRustBuffer<IrcMessage> {
             FfiConverterBoolean.write(value.`isAction`, buf)
             FfiConverterBoolean.write(value.`isSigned`, buf)
             FfiConverterLong.write(value.`timestampMs`, buf)
+            FfiConverterOptionalString.write(value.`account`, buf)
     }
 }
 
@@ -2929,6 +3273,170 @@ public object FfiConverterTypeTagMessage: FfiConverterRustBuffer<TagMessage> {
             FfiConverterSequenceTypeTagEntry.write(value.`tags`, buf)
     }
 }
+
+
+
+sealed class AvEvent {
+    
+    object Connected : AvEvent()
+    
+    
+    data class Disconnected(
+        val `reason`: kotlin.String) : AvEvent() {
+        companion object
+    }
+    
+    data class ParticipantJoined(
+        val `nick`: kotlin.String) : AvEvent() {
+        companion object
+    }
+    
+    data class ParticipantLeft(
+        val `nick`: kotlin.String) : AvEvent() {
+        companion object
+    }
+    
+    data class AudioTrackStarted(
+        val `nick`: kotlin.String) : AvEvent() {
+        companion object
+    }
+    
+    data class AudioTrackStopped(
+        val `nick`: kotlin.String) : AvEvent() {
+        companion object
+    }
+    
+    data class Error(
+        val `message`: kotlin.String) : AvEvent() {
+        companion object
+    }
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeAvEvent : FfiConverterRustBuffer<AvEvent>{
+    override fun read(buf: ByteBuffer): AvEvent {
+        return when(buf.getInt()) {
+            1 -> AvEvent.Connected
+            2 -> AvEvent.Disconnected(
+                FfiConverterString.read(buf),
+                )
+            3 -> AvEvent.ParticipantJoined(
+                FfiConverterString.read(buf),
+                )
+            4 -> AvEvent.ParticipantLeft(
+                FfiConverterString.read(buf),
+                )
+            5 -> AvEvent.AudioTrackStarted(
+                FfiConverterString.read(buf),
+                )
+            6 -> AvEvent.AudioTrackStopped(
+                FfiConverterString.read(buf),
+                )
+            7 -> AvEvent.Error(
+                FfiConverterString.read(buf),
+                )
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: AvEvent) = when(value) {
+        is AvEvent.Connected -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is AvEvent.Disconnected -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`reason`)
+            )
+        }
+        is AvEvent.ParticipantJoined -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`nick`)
+            )
+        }
+        is AvEvent.ParticipantLeft -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`nick`)
+            )
+        }
+        is AvEvent.AudioTrackStarted -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`nick`)
+            )
+        }
+        is AvEvent.AudioTrackStopped -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`nick`)
+            )
+        }
+        is AvEvent.Error -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`message`)
+            )
+        }
+    }
+
+    override fun write(value: AvEvent, buf: ByteBuffer) {
+        when(value) {
+            is AvEvent.Connected -> {
+                buf.putInt(1)
+                Unit
+            }
+            is AvEvent.Disconnected -> {
+                buf.putInt(2)
+                FfiConverterString.write(value.`reason`, buf)
+                Unit
+            }
+            is AvEvent.ParticipantJoined -> {
+                buf.putInt(3)
+                FfiConverterString.write(value.`nick`, buf)
+                Unit
+            }
+            is AvEvent.ParticipantLeft -> {
+                buf.putInt(4)
+                FfiConverterString.write(value.`nick`, buf)
+                Unit
+            }
+            is AvEvent.AudioTrackStarted -> {
+                buf.putInt(5)
+                FfiConverterString.write(value.`nick`, buf)
+                Unit
+            }
+            is AvEvent.AudioTrackStopped -> {
+                buf.putInt(6)
+                FfiConverterString.write(value.`nick`, buf)
+                Unit
+            }
+            is AvEvent.Error -> {
+                buf.putInt(7)
+                FfiConverterString.write(value.`message`, buf)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+}
+
+
 
 
 
@@ -3638,6 +4146,59 @@ public object FfiConverterTypeP2pEvent : FfiConverterRustBuffer<P2pEvent>{
 }
 
 
+
+
+
+
+
+public interface AvEventHandler {
+    
+    fun `onAvEvent`(`event`: AvEvent)
+    
+    companion object
+}
+
+
+
+// Put the implementation in an object so we don't pollute the top-level namespace
+internal object uniffiCallbackInterfaceAvEventHandler {
+    internal object `onAvEvent`: UniffiCallbackInterfaceAvEventHandlerMethod0 {
+        override fun callback(`uniffiHandle`: Long,`event`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,) {
+            val uniffiObj = FfiConverterTypeAvEventHandler.handleMap.get(uniffiHandle)
+            val makeCall = { ->
+                uniffiObj.`onAvEvent`(
+                    FfiConverterTypeAvEvent.lift(`event`),
+                )
+            }
+            val writeReturn = { _: Unit -> Unit }
+            uniffiTraitInterfaceCall(uniffiCallStatus, makeCall, writeReturn)
+        }
+    }
+
+    internal object uniffiFree: UniffiCallbackInterfaceFree {
+        override fun callback(handle: Long) {
+            FfiConverterTypeAvEventHandler.handleMap.remove(handle)
+        }
+    }
+
+    internal var vtable = UniffiVTableCallbackInterfaceAvEventHandler.UniffiByValue(
+        `onAvEvent`,
+        uniffiFree,
+    )
+
+    // Registers the foreign callback with the Rust side.
+    // This method is generated for each callback interface.
+    internal fun register(lib: UniffiLib) {
+        lib.uniffi_freeq_sdk_ffi_fn_init_callback_vtable_aveventhandler(vtable)
+    }
+}
+
+/**
+ * The ffiConverter which transforms the Callbacks in to handles to pass to Rust.
+ *
+ * @suppress
+ */
+public object FfiConverterTypeAvEventHandler: FfiConverterCallbackInterface<AvEventHandler>()
 
 
 
