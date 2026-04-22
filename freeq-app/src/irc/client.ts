@@ -438,15 +438,10 @@ function wireEvents(c: FreeqClient) {
     const dids = messages.map((m: any) => m.tags?.account).filter(Boolean);
     if (dids.length) prefetchProfiles(dids);
 
-    // Insert history messages at the beginning
-    const store = useStore.getState();
-    const ch = store.channels.get(channel.toLowerCase());
-    if (ch) {
-      // Add each message to the channel
-      for (const msg of messages) {
-        store.addMessage(channel, msg as import('../store').Message);
-      }
-    }
+    useStore.getState().mergeHistory(
+      channel,
+      messages as import('../store').Message[],
+    );
   });
 
   c.on('dmTarget', (nick) => {

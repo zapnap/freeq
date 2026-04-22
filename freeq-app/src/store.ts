@@ -196,6 +196,7 @@ export interface Store {
 
   // Actions — messages
   addMessage: (channel: string, msg: Message) => void;
+  mergeHistory: (channel: string, messages: Message[]) => void;
   addSystemMessage: (channel: string, text: string) => void;
   editMessage: (channel: string, originalMsgId: string, newText: string, newMsgId?: string, isStreaming?: boolean) => void;
   deleteMessage: (channel: string, msgId: string) => void;
@@ -637,6 +638,29 @@ export const useStore = create<Store>((set, get) => ({
       return { channels, hiddenDMs: hidden };
     }
 
+    return { channels };
+  }),
+
+  mergeHistory: (channel, incoming) => set((s) => {
+    if (!incoming || incoming.length === 0) return {};
+    if (channel === 'server' || channel.toLowerCase() === 'server') return {};
+    const channels = new Map(s.channels);
+    const ch = getOrCreateChannel(channels, channel);
+
+    // Dedup by msgid — existing (live) copy wins over a history copy.
+    const existingIds = new Set(ch.messages.map((m) => m.id).filter(Boolean));
+    const novel = incoming.filter((m) => !m.id || !existingIds.has(m.id));
+    if (novel.length === 0) return {};
+
+    const merged = [...ch.messages, ...novel];
+    merged.sort((a, b) => {
+      const ta = a.timestamp?.getTime?.() ?? 0;
+      const tb = b.timestamp?.getTime?.() ?? 0;
+      if (ta !== tb) return ta - tb;
+      return (a.id || '').localeCompare(b.id || '');
+    });
+    ch.messages = merged.slice(-1000);
+    channels.set(channel.toLowerCase(), ch);
     return { channels };
   }),
 
