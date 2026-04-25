@@ -1,6 +1,6 @@
 import { useEffect, useRef, useCallback, useState, useMemo } from 'react';
 import { useStore, type Message, type PinnedMessage } from '../store';
-import { getNick, requestHistory, sendReaction } from '../irc/client';
+import { getNick, requestHistory, sendReaction, sendUnreact } from '../irc/client';
 import { fetchProfile, getCachedProfile, type ATProfile } from '../lib/profiles';
 import { EmojiPicker } from './EmojiPicker';
 import { UserPopover } from './UserPopover';
@@ -887,7 +887,9 @@ function Reactions({ msg, channel }: { msg: Message; channel: string }) {
         return (
           <button
             key={emoji}
-            onClick={() => sendReaction(channel, emoji, msg.id)}
+            onClick={() => isMine
+              ? sendUnreact(channel, emoji, msg.id)
+              : sendReaction(channel, emoji, msg.id)}
             className={`rounded-lg px-2.5 py-1 text-sm inline-flex items-center gap-1.5 border ${
               isMine
                 ? 'bg-accent/10 border-accent/30 text-accent'

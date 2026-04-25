@@ -148,6 +148,10 @@ export function sendReaction(target: string, emoji: string, msgId?: string) {
   client?.sendReaction(target, emoji, msgId);
 }
 
+export function sendUnreact(target: string, emoji: string, msgId: string) {
+  client?.sendUnreact(target, emoji, msgId);
+}
+
 export function joinChannel(channel: string) {
   client?.join(channel);
   useStore.getState().addChannel(channel);
@@ -425,6 +429,10 @@ function wireEvents(c: FreeqClient) {
 
   c.on('reactionAdded', (channel, msgId, emoji, fromNick) => {
     s().addReaction(channel, msgId, emoji, fromNick);
+  });
+
+  c.on('reactionRemoved', (channel, msgId, emoji, fromNick) => {
+    s().removeReaction(channel, msgId, emoji, fromNick);
   });
 
   c.on('systemMessage', (target, text) => {

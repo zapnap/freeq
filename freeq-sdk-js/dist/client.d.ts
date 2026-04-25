@@ -76,6 +76,8 @@ export declare class FreeqClient extends EventEmitter {
     sendDelete(target: string, msgId: string): void;
     /** React to a message with an emoji. */
     sendReaction(target: string, emoji: string, msgId?: string): void;
+    /** Remove our previous reaction to a message. */
+    sendUnreact(target: string, emoji: string, msgId: string): void;
     /** Join a channel. */
     join(channel: string): void;
     /** Leave a channel. */

@@ -41,6 +41,9 @@ export interface FreeqEvents {
   /** Fired when a reaction is added. */
   reactionAdded: (channel: string, msgId: string, emoji: string, fromNick: string) => void;
 
+  /** Fired when a reaction is removed. */
+  reactionRemoved: (channel: string, msgId: string, emoji: string, fromNick: string) => void;
+
   /** Fired when we join a channel. */
   channelJoined: (channel: string) => void;
 

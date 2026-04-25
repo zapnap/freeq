@@ -201,6 +201,7 @@ export interface Store {
   editMessage: (channel: string, originalMsgId: string, newText: string, newMsgId?: string, isStreaming?: boolean) => void;
   deleteMessage: (channel: string, msgId: string) => void;
   addReaction: (channel: string, msgId: string, emoji: string, fromNick: string) => void;
+  removeReaction: (channel: string, msgId: string, emoji: string, fromNick: string) => void;
   incrementMentions: (channel: string) => void;
   clearUnread: (channel: string) => void;
 
@@ -745,6 +746,26 @@ export const useStore = create<Store>((set, get) => ({
       const nicks = new Set(reactions.get(emoji) || []);
       nicks.add(fromNick);
       reactions.set(emoji, nicks);
+      return { ...m, reactions };
+    });
+    channels.set(channel.toLowerCase(), { ...ch });
+    return { channels };
+  }),
+
+  removeReaction: (channel, msgId, emoji, fromNick) => set((s) => {
+    if (!emoji) return {};
+    const channels = new Map(s.channels);
+    const ch = channels.get(channel.toLowerCase());
+    if (!ch) return { channels };
+    ch.messages = ch.messages.map((m) => {
+      if (m.id !== msgId || !m.reactions) return m;
+      const existing = m.reactions.get(emoji);
+      if (!existing || !existing.has(fromNick)) return m;
+      const reactions = new Map(m.reactions);
+      const nicks = new Set(existing);
+      nicks.delete(fromNick);
+      if (nicks.size === 0) reactions.delete(emoji);
+      else reactions.set(emoji, nicks);
       return { ...m, reactions };
     });
     channels.set(channel.toLowerCase(), { ...ch });

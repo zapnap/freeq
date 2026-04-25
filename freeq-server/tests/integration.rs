@@ -2207,6 +2207,177 @@ async fn tagmsg_and_reactions() {
     server_handle.abort();
 }
 
+// ── Test: TAGMSG with +freeq.at/unreact removes a previously stored reaction
+//
+// Wire shape: TAGMSG <channel> +freeq.at/unreact=<emoji> +reply=<msgid>
+// - The TAGMSG must relay to channel members like any other.
+// - The server must call db::remove_reaction so CHATHISTORY no longer carries
+//   the reaction in +freeq.at/reactions.
+//
+// This test covers the protocol contract end-to-end. The DB primitive itself
+// is unit-tested in db.rs.
+#[tokio::test]
+async fn tagmsg_unreact_removes_persisted_reaction() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("unreact.db");
+    let db_str = db_path.to_str().unwrap();
+
+    let (addr, server_handle) =
+        start_test_server_with_db(empty_resolver(), db_str).await;
+
+    let config_alice = ConnectConfig {
+        server_addr: addr.to_string(),
+        nick: "alice".to_string(),
+        user: "alice".to_string(),
+        realname: "Alice".to_string(),
+        ..Default::default()
+    };
+    let (handle_alice, mut events_alice) = client::connect(config_alice, None);
+    expect_event(
+        &mut events_alice,
+        2000,
+        |e| matches!(e, Event::Registered { .. }),
+        "Alice registered",
+    )
+    .await;
+    handle_alice.join("#unreact").await.unwrap();
+    expect_event(
+        &mut events_alice,
+        2000,
+        |e| matches!(e, Event::Joined { .. }),
+        "Alice joined",
+    )
+    .await;
+
+    let config_bob = ConnectConfig {
+        server_addr: addr.to_string(),
+        nick: "bob".to_string(),
+        user: "bob".to_string(),
+        realname: "Bob".to_string(),
+        ..Default::default()
+    };
+    let (handle_bob, mut events_bob) = client::connect(config_bob, None);
+    expect_event(
+        &mut events_bob,
+        2000,
+        |e| matches!(e, Event::Registered { .. }),
+        "Bob registered",
+    )
+    .await;
+    handle_bob.join("#unreact").await.unwrap();
+    expect_event(
+        &mut events_bob,
+        2000,
+        |e| matches!(e, Event::Joined { .. }),
+        "Bob joined",
+    )
+    .await;
+
+    // Drain Bob's join from Alice's stream.
+    expect_event(
+        &mut events_alice,
+        2000,
+        |e| matches!(e, Event::Joined { nick, .. } if nick == "bob"),
+        "Alice sees Bob join",
+    )
+    .await;
+
+    // Alice posts a message; Bob receives it and we extract its msgid.
+    handle_alice
+        .privmsg("#unreact", "react to me")
+        .await
+        .unwrap();
+    let msg_evt = expect_event(
+        &mut events_bob,
+        2000,
+        |e| matches!(e, Event::Message { from, target, text, .. }
+            if from == "alice" && target == "#unreact" && text == "react to me"),
+        "Bob receives Alice's message",
+    )
+    .await;
+    let msgid = if let Event::Message { tags, .. } = &msg_evt {
+        tags.get("msgid").cloned().expect("server should attach msgid")
+    } else {
+        unreachable!()
+    };
+
+    // Bob reacts.
+    let mut react_tags = HashMap::new();
+    react_tags.insert("+react".to_string(), "🔥".to_string());
+    react_tags.insert("+reply".to_string(), msgid.clone());
+    handle_bob.send_tagmsg("#unreact", react_tags).await.unwrap();
+
+    // Alice sees Bob's reaction relay (sanity).
+    expect_event(
+        &mut events_alice,
+        2000,
+        |e| matches!(e, Event::TagMsg { from, tags, .. }
+            if from == "bob" && tags.get("+react").map(|s| s.as_str()) == Some("🔥")),
+        "Alice receives Bob's reaction",
+    )
+    .await;
+
+    // Bob unreacts.
+    let mut unreact_tags = HashMap::new();
+    unreact_tags.insert("+freeq.at/unreact".to_string(), "🔥".to_string());
+    unreact_tags.insert("+reply".to_string(), msgid.clone());
+    handle_bob
+        .send_tagmsg("#unreact", unreact_tags)
+        .await
+        .unwrap();
+
+    // Alice sees the unreact relay — same channel TAGMSG path as react.
+    expect_event(
+        &mut events_alice,
+        2000,
+        |e| matches!(e, Event::TagMsg { from, tags, .. }
+            if from == "bob"
+            && tags.get("+freeq.at/unreact").map(|s| s.as_str()) == Some("🔥")),
+        "Alice receives Bob's unreact",
+    )
+    .await;
+
+    // Give the server a beat to finish the DB delete before we ask for history.
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    // CHATHISTORY should now show the message with no 🔥 in +freeq.at/reactions.
+    handle_alice
+        .history_latest("#unreact", 50)
+        .await
+        .unwrap();
+    expect_event(
+        &mut events_alice,
+        2000,
+        |e| matches!(e, Event::BatchStart { batch_type, .. }
+            if batch_type == "chathistory"),
+        "history batch start",
+    )
+    .await;
+    let hist = expect_event(
+        &mut events_alice,
+        2000,
+        |e| matches!(e, Event::Message { text, .. } if text == "react to me"),
+        "history replays Alice's message",
+    )
+    .await;
+    if let Event::Message { tags, .. } = &hist {
+        let reactions = tags.get("+freeq.at/reactions");
+        let still_has_fire = reactions
+            .map(|s| s.contains("🔥"))
+            .unwrap_or(false);
+        assert!(
+            !still_has_fire,
+            "after unreact, history should not carry 🔥 in +freeq.at/reactions; got: {reactions:?}"
+        );
+    } else {
+        unreachable!()
+    }
+
+    handle_alice.quit(None).await.unwrap();
+    handle_bob.quit(None).await.unwrap();
+    server_handle.abort();
+}
+
 // ── Persistence tests ───────────────────────────────────────────────
 
 /// Helper: start a server with persistence enabled (SQLite file).

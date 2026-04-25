@@ -282,6 +282,16 @@ export class FreeqClient extends EventEmitter {
     }
   }
 
+  /** Remove our previous reaction to a message. */
+  sendUnreact(target: string, emoji: string, msgId: string): void {
+    const tags: Record<string, string> = {
+      '+freeq.at/unreact': emoji,
+      '+reply': msgId,
+    };
+    this.raw(format('TAGMSG', [target], tags));
+    this.emit('reactionRemoved', target, msgId, emoji, this._nick);
+  }
+
   // ── Channel management ──
 
   /** Join a channel. */
@@ -846,6 +856,14 @@ export class FreeqClient extends EventEmitter {
           const reactTarget = msg.tags['+reply'];
           if (reactTarget) {
             this.emit('reactionAdded', bufName, reactTarget, reaction, from);
+          }
+        }
+
+        const unreact = msg.tags['+freeq.at/unreact'];
+        if (unreact) {
+          const unreactTarget = msg.tags['+reply'];
+          if (unreactTarget) {
+            this.emit('reactionRemoved', bufName, unreactTarget, unreact, from);
           }
         }
 

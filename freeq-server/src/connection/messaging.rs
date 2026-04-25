@@ -151,6 +151,19 @@ pub(super) fn handle_tagmsg(
         state.with_db(|db| db.store_reaction(&target_msgid, &channel, &nick, did.as_deref(), &emoji, ts));
     }
 
+    // ── Remove reactions (+freeq.at/unreact with +reply) ──
+    // The reactor is identified by the connection's current nick — same key the
+    // add path uses to scope a reaction. The TAGMSG itself still relays through
+    // the broadcast below so other clients can drop the pill from the UI.
+    if let (Some(emoji), Some(target_msgid)) =
+        (tags.get("+freeq.at/unreact"), tags.get("+reply"))
+    {
+        let nick = conn.nick_or_star().to_string();
+        let target_msgid = target_msgid.clone();
+        let emoji = emoji.clone();
+        state.with_db(|db| db.remove_reaction(&target_msgid, &nick, &emoji));
+    }
+
     let hostmask = conn.hostmask();
 
     let timestamp = std::time::SystemTime::now()
