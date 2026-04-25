@@ -19,6 +19,10 @@ export declare class FreeqClient extends EventEmitter {
     private sasl;
     private skipBrokerRefresh;
     private guestFallbackCount;
+    /** Set when SASL was attempted and 904 was received. Suppresses any
+     *  subsequent registration completion as a guest, and blocks outgoing
+     *  PRIVMSGs that would silently leak under the guest identity. */
+    private _saslFailed;
     private autoJoinChannels;
     private _joinedChannels;
     private backgroundWhois;

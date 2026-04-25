@@ -23,6 +23,10 @@ export class FreeqClient extends EventEmitter {
     sasl = null;
     skipBrokerRefresh;
     guestFallbackCount = 0;
+    /** Set when SASL was attempted and 904 was received. Suppresses any
+     *  subsequent registration completion as a guest, and blocks outgoing
+     *  PRIVMSGs that would silently leak under the guest identity. */
+    _saslFailed = false;
     autoJoinChannels = [];
     _joinedChannels = new Set();
     backgroundWhois = new Set();
@@ -76,6 +80,7 @@ export class FreeqClient extends EventEmitter {
             catch { /* ignore */ }
             this.transport = null;
         }
+        this._saslFailed = false;
         let lineQueue = Promise.resolve();
         const serializedHandleLine = (line) => {
             lineQueue = lineQueue.then(() => this.handleLine(line)).catch((e) => console.error('[freeq-sdk] line handler error:', e));
@@ -94,6 +99,7 @@ export class FreeqClient extends EventEmitter {
         this._nick = '';
         this._authDid = null;
         this._registered = false;
+        this._saslFailed = false;
         this.ackedCaps.clear();
         this.sasl = null;
         this._joinedChannels.clear();
@@ -282,6 +288,14 @@ export class FreeqClient extends EventEmitter {
     }
     /** Send a raw IRC command. */
     raw(line) {
+        // Defense in depth against the silent-guest-fallback bug: if SASL
+        // was attempted and failed on this socket, refuse to write anything
+        // that could leak under the guest identity the server would have
+        // assigned. The transport is normally already torn down by the 904
+        // handler, but a queued send during the close window is still
+        // possible.
+        if (this._saslFailed)
+            return;
         this.transport?.send(line);
     }
     /** Set a channel encryption passphrase (ENC1). */
@@ -460,10 +474,43 @@ export class FreeqClient extends EventEmitter {
                 }
                 this.raw('CAP END');
                 break;
-            case '904':
-                this.emit('authError', msg.params[msg.params.length - 1] || 'SASL failed');
-                this.raw('CAP END');
+            case '904': {
+                // SASL failed. The user expected to be authenticated, but our
+                // credentials (often a token that went stale during an idle
+                // reconnect) didn't validate. The server will now finish IRC
+                // registration and force-rename us to GuestNNNNN since the nick
+                // is registered to a DID we can't prove ownership of.
+                //
+                // We MUST NOT silently let registration complete as a guest:
+                // the user would post messages under the guest identity while
+                // the UI still shows them as authenticated. Drop the dead
+                // credentials and intentionally tear the socket down so the
+                // app can re-auth (or explicitly choose guest mode) instead of
+                // racing the next reconnect with the same dead token.
+                const reason = msg.params[msg.params.length - 1] || 'SASL failed';
+                const hadSaslAttempt = !!this.sasl?.token;
+                this.sasl = null;
+                this._authDid = null;
+                this.emit('authError', reason);
+                // Mirror the wire identity to the app: did is now empty.
+                this.emit('authenticated', '', reason);
+                if (hadSaslAttempt) {
+                    // Refuse to register as a guest on a connection where SASL
+                    // was requested. Mark _saslFailed so any in-flight 001 from
+                    // the server is suppressed (the WS may still deliver buffered
+                    // lines for a moment after close), and tear down the socket
+                    // so the next user action is an explicit re-auth.
+                    this._saslFailed = true;
+                    this.transport?.disconnect();
+                    this.transport = null;
+                    this._connectionState = 'disconnected';
+                    this.emit('connectionStateChanged', 'disconnected');
+                }
+                else {
+                    this.raw('CAP END');
+                }
                 break;
+            }
             case 'PING':
                 this.raw(`PONG :${msg.params[0] || ''}`);
                 break;
@@ -477,6 +524,11 @@ export class FreeqClient extends EventEmitter {
             }
             case '001': {
                 const serverNick = msg.params[0] || this._nick;
+                // If SASL failed on this socket, suppress any in-flight 001
+                // from the server. We've already torn the socket down; do not
+                // let the app think we registered as the assigned Guest nick.
+                if (this._saslFailed)
+                    break;
                 this.guestFallbackCount = 0;
                 this._nick = serverNick;
                 this._registered = true;
