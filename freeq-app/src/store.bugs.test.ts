@@ -649,3 +649,36 @@ describe('mergeHistory safety / side-effects', () => {
     expect(s().channels.get(ch)!.messages.map((m) => m.id)).toEqual(['nt', 'm18']);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════
+// BUG: whoisCache stale after nick reuse (UI shows previous
+// occupant's DID/handle until something forces a re-WHOIS).
+// Same shape as the silent-guest-fallback bug: cached identity
+// outlives the wire event that should have invalidated it.
+// ═══════════════════════════════════════════════════════════════
+
+describe('whoisCache vs nick reassignment (stale identity bug)', () => {
+  it('removeUserFromAll must drop the whois cache entry for the quitter', () => {
+    const s = () => useStore.getState();
+    s().updateWhois('alice', { did: 'did:plc:OLD', handle: 'alice.example' });
+    s().removeUserFromAll('alice', 'bye');
+    expect(
+      s().whoisCache.has('alice'),
+      'whoisCache must not retain identity for a nick that has quit',
+    ).toBe(false);
+  });
+
+  it('renameUser must move the whois cache entry to the new nick (or clear it)', () => {
+    // If alice changes nick to bob, the cached DID is still valid for
+    // the same human at the new nick. But if we leave it under "alice",
+    // a different person taking the freed nick "alice" later inherits
+    // the stale identity.
+    const s = () => useStore.getState();
+    s().updateWhois('alice', { did: 'did:plc:HER', handle: 'alice.bsky' });
+    s().renameUser('alice', 'bob');
+    expect(
+      s().whoisCache.has('alice'),
+      'after a rename, the old nick must not still resolve to the renamer\'s DID',
+    ).toBe(false);
+  });
+});

@@ -34,6 +34,14 @@ export class FreeqClient extends EventEmitter {
    *  subsequent registration completion as a guest, and blocks outgoing
    *  PRIVMSGs that would silently leak under the guest identity. */
   private _saslFailed = false;
+  /** Channels the server has flagged +E. Used to block plaintext sends
+   *  when we don't (yet) have the passphrase, so messages don't leak
+   *  unencrypted into a channel the rest of the room expects encrypted. */
+  private _encryptedChannels = new Set<string>();
+  /** Current AWAY reason, or null if not away. Re-asserted on
+   *  reconnect so the wire and UI states don't diverge after the
+   *  server forgets us during the disconnect. */
+  private _currentAway: string | null = null;
 
   private autoJoinChannels: string[] = [];
   private _joinedChannels = new Set<string>();
@@ -130,6 +138,8 @@ export class FreeqClient extends EventEmitter {
     this.batches.clear();
     this._avSessions.clear();
     this._activeAvSession = null;
+    this._encryptedChannels.clear();
+    this._currentAway = null;
     signing.resetSigning();
     this._connectionState = 'disconnected';
   }
@@ -158,6 +168,23 @@ export class FreeqClient extends EventEmitter {
     const isChannel = target.startsWith('#') || target.startsWith('&');
     const wireText = multiline ? text.replace(/\n/g, '\\n') : text;
     const extraTags: Record<string, string> = multiline ? { '+freeq.at/multiline': '' } : {};
+
+    // If the channel is +E and we have no key, the only thing we could
+    // send is plaintext — which would leak into a room the rest of the
+    // members expect encrypted. Refuse and surface a system message
+    // instead so the user sets a passphrase before retrying.
+    if (
+      isChannel &&
+      this._encryptedChannels.has(target.toLowerCase()) &&
+      !e2ee.hasChannelKey(target)
+    ) {
+      this.emit(
+        'systemMessage',
+        target,
+        `Cannot send to ${target}: channel is encrypted (+E) and you have no key set. Use the channel passphrase to enable encryption first.`,
+      );
+      return;
+    }
 
     if (e2ee.hasChannelKey(target)) {
       e2ee.encryptChannel(target, wireText).then((encrypted) => {
@@ -291,6 +318,7 @@ export class FreeqClient extends EventEmitter {
   /** Set or clear away status. */
   setAway(reason?: string): void {
     this.pendingAwayReason = reason || null;
+    this._currentAway = reason || null;
     this.raw(reason ? `AWAY :${reason}` : 'AWAY');
   }
 
@@ -593,6 +621,13 @@ export class FreeqClient extends EventEmitter {
         }
         this.autoJoinChannels = [];
         if (this.sasl?.did) this.requestDmTargets();
+        // Re-assert AWAY across reconnects so the server stops thinking
+        // we're present. We deliberately re-send even on the first 001
+        // if _currentAway was set earlier; it's a no-op if we weren't
+        // away.
+        if (this._currentAway !== null) {
+          this.raw(`AWAY :${this._currentAway}`);
+        }
         this.emit('ready');
         break;
       }
@@ -871,12 +906,24 @@ export class FreeqClient extends EventEmitter {
         if (target.startsWith('#') || target.startsWith('&')) {
           const modeStr = msg.params[1] || '';
           const argsWithParam = new Set(['o', 'h', 'v', 'k', 'b']);
+          const targetLower = target.toLowerCase();
           let adding = true;
           let argIdx = 2;
           for (const ch of modeStr) {
             if (ch === '+') { adding = true; continue; }
             if (ch === '-') { adding = false; continue; }
             const modeArg = argsWithParam.has(ch) ? msg.params[argIdx++] : undefined;
+            // Track +E so we can block plaintext sends; drop the cached
+            // e2ee key on -E so we don't keep encrypting with a key the
+            // rest of the channel no longer expects.
+            if (ch === 'E') {
+              if (adding) {
+                this._encryptedChannels.add(targetLower);
+              } else {
+                this._encryptedChannels.delete(targetLower);
+                e2ee.removeChannelKey(target);
+              }
+            }
             this.emit('modeChanged', target, `${adding ? '+' : '-'}${ch}`, modeArg, from);
           }
           const allArgs = msg.params.slice(2).join(' ');
@@ -897,6 +944,7 @@ export class FreeqClient extends EventEmitter {
 
       case '305':
         this.pendingAwayReason = null;
+        this._currentAway = null;
         this.emit('userAway', this._nick, null);
         this.emit('systemMessage', 'server', 'You are no longer away');
         break;

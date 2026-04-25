@@ -23,6 +23,14 @@ export declare class FreeqClient extends EventEmitter {
      *  subsequent registration completion as a guest, and blocks outgoing
      *  PRIVMSGs that would silently leak under the guest identity. */
     private _saslFailed;
+    /** Channels the server has flagged +E. Used to block plaintext sends
+     *  when we don't (yet) have the passphrase, so messages don't leak
+     *  unencrypted into a channel the rest of the room expects encrypted. */
+    private _encryptedChannels;
+    /** Current AWAY reason, or null if not away. Re-asserted on
+     *  reconnect so the wire and UI states don't diverge after the
+     *  server forgets us during the disconnect. */
+    private _currentAway;
     private autoJoinChannels;
     private _joinedChannels;
     private backgroundWhois;

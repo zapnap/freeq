@@ -505,7 +505,12 @@ export const useStore = create<Store>((set, get) => ({
         channels.set(key, { ...ch });
       }
     }
-    return { channels };
+    // Drop the cached WHOIS identity for this nick. The nick is now
+    // freed and could be claimed by an entirely different account; a
+    // stale cache would show the previous occupant's DID/handle.
+    const whoisCache = new Map(s.whoisCache);
+    whoisCache.delete(nick.toLowerCase());
+    return { channels, whoisCache };
   }),
 
   renameUser: (oldNick, newNick) => set((s) => {
@@ -519,7 +524,18 @@ export const useStore = create<Store>((set, get) => ({
         channels.set(key, ch);
       }
     }
-    return { channels };
+    // Move the WHOIS cache entry to the new nick. The same human is
+    // behind it; the old nick must not still resolve to their DID
+    // because the freed nick may be reclaimed by someone else.
+    const whoisCache = new Map(s.whoisCache);
+    const oldKey = oldNick.toLowerCase();
+    const newKey = newNick.toLowerCase();
+    const cached = whoisCache.get(oldKey);
+    if (cached) {
+      whoisCache.delete(oldKey);
+      whoisCache.set(newKey, { ...cached, nick: newNick });
+    }
+    return { channels, whoisCache };
   }),
 
   setUserAway: (nick, reason) => set((s) => {
