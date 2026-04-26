@@ -23,6 +23,9 @@ freeq-app/dist/
 freeq-app/src-tauri/target/
 freeq-app/src-tauri/target/
 
+# TypeScript incremental-build cache (per-project, not source)
+*.tsbuildinfo
+
 # Playwright
 freeq-app/test-results/
 freeq-app/playwright-report/
