@@ -135,6 +135,9 @@ pub struct Followup {
 // ─── HTTP envelope (the wire response) ───────────────────────────────────
 
 /// Outer JSON envelope returned by every `/agent/*` tool endpoint.
+///
+/// `classification` is populated for `/agent/session` (the LLM-routed
+/// endpoint) and omitted for direct tool calls.
 #[derive(Debug, Serialize)]
 pub struct AssistResponse {
     pub ok: bool,
@@ -144,6 +147,22 @@ pub struct AssistResponse {
     pub suggested_fixes: Vec<SuggestedFix>,
     pub redactions: Vec<String>,
     pub followups: Vec<Followup>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub classification: Option<RoutedClassification>,
+}
+
+/// Metadata about how a free-form `/agent/session` request was routed
+/// through the LLM. Surfaced so the agent knows which tool ran and
+/// why; the deterministic facts/diagnosis still come from the tool
+/// itself.
+#[derive(Debug, Serialize)]
+pub struct RoutedClassification {
+    pub provider: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    pub confidence: Confidence,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -154,7 +173,8 @@ pub struct Diagnosis {
 }
 
 impl AssistResponse {
-    /// Build the wire envelope from a [`FactBundle`].
+    /// Build the wire envelope from a [`FactBundle`] (no LLM
+    /// classification metadata).
     pub fn from_bundle(request_id: String, b: FactBundle) -> Self {
         Self {
             ok: b.ok,
@@ -168,7 +188,20 @@ impl AssistResponse {
             suggested_fixes: b.suggested_fixes,
             redactions: b.redactions,
             followups: b.followups,
+            classification: None,
         }
+    }
+
+    /// Build the wire envelope from a [`FactBundle`] *with*
+    /// classification metadata (used by `/agent/session`).
+    pub fn from_routed(
+        request_id: String,
+        b: FactBundle,
+        classification: RoutedClassification,
+    ) -> Self {
+        let mut resp = Self::from_bundle(request_id, b);
+        resp.classification = Some(classification);
+        resp
     }
 }
 

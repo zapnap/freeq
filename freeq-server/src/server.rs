@@ -773,6 +773,63 @@ fn load_msg_signing_key(data_dir: &str) -> ed25519_dalek::SigningKey {
     key
 }
 
+/// Install the agent-assist LLM provider into the process-wide slot
+/// based on `ServerConfig.llm_*` fields. No-op if the provider is
+/// `None` / `"none"` / unset.
+///
+/// Pluggable today: `openai` selects the OpenAI-compatible client,
+/// which works against any /chat/completions endpoint (OpenAI itself,
+/// Together, Fireworks, Groq, vLLM, llama.cpp server, Ollama with
+/// /v1, TGI, LMDeploy, etc — see `agent_assist::llm::openai`).
+/// `mock` selects a deterministic regex matcher used by tests and dev.
+fn install_llm_provider(config: &ServerConfig) {
+    use std::time::Duration;
+    let kind = config
+        .llm_provider
+        .as_deref()
+        .map(str::trim)
+        .map(str::to_ascii_lowercase);
+    match kind.as_deref() {
+        None | Some("") | Some("none") => {
+            crate::agent_assist::llm::global::clear_provider();
+            tracing::info!("agent-assist LLM provider disabled");
+        }
+        Some("mock") => {
+            crate::agent_assist::llm::global::set_provider(Arc::new(
+                crate::agent_assist::llm::mock::MockProvider,
+            ));
+            tracing::info!("agent-assist LLM provider: mock");
+        }
+        Some("openai") => {
+            let base = config
+                .llm_base_url
+                .clone()
+                .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+            let model = config
+                .llm_model
+                .clone()
+                .unwrap_or_else(|| "gpt-4o-mini".to_string());
+            let display = format!("openai-compat:{model}");
+            let provider = crate::agent_assist::llm::openai::OpenAiCompatible::new(
+                display.clone(),
+                base.clone(),
+                config.llm_api_key.clone(),
+                model,
+                Duration::from_secs(config.llm_timeout_secs.max(1)),
+            );
+            crate::agent_assist::llm::global::set_provider(Arc::new(provider));
+            tracing::info!("agent-assist LLM provider: {display} via {base}");
+        }
+        Some(other) => {
+            tracing::warn!(
+                "Unknown agent-assist LLM provider `{other}`; disabling. \
+                 Set FREEQ_LLM_PROVIDER to one of: openai, mock, none."
+            );
+            crate::agent_assist::llm::global::clear_provider();
+        }
+    }
+}
+
 pub struct Server {
     config: ServerConfig,
     resolver: DidResolver,
@@ -793,6 +850,11 @@ impl Server {
 
     /// Build SharedState, opening the database and loading persisted data.
     fn build_state(&self) -> Result<Arc<SharedState>> {
+        // Install the agent-assist LLM provider (idempotent; no-op if
+        // not configured). Lives in a process-wide slot rather than
+        // SharedState so existing constructors don't need to change.
+        install_llm_provider(&self.config);
+
         // Load message signing key early — it's used to derive DB encryption key
         let msg_signing_key = load_msg_signing_key(self.config.data_dir.as_deref().unwrap_or("."));
 

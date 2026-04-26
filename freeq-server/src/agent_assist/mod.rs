@@ -42,6 +42,7 @@
 
 pub mod api;
 pub mod caller;
+pub mod llm;
 pub mod recorder;
 pub mod tools;
 pub mod types;
