@@ -1541,7 +1541,7 @@ async fn client_metadata(headers: axum::http::HeaderMap) -> Json<serde_json::Val
         // remains permitted by the current client metadata. We never ask
         // for it on a fresh /authorize. Remove this entry once the PDS
         // ecosystem has fully sunset transitional scopes.
-        "scope": "atproto blob:image/* repo:app.blue.irc.media?action=create repo:app.bsky.feed.post transition:generic",
+        "scope": "atproto blob:image/* repo:blue.irc.media?action=create repo:app.bsky.feed.post transition:generic",
         "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],
         "token_endpoint_auth_method": "none",
@@ -1639,7 +1639,7 @@ fn build_client_id(web_origin: &str, redirect_uri: &str) -> String {
         // Loopback client — use http://localhost form per AT Protocol spec.
         // Same union as the production client-metadata.json (with the
         // legacy transition:generic kept for refresh-token grace period).
-        let scope = "atproto blob:image/* repo:app.blue.irc.media?action=create repo:app.bsky.feed.post transition:generic";
+        let scope = "atproto blob:image/* repo:blue.irc.media?action=create repo:app.bsky.feed.post transition:generic";
         format!(
             "http://localhost?redirect_uri={}&scope={}",
             urlencod(redirect_uri),
