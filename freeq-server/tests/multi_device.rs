@@ -210,3 +210,397 @@ async fn guest_cannot_claim_did_owned_nick() {
 
     h1.quit(None).await.ok();
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// LEAVE-CHANNEL ADVERSARIAL: cross-device + case + persistence
+// ═══════════════════════════════════════════════════════════════════
+//
+// Real user-reported bug: "I constantly have problems with not being
+// able to leave channels. Channel list is not consistent across
+// web/iOS." These tests probe the persistence layer + multi-device
+// behaviour where local optimistic state and the server's auto-rejoin
+// DB can diverge.
+
+/// Start a server and return its address + the SQLite path it persists to,
+/// so tests can read user_channels rows directly to verify what the next
+/// reconnect would auto-rejoin.
+async fn start_with_db_path(key: &PrivateKey) -> (std::net::SocketAddr, String, tokio::task::JoinHandle<anyhow::Result<()>>) {
+    let doc = did::make_test_did_document(DID, &key.public_key_multibase());
+    let mut docs = HashMap::new();
+    docs.insert(DID.to_string(), doc);
+    let resolver = DidResolver::static_map(docs);
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let db_path = tmp.path().to_str().unwrap().to_string();
+    std::mem::forget(tmp);
+    let config = freeq_server::config::ServerConfig {
+        listen_addr: "127.0.0.1:0".to_string(),
+        server_name: "test-leave".to_string(),
+        challenge_timeout_secs: 60,
+        db_path: Some(db_path.clone()),
+        ..Default::default()
+    };
+    let (addr, handle) = freeq_server::server::Server::with_resolver(config, resolver)
+        .start().await.unwrap();
+    (addr, db_path, handle)
+}
+
+/// Read the persisted auto-rejoin channels for a DID.
+fn db_user_channels(db_path: &str, did: &str) -> Vec<String> {
+    let conn = rusqlite::Connection::open(db_path).expect("open db");
+    let mut stmt = conn.prepare("SELECT channel FROM user_channels WHERE did = ?1").unwrap();
+    let rows = stmt
+        .query_map(rusqlite::params![did], |row| row.get::<_, String>(0))
+        .unwrap();
+    rows.filter_map(|r| r.ok()).collect()
+}
+
+// ───────────────────────────────────────────────────────────────────
+// ADVERSARIAL #1: solo part → DB cleared, reconnect does not rejoin
+// (Sanity baseline — should already pass.)
+// ───────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn solo_part_clears_db_and_reconnect_does_not_rejoin() {
+    let key = PrivateKey::generate_ed25519();
+    let key1 = PrivateKey::ed25519_from_bytes(&key.secret_bytes()).unwrap();
+    let (addr, db_path, _h) = start_with_db_path(&key).await;
+
+    let (h1, mut rx1) = connect_as_did(addr, "leaver", key1).await;
+    wait_auth(&mut rx1).await;
+    wait_registered(&mut rx1).await;
+    h1.join("#leaveme").await.unwrap();
+    wait_event(&mut rx1, |e| matches!(e, Event::Joined { channel, .. } if channel == "#leaveme"), "Joined").await;
+
+    // DB should now have the channel.
+    let before = db_user_channels(&db_path, DID);
+    assert!(before.iter().any(|c| c == "#leaveme"),
+        "after JOIN the DB must persist the channel for auto-rejoin, got {before:?}");
+
+    h1.raw("PART #leaveme").await.unwrap();
+    wait_event(&mut rx1, |e| matches!(e, Event::Parted { channel, .. } if channel == "#leaveme"), "Parted").await;
+
+    // DB must be empty for this DID/channel after PART.
+    let after = db_user_channels(&db_path, DID);
+    assert!(!after.iter().any(|c| c == "#leaveme"),
+        "after PART the DB must remove the channel so the next reconnect doesn't rejoin, got {after:?}");
+
+    h1.quit(None).await.ok();
+}
+
+// ───────────────────────────────────────────────────────────────────
+// ADVERSARIAL #2: PART is case-insensitive vs JOIN
+// JOIN #FREEQ then PART #freeq must actually leave.
+// ───────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn case_insensitive_part_leaves_channel() {
+    let key = PrivateKey::generate_ed25519();
+    let key1 = PrivateKey::ed25519_from_bytes(&key.secret_bytes()).unwrap();
+    let (addr, db_path, _h) = start_with_db_path(&key).await;
+
+    let (h1, mut rx1) = connect_as_did(addr, "casechk", key1).await;
+    wait_auth(&mut rx1).await;
+    wait_registered(&mut rx1).await;
+    h1.raw("JOIN #FREEQ").await.unwrap();
+    wait_event(&mut rx1, |e| matches!(e, Event::Joined { channel, .. } if channel.eq_ignore_ascii_case("#FREEQ")), "Joined").await;
+
+    // PART with the lower-case form — should still leave.
+    h1.raw("PART #freeq").await.unwrap();
+    wait_event(&mut rx1, |e| matches!(e, Event::Parted { channel, .. } if channel.eq_ignore_ascii_case("#freeq")), "Parted").await;
+
+    // DB must be empty: regardless of how the channel was stored, a part
+    // for the same channel under any casing should clear the auto-rejoin
+    // entry. Otherwise the user's next reconnect silently puts them back.
+    let after = db_user_channels(&db_path, DID);
+    assert!(after.iter().all(|c| !c.eq_ignore_ascii_case("#freeq")),
+        "PART must clear user_channels regardless of channel-name casing; DB still has {after:?}");
+
+    h1.quit(None).await.ok();
+}
+
+// ───────────────────────────────────────────────────────────────────
+// ADVERSARIAL #3: multi-device part must not strand the other session
+// Two devices both in #foo. Device A parts. Device B is still in #foo
+// (correct: PART is per-session). But the DB has been cleared, which
+// means the moment B reconnects (or B's ghost expires), B can never
+// auto-rejoin a channel it never explicitly left.
+//
+// This is the "channel list inconsistent across web/iOS" failure mode
+// a user reports when they leave on one device and the channel
+// reappears or disappears unexpectedly on the other.
+// ───────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn multi_device_part_keeps_db_for_other_session() {
+    let key = PrivateKey::generate_ed25519();
+    let key1 = PrivateKey::ed25519_from_bytes(&key.secret_bytes()).unwrap();
+    let key2 = PrivateKey::ed25519_from_bytes(&key.secret_bytes()).unwrap();
+    let (addr, db_path, _h) = start_with_db_path(&key).await;
+
+    // Device A joins #shared.
+    let (h1, mut rx1) = connect_as_did(addr, "shared", key1).await;
+    wait_auth(&mut rx1).await;
+    wait_registered(&mut rx1).await;
+    h1.join("#shared").await.unwrap();
+    wait_event(&mut rx1, |e| matches!(e, Event::Joined { channel, .. } if channel == "#shared"), "A Joined").await;
+
+    // DB has #shared.
+    assert!(db_user_channels(&db_path, DID).iter().any(|c| c == "#shared"),
+        "after A's JOIN, DB must persist #shared");
+
+    // Device B (same DID) attaches — silently picks up #shared via attach_same_did.
+    let (h2, mut rx2) = connect_as_did(addr, "shared", key2).await;
+    wait_auth(&mut rx2).await;
+    wait_registered(&mut rx2).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Confirm B can talk in #shared (i.e., B is actually in the channel).
+    h2.privmsg("#shared", "B is here").await.unwrap();
+    let _ = wait_event(&mut rx1, |e| matches!(e, Event::Message { text, .. } if text == "B is here"),
+        "A receives B's message proving B is in #shared").await;
+
+    // Device A parts #shared. Per-session leave: B should still be in.
+    h1.raw("PART #shared").await.unwrap();
+    wait_event(&mut rx1, |e| matches!(e, Event::Parted { channel, .. } if channel == "#shared"), "A Parted").await;
+
+    // B is still in #shared — confirm via a fresh message round-trip.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    h2.privmsg("#shared", "B still here").await.unwrap();
+    // (We don't wait on rx1 because A parted; we just check B can still send.)
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // The bug under test: A's PART unconditionally removed (DID, #shared)
+    // from user_channels, even though B (same DID) is currently a member.
+    // If both devices later reconnect, neither will be auto-rejoined to a
+    // channel that one of them never left.
+    let after = db_user_channels(&db_path, DID);
+    assert!(after.iter().any(|c| c == "#shared"),
+        "after A parts but B is still in #shared, DB must keep the auto-rejoin entry; \
+         got {after:?} — B never explicitly left, so the next reconnect must restore #shared");
+
+    h1.quit(None).await.ok();
+    h2.quit(None).await.ok();
+}
+
+// ───────────────────────────────────────────────────────────────────
+// ADVERSARIAL #4: end-to-end — multi-device part, B's reconnect
+// should restore #room because B never explicitly left it.
+// ───────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn multi_device_part_does_not_strand_other_session_on_reconnect() {
+    let key = PrivateKey::generate_ed25519();
+    let key1 = PrivateKey::ed25519_from_bytes(&key.secret_bytes()).unwrap();
+    let key2a = PrivateKey::ed25519_from_bytes(&key.secret_bytes()).unwrap();
+    let key2b = PrivateKey::ed25519_from_bytes(&key.secret_bytes()).unwrap();
+    let (addr, _db_path, _h) = start_with_db_path(&key).await;
+
+    // A joins #room. B attaches.
+    let (h1, mut rx1) = connect_as_did(addr, "stayer", key1).await;
+    wait_auth(&mut rx1).await;
+    wait_registered(&mut rx1).await;
+    h1.join("#room").await.unwrap();
+    wait_event(&mut rx1, |e| matches!(e, Event::Joined { channel, .. } if channel == "#room"), "A Joined").await;
+
+    let (h2, mut rx2) = connect_as_did(addr, "stayer", key2a).await;
+    wait_auth(&mut rx2).await;
+    wait_registered(&mut rx2).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // A parts; B is still in.
+    h1.raw("PART #room").await.unwrap();
+    wait_event(&mut rx1, |e| matches!(e, Event::Parted { channel, .. } if channel == "#room"), "A Parted").await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // B disconnects (A still alive → no ghost mode for B).
+    h2.quit(None).await.ok();
+    drop(rx2);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // B reconnects fresh — must be auto-rejoined to #room because B
+    // never explicitly parted. Pre-fix the DB row was already nuked
+    // by A's PART, so this would silently drop B from #room forever.
+    let (h2b, mut rx2b) = connect_as_did(addr, "stayer", key2b).await;
+    wait_auth(&mut rx2b).await;
+    wait_registered(&mut rx2b).await;
+
+    timeout(Duration::from_millis(2000), async {
+        loop {
+            match rx2b.recv().await {
+                Some(Event::Joined { channel, .. }) if channel == "#room" => return,
+                Some(_) => continue,
+                None => panic!("rx2b closed before #room rejoin"),
+            }
+        }
+    })
+    .await
+    .expect("B must be auto-rejoined to #room after reconnect — never parted from there");
+
+    h1.quit(None).await.ok();
+    h2b.quit(None).await.ok();
+}
+
+// ───────────────────────────────────────────────────────────────────
+// ADVERSARIAL #5: KICK must clear the kicked user's auto-rejoin entry.
+// Otherwise the kicked user reconnects and is silently put back in
+// the channel they were kicked from.
+// ───────────────────────────────────────────────────────────────────
+
+const DID_VICTIM: &str = "did:plc:kickvic";
+
+async fn start_with_two_dids(key_op: &PrivateKey, key_victim: &PrivateKey) -> (std::net::SocketAddr, String, tokio::task::JoinHandle<anyhow::Result<()>>) {
+    let mut docs = HashMap::new();
+    docs.insert(DID.to_string(), did::make_test_did_document(DID, &key_op.public_key_multibase()));
+    docs.insert(DID_VICTIM.to_string(), did::make_test_did_document(DID_VICTIM, &key_victim.public_key_multibase()));
+    let resolver = DidResolver::static_map(docs);
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let db_path = tmp.path().to_str().unwrap().to_string();
+    std::mem::forget(tmp);
+    let config = freeq_server::config::ServerConfig {
+        listen_addr: "127.0.0.1:0".to_string(),
+        server_name: "test-kick".to_string(),
+        challenge_timeout_secs: 60,
+        db_path: Some(db_path.clone()),
+        ..Default::default()
+    };
+    let (addr, handle) = freeq_server::server::Server::with_resolver(config, resolver)
+        .start().await.unwrap();
+    (addr, db_path, handle)
+}
+
+async fn connect_did(addr: std::net::SocketAddr, did_str: &str, nick: &str, key: PrivateKey) -> (client::ClientHandle, mpsc::Receiver<Event>) {
+    let signer: Arc<dyn ChallengeSigner> = Arc::new(KeySigner::new(did_str.to_string(), key));
+    let config = ConnectConfig {
+        server_addr: addr.to_string(),
+        nick: nick.to_string(),
+        user: nick.to_string(),
+        realname: "kick test".to_string(),
+        ..Default::default()
+    };
+    client::connect(config, Some(signer))
+}
+
+#[tokio::test]
+async fn kick_clears_victim_auto_rejoin_entry() {
+    let key_op = PrivateKey::generate_ed25519();
+    let key_op_use = PrivateKey::ed25519_from_bytes(&key_op.secret_bytes()).unwrap();
+    let key_victim = PrivateKey::generate_ed25519();
+    let key_victim_use = PrivateKey::ed25519_from_bytes(&key_victim.secret_bytes()).unwrap();
+    let (addr, db_path, _h) = start_with_two_dids(&key_op, &key_victim).await;
+
+    // Operator (founder, auto-op) joins #room.
+    let (h_op, mut rx_op) = connect_did(addr, DID, "op", key_op_use).await;
+    wait_auth(&mut rx_op).await;
+    wait_registered(&mut rx_op).await;
+    h_op.join("#room").await.unwrap();
+    wait_event(&mut rx_op, |e| matches!(e, Event::Joined { channel, .. } if channel == "#room"), "op Joined").await;
+
+    // Victim joins.
+    let (h_v, mut rx_v) = connect_did(addr, DID_VICTIM, "victim", key_victim_use).await;
+    wait_auth(&mut rx_v).await;
+    wait_registered(&mut rx_v).await;
+    h_v.join("#room").await.unwrap();
+    wait_event(&mut rx_v, |e| matches!(e, Event::Joined { channel, .. } if channel == "#room"), "victim Joined").await;
+
+    // Sanity: victim's auto-rejoin DB row exists.
+    assert!(db_user_channels(&db_path, DID_VICTIM).iter().any(|c| c == "#room"),
+        "after victim's JOIN, DB must persist #room for victim");
+
+    // Op kicks victim.
+    h_op.raw("KICK #room victim :be gone").await.unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // The bug: KICK leaves the victim's user_channels row in place, so
+    // the next time the victim reconnects, the server silently auto-rejoins
+    // them to the channel they were just kicked from.
+    let after = db_user_channels(&db_path, DID_VICTIM);
+    assert!(!after.iter().any(|c| c == "#room"),
+        "KICK must clear the victim's user_channels row; got {after:?} — \
+         otherwise the victim's next reconnect silently restores #room and the kick is undone");
+
+    h_op.quit(None).await.ok();
+    h_v.quit(None).await.ok();
+}
+
+// ───────────────────────────────────────────────────────────────────
+// ADVERSARIAL #6: PART on a channel where the SERVER thinks the user
+// isn't currently a member, but the DB still has it for auto-rejoin.
+//
+// User scenario: device A (web) joined #foo while device B (iOS) was
+// offline. B comes online, gets attach_same_did → B is in #foo. Now
+// A disconnects (ghost mode). B is still in #foo. Long enough that
+// A's ghost expired. Now B's view of "channels I'm in" matches
+// reality. User PARTs on B. With current behaviour we always run PART
+// through the in-memory check; this test confirms the typical multi-
+// device flow at least leaves both the in-memory channel and DB in a
+// consistent state — i.e. PART from B clears the DB row when B was
+// the only remaining session.
+// ───────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn part_after_other_session_quit_clears_db() {
+    let key = PrivateKey::generate_ed25519();
+    let key1 = PrivateKey::ed25519_from_bytes(&key.secret_bytes()).unwrap();
+    let key2 = PrivateKey::ed25519_from_bytes(&key.secret_bytes()).unwrap();
+    let (addr, db_path, _h) = start_with_db_path(&key).await;
+
+    // A joins, B attaches.
+    let (h1, mut rx1) = connect_as_did(addr, "soloparter", key1).await;
+    wait_auth(&mut rx1).await;
+    wait_registered(&mut rx1).await;
+    h1.join("#solo").await.unwrap();
+    wait_event(&mut rx1, |e| matches!(e, Event::Joined { channel, .. } if channel == "#solo"), "A Joined").await;
+
+    let (h2, mut rx2) = connect_as_did(addr, "soloparter", key2).await;
+    wait_auth(&mut rx2).await;
+    wait_registered(&mut rx2).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // A disconnects; B is the only session left and still in #solo.
+    h1.quit(None).await.ok();
+    drop(rx1);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(db_user_channels(&db_path, DID).iter().any(|c| c == "#solo"),
+        "after A's QUIT (ghost mode preserves channels) DB must still have #solo");
+
+    // B parts #solo. Now no session for DID is in #solo → DB must clear.
+    h2.raw("PART #solo").await.unwrap();
+    wait_event(&mut rx2, |e| matches!(e, Event::Parted { channel, .. } if channel == "#solo"), "B Parted").await;
+    let after = db_user_channels(&db_path, DID);
+    assert!(!after.iter().any(|c| c == "#solo"),
+        "PART by the last remaining session must clear DB; got {after:?}");
+
+    h2.quit(None).await.ok();
+}
+
+// ───────────────────────────────────────────────────────────────────
+// ADVERSARIAL #7: JOIN then PART then JOIN — DB and in-memory must
+// stay consistent across the round trip. (Probe for INSERT-OR-IGNORE
+// vs DELETE timing bugs.)
+// ───────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn rapid_join_part_join_keeps_db_consistent() {
+    let key = PrivateKey::generate_ed25519();
+    let key1 = PrivateKey::ed25519_from_bytes(&key.secret_bytes()).unwrap();
+    let (addr, db_path, _h) = start_with_db_path(&key).await;
+
+    let (h1, mut rx1) = connect_as_did(addr, "rapid", key1).await;
+    wait_auth(&mut rx1).await;
+    wait_registered(&mut rx1).await;
+
+    h1.join("#x").await.unwrap();
+    wait_event(&mut rx1, |e| matches!(e, Event::Joined { channel, .. } if channel == "#x"), "Joined1").await;
+    h1.raw("PART #x").await.unwrap();
+    wait_event(&mut rx1, |e| matches!(e, Event::Parted { channel, .. } if channel == "#x"), "Parted").await;
+    h1.join("#x").await.unwrap();
+    wait_event(&mut rx1, |e| matches!(e, Event::Joined { channel, .. } if channel == "#x"), "Joined2").await;
+
+    let final_db = db_user_channels(&db_path, DID);
+    assert!(final_db.iter().any(|c| c == "#x"),
+        "after JOIN-PART-JOIN the DB must reflect #x as joined; got {final_db:?}");
+    assert_eq!(final_db.iter().filter(|c| c.as_str() == "#x").count(), 1,
+        "DB must not contain duplicate rows after JOIN-PART-JOIN; got {final_db:?}");
+
+    h1.quit(None).await.ok();
+}

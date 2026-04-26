@@ -1256,6 +1256,30 @@ pub(super) fn handle_kick(
                     ch.halfops.remove(&target_session);
                 }
             }
+
+            // Clear the victim's auto-rejoin entry — same per-DID rule as
+            // PART. Otherwise the kicked user reconnects and the server
+            // silently puts them right back in the channel they were
+            // kicked from. Skip the clear if another session for that DID
+            // is still a member (multi-device: only this device was kicked).
+            let victim_did = state.session_dids.lock().get(&target_session).cloned();
+            if let Some(did) = victim_did {
+                let other_session_still_member = {
+                    let did_sessions = state.did_sessions.lock();
+                    let channels = state.channels.lock();
+                    match (did_sessions.get(&did), channels.get(channel)) {
+                        (Some(sessions), Some(ch)) => sessions
+                            .iter()
+                            .any(|sid| sid != &target_session && ch.members.contains(sid)),
+                        _ => false,
+                    }
+                };
+                if !other_session_still_member {
+                    let did_owned = did.clone();
+                    let channel_owned = channel.to_string();
+                    state.with_db(|db| db.remove_user_channel(&did_owned, &channel_owned));
+                }
+            }
         }
 
         ChannelTarget::Remote(_rm) => {
@@ -1653,11 +1677,28 @@ pub(super) fn handle_part(
 
     // NOTE: Presence is NOT in CRDT (avoids ghost users on crash)
 
-    // Remove from auto-rejoin list
+    // Remove from auto-rejoin list — but only when no OTHER session for this
+    // DID is still a member of the channel. Otherwise the user has another
+    // device that never PARTed, and clearing the row would silently make
+    // that channel non-restorable on the next reconnect (the cross-device
+    // "I left on web but iOS keeps showing it / can't get rid of it"
+    // failure mode).
     if let Some(ref did) = conn.authenticated_did {
-        let did_owned = did.clone();
-        let channel_owned = channel.to_string();
-        state.with_db(|db| db.remove_user_channel(&did_owned, &channel_owned));
+        let other_session_still_member = {
+            let did_sessions = state.did_sessions.lock();
+            let channels = state.channels.lock();
+            match (did_sessions.get(did), channels.get(channel)) {
+                (Some(sessions), Some(ch)) => sessions
+                    .iter()
+                    .any(|sid| sid != session_id && ch.members.contains(sid)),
+                _ => false,
+            }
+        };
+        if !other_session_still_member {
+            let did_owned = did.clone();
+            let channel_owned = channel.to_string();
+            state.with_db(|db| db.remove_user_channel(&did_owned, &channel_owned));
+        }
     }
 
     // Broadcast PART to S2S peers
