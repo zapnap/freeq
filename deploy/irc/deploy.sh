@@ -16,10 +16,13 @@ cp "$REPO_ROOT/Cargo.lock" "$TMPDIR/"
 cp -r "$REPO_ROOT/freeq-sdk" "$TMPDIR/"
 cp -r "$REPO_ROOT/freeq-server" "$TMPDIR/"
 
-# Create minimal freeq-tui stub (needed for workspace but not built)
-mkdir -p "$TMPDIR/freeq-tui/src"
-cp "$REPO_ROOT/freeq-tui/Cargo.toml" "$TMPDIR/freeq-tui/"
-echo "fn main() {}" > "$TMPDIR/freeq-tui/src/main.rs"
+# Cargo needs every workspace member referenced by Cargo.toml to exist on
+# disk, even if cargo-build only compiles freeq-server. Copy the whole
+# source tree for the rest — cargo will skip them since they're not deps
+# of `--package freeq-server`. (Mirror of deploy/staging/deploy.sh.)
+for dir in freeq-tui freeq-auth-broker freeq-bots freeq-bot-id freeq-sdk-ffi freeq-windows-core freeq-av-client; do
+    [ -d "$REPO_ROOT/$dir" ] && cp -r "$REPO_ROOT/$dir" "$TMPDIR/"
+done
 
 # Miren app config
 mkdir -p "$TMPDIR/.miren"
@@ -37,6 +40,10 @@ EOF
 
 # Remove any nested .miren dirs
 rm -rf "$TMPDIR/freeq-server/.miren"
+
+# Copy the local Dockerfile so Miren uses it instead of falling back to a
+# cargo buildpack that expects a binary named after the app (freeq-irc).
+cp "$SCRIPT_DIR/Dockerfile" "$TMPDIR/Dockerfile.miren"
 
 cd "$TMPDIR"
 echo "Deploying from $TMPDIR..."

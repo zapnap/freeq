@@ -2,9 +2,16 @@ FROM rust:1.89-slim AS builder
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
+# Workspace members referenced by Cargo.toml — cargo must resolve them all
+# even when only building one. The deploy script copies whichever exist.
 COPY freeq-sdk/ freeq-sdk/
 COPY freeq-server/ freeq-server/
 COPY freeq-tui/ freeq-tui/
+COPY freeq-auth-broker/ freeq-auth-broker/
+COPY freeq-bots/ freeq-bots/
+COPY freeq-bot-id/ freeq-bot-id/
+COPY freeq-sdk-ffi/ freeq-sdk-ffi/
+COPY freeq-windows-core/ freeq-windows-core/
 RUN cargo build --release --package freeq-server
 
 FROM debian:bookworm-slim
