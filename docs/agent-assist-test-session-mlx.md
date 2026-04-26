@@ -1,10 +1,10 @@
 # Agent Assistance Interface — Test Session
 
-**Started:** 2026-04-26T02:29:47Z
+**Started:** 2026-04-26T03:41:31Z
 
 **Server:** `http://127.0.0.1:8085`
 
-**LLM provider:** `openai` — model `llama-3.3-70b-versatile` at `https://api.groq.com/openai/v1`
+**LLM provider:** `openai` — model `mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit` at `http://127.0.0.1:8080/v1`
 
 This transcript records every request and response in order. Each case
 states the intent, the wire request, the wire response, and what to
@@ -93,7 +93,7 @@ Content-Type: application/json
 ```json
 {
   "ok": true,
-  "request_id": "req_1777170587ab40",
+  "request_id": "req_17771748920670",
   "diagnosis": {
     "code": "CONFIG_OK",
     "summary": "Client configuration looks compatible with current server expectations.",
@@ -135,7 +135,7 @@ Content-Type: application/json
 ```json
 {
   "ok": false,
-  "request_id": "req_17771705875460",
+  "request_id": "req_1777174892e548",
   "diagnosis": {
     "code": "CONFIG_HAS_WARNINGS",
     "summary": "Client configuration has 4 compatibility warning(s).",
@@ -201,7 +201,7 @@ Content-Type: application/json
 ```json
 {
   "ok": false,
-  "request_id": "req_177717058729b8",
+  "request_id": "req_1777174892cde8",
   "diagnosis": {
     "code": "CONFIG_HAS_WARNINGS",
     "summary": "Client configuration has 1 compatibility warning(s).",
@@ -252,7 +252,7 @@ Content-Type: application/json
 ```json
 {
   "ok": false,
-  "request_id": "req_17771705879190",
+  "request_id": "req_17771748922ef0",
   "diagnosis": {
     "code": "DIAGNOSE_MESSAGE_ORDERING_REQUIRES_MEMBERSHIP",
     "summary": "You must be a member of the channel to inspect its message ordering.",
@@ -297,7 +297,7 @@ Content-Type: application/json
 ```json
 {
   "ok": false,
-  "request_id": "req_177717058710d8",
+  "request_id": "req_1777174892e4c8",
   "diagnosis": {
     "code": "DIAGNOSE_SYNC_SELF_ONLY",
     "summary": "Only the account owner (or a server operator) may diagnose this account's sync state.",
@@ -341,7 +341,7 @@ Content-Type: application/json
 ```json
 {
   "ok": false,
-  "request_id": "req_177717058736b8",
+  "request_id": "req_1777174892b448",
   "diagnosis": {
     "code": "DIAGNOSE_MESSAGE_ORDERING_REQUIRES_MEMBERSHIP",
     "summary": "You must be a member of the channel to inspect its message ordering.",
@@ -358,10 +358,10 @@ Content-Type: application/json
   ],
   "followups": [],
   "classification": {
-    "provider": "openai-compat:llama-3.3-70b-versatile",
+    "provider": "openai-compat:mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
     "tool": "diagnose_message_ordering",
     "confidence": "high",
-    "summary": "The user is reporting that messages are displaying out of order in the #freeq-dev channel after reconnecting."
+    "summary": "User is reporting that after reconnect, messages are displayed in the wrong order in #freeq-dev, with msg_1205 appearing before msg_1204."
   }
 }
 ```
@@ -391,7 +391,7 @@ Content-Type: application/json
 ```json
 {
   "ok": false,
-  "request_id": "req_17771705887578",
+  "request_id": "req_17771748933130",
   "diagnosis": {
     "code": "CONFIG_HAS_WARNINGS",
     "summary": "Client configuration has 4 compatibility warning(s).",
@@ -420,10 +420,10 @@ Content-Type: application/json
   "redactions": [],
   "followups": [],
   "classification": {
-    "provider": "openai-compat:llama-3.3-70b-versatile",
+    "provider": "openai-compat:mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
     "tool": "validate_client_config",
     "confidence": "high",
-    "summary": "The user is asking to validate their TUI client configuration against the server's expectations."
+    "summary": "The user wants to validate their TUI client's configuration against server expectations."
   }
 }
 ```
@@ -453,7 +453,7 @@ Content-Type: application/json
 ```json
 {
   "ok": false,
-  "request_id": "req_177717058997f8",
+  "request_id": "req_17771748956548",
   "diagnosis": {
     "code": "DIAGNOSE_SYNC_SELF_ONLY",
     "summary": "Only the account owner (or a server operator) may diagnose this account's sync state.",
@@ -470,10 +470,9 @@ Content-Type: application/json
   ],
   "followups": [],
   "classification": {
-    "provider": "openai-compat:llama-3.3-70b-versatile",
+    "provider": "openai-compat:mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
     "tool": "diagnose_sync",
-    "confidence": "high",
-    "summary": "The user is inquiring about the server state for their account after experiencing missing messages in a specific channel."
+    "confidence": "high"
   }
 }
 ```
@@ -503,7 +502,7 @@ Content-Type: application/json
 ```json
 {
   "ok": false,
-  "request_id": "req_17771705893d48",
+  "request_id": "req_17771748965478",
   "diagnosis": {
     "code": "INTENT_UNCLEAR",
     "summary": "Could not classify the request into a known tool (model could not classify). The available structured tools are listed below — try calling one directly.",
@@ -531,7 +530,7 @@ Content-Type: application/json
   "redactions": [],
   "followups": [],
   "classification": {
-    "provider": "openai-compat:llama-3.3-70b-versatile",
+    "provider": "openai-compat:mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
     "confidence": "low",
     "summary": "model could not classify"
   }
@@ -563,7 +562,7 @@ Content-Type: application/json
 ```json
 {
   "ok": false,
-  "request_id": "req_177717058992d0",
+  "request_id": "req_1777174896c628",
   "diagnosis": {
     "code": "INTENT_UNCLEAR",
     "summary": "Could not classify the request into a known tool (model could not classify). The available structured tools are listed below — try calling one directly.",
@@ -591,7 +590,7 @@ Content-Type: application/json
   "redactions": [],
   "followups": [],
   "classification": {
-    "provider": "openai-compat:llama-3.3-70b-versatile",
+    "provider": "openai-compat:mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
     "confidence": "low",
     "summary": "model could not classify"
   }
@@ -623,7 +622,7 @@ Content-Type: application/json
 ```json
 {
   "ok": false,
-  "request_id": "req_177717059074e0",
+  "request_id": "req_17771748978e10",
   "diagnosis": {
     "code": "MESSAGE_TOO_LARGE",
     "summary": "Message exceeds the 16 KB limit for free-form classification.",
@@ -667,7 +666,7 @@ Content-Type: application/json
 ```json
 {
   "ok": false,
-  "request_id": "req_1777170590c278",
+  "request_id": "req_17771748973710",
   "diagnosis": {
     "code": "DIAGNOSE_MESSAGE_ORDERING_REQUIRES_MEMBERSHIP",
     "summary": "You must be a member of the channel to inspect its message ordering.",
@@ -684,10 +683,10 @@ Content-Type: application/json
   ],
   "followups": [],
   "classification": {
-    "provider": "openai-compat:llama-3.3-70b-versatile",
+    "provider": "openai-compat:mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
     "tool": "diagnose_message_ordering",
     "confidence": "high",
-    "summary": "The user reports that messages are displaying out of order in the #ops channel."
+    "summary": "User reports that message msg_42 appears above msg_41 in channel #ops, indicating incorrect message ordering."
   }
 }
 ```
@@ -710,7 +709,7 @@ Content-Type: application/json
 ```json
 {
   "ok": false,
-  "request_id": "req_17771705905050",
+  "request_id": "req_17771748984c70",
   "diagnosis": {
     "code": "DIAGNOSE_MESSAGE_ORDERING_REQUIRES_MEMBERSHIP",
     "summary": "You must be a member of the channel to inspect its message ordering.",
@@ -727,10 +726,10 @@ Content-Type: application/json
   ],
   "followups": [],
   "classification": {
-    "provider": "openai-compat:llama-3.3-70b-versatile",
+    "provider": "openai-compat:mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
     "tool": "diagnose_message_ordering",
     "confidence": "high",
-    "summary": "The user is asking why two messages are in the wrong order in the #ops channel."
+    "summary": "User is asking why two messages (msg_42 and msg_41) appear in reverse order in the #ops channel."
   }
 }
 ```
@@ -753,7 +752,7 @@ Content-Type: application/json
 ```json
 {
   "ok": false,
-  "request_id": "req_1777170590be48",
+  "request_id": "req_17771748994170",
   "diagnosis": {
     "code": "DIAGNOSE_MESSAGE_ORDERING_REQUIRES_MEMBERSHIP",
     "summary": "You must be a member of the channel to inspect its message ordering.",
@@ -770,10 +769,10 @@ Content-Type: application/json
   ],
   "followups": [],
   "classification": {
-    "provider": "openai-compat:llama-3.3-70b-versatile",
+    "provider": "openai-compat:mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
     "tool": "diagnose_message_ordering",
     "confidence": "high",
-    "summary": "The user is reporting a timeline ordering bug in the #ops channel with messages msg_42 and msg_41."
+    "summary": "User reports timeline ordering issue with messages msg_42 and msg_41 in channel #ops."
   }
 }
 ```
@@ -783,7 +782,7 @@ Content-Type: application/json
 
 ## Run footer
 
-**Finished:** 2026-04-26T02:29:51Z
+**Finished:** 2026-04-26T03:41:40Z
 
 **Cases run:** 13
 
@@ -792,128 +791,21 @@ To re-run: `./scripts/test-agent-assist.sh` (server must be live on `127.0.0.1:8
 
 ## Server-side audit log
 
-Lines emitted to the `agent_assist::audit` tracing target during this run. Every request is recorded with its diagnosis code and the LLM provider used (where applicable).
+Lines emitted to the `agent_assist::audit` tracing target during this run.
 
 ```log
-2026-04-26T02:29:47.929709Z  INFO agent_assist::audit: agent assistance request tool="validate_client_config" request_id="req_1777170587ab40" caller_did="anonymous" caller_level=Public ok=true code=CONFIG_OK
-2026-04-26T02:29:47.943750Z  INFO agent_assist::audit: agent assistance request tool="validate_client_config" request_id="req_17771705875460" caller_did="anonymous" caller_level=Public ok=false code=CONFIG_HAS_WARNINGS
-2026-04-26T02:29:47.958155Z  INFO agent_assist::audit: agent assistance request tool="validate_client_config" request_id="req_177717058729b8" caller_did="anonymous" caller_level=Public ok=false code=CONFIG_HAS_WARNINGS
-2026-04-26T02:29:47.971685Z  INFO agent_assist::audit: agent assistance request tool="diagnose_message_ordering" request_id="req_17771705879190" caller_did="anonymous" caller_level=Public ok=false code=DIAGNOSE_MESSAGE_ORDERING_REQUIRES_MEMBERSHIP
-2026-04-26T02:29:47.985213Z  INFO agent_assist::audit: agent assistance request tool="diagnose_sync" request_id="req_177717058710d8" caller_did="anonymous" caller_level=Public ok=false code=DIAGNOSE_SYNC_SELF_ONLY
-2026-04-26T02:29:48.613367Z  INFO agent_assist::audit: agent assistance request (free-form) tool="session" request_id="req_177717058736b8" caller_did="anonymous" caller_level=Public ok=false code=DIAGNOSE_MESSAGE_ORDERING_REQUIRES_MEMBERSHIP llm_provider="openai-compat:llama-3.3-70b-versatile"
-2026-04-26T02:29:49.213734Z  INFO agent_assist::audit: agent assistance request (free-form) tool="session" request_id="req_17771705887578" caller_did="anonymous" caller_level=Public ok=false code=CONFIG_HAS_WARNINGS llm_provider="openai-compat:llama-3.3-70b-versatile"
-2026-04-26T02:29:49.623231Z  INFO agent_assist::audit: agent assistance request (free-form) tool="session" request_id="req_177717058997f8" caller_did="anonymous" caller_level=Public ok=false code=DIAGNOSE_SYNC_SELF_ONLY llm_provider="openai-compat:llama-3.3-70b-versatile"
-2026-04-26T02:29:49.839255Z  INFO agent_assist::audit: agent assistance request (free-form) tool="session" request_id="req_17771705893d48" caller_did="anonymous" caller_level=Public ok=false code=INTENT_UNCLEAR llm_provider="openai-compat:llama-3.3-70b-versatile"
-2026-04-26T02:29:50.270653Z  INFO agent_assist::audit: agent assistance request (free-form) tool="session" request_id="req_177717058992d0" caller_did="anonymous" caller_level=Public ok=false code=INTENT_UNCLEAR llm_provider="openai-compat:llama-3.3-70b-versatile"
-2026-04-26T02:29:50.321490Z  INFO agent_assist::audit: agent assistance request tool="session" request_id="req_177717059074e0" caller_did="anonymous" caller_level=Public ok=false code=MESSAGE_TOO_LARGE
-2026-04-26T02:29:50.647701Z  INFO agent_assist::audit: agent assistance request (free-form) tool="session" request_id="req_1777170590c278" caller_did="anonymous" caller_level=Public ok=false code=DIAGNOSE_MESSAGE_ORDERING_REQUIRES_MEMBERSHIP llm_provider="openai-compat:llama-3.3-70b-versatile"
-2026-04-26T02:29:50.974741Z  INFO agent_assist::audit: agent assistance request (free-form) tool="session" request_id="req_17771705905050" caller_did="anonymous" caller_level=Public ok=false code=DIAGNOSE_MESSAGE_ORDERING_REQUIRES_MEMBERSHIP llm_provider="openai-compat:llama-3.3-70b-versatile"
-2026-04-26T02:29:51.364844Z  INFO agent_assist::audit: agent assistance request (free-form) tool="session" request_id="req_1777170590be48" caller_did="anonymous" caller_level=Public ok=false code=DIAGNOSE_MESSAGE_ORDERING_REQUIRES_MEMBERSHIP llm_provider="openai-compat:llama-3.3-70b-versatile"
+2026-04-26T03:41:32.015364Z  INFO agent_assist::audit: agent assistance request tool="validate_client_config" request_id="req_17771748920670" caller_did="anonymous" caller_level=Public ok=true code=CONFIG_OK
+2026-04-26T03:41:32.028837Z  INFO agent_assist::audit: agent assistance request tool="validate_client_config" request_id="req_1777174892e548" caller_did="anonymous" caller_level=Public ok=false code=CONFIG_HAS_WARNINGS
+2026-04-26T03:41:32.041542Z  INFO agent_assist::audit: agent assistance request tool="validate_client_config" request_id="req_1777174892cde8" caller_did="anonymous" caller_level=Public ok=false code=CONFIG_HAS_WARNINGS
+2026-04-26T03:41:32.053900Z  INFO agent_assist::audit: agent assistance request tool="diagnose_message_ordering" request_id="req_17771748922ef0" caller_did="anonymous" caller_level=Public ok=false code=DIAGNOSE_MESSAGE_ORDERING_REQUIRES_MEMBERSHIP
+2026-04-26T03:41:32.066385Z  INFO agent_assist::audit: agent assistance request tool="diagnose_sync" request_id="req_1777174892e4c8" caller_did="anonymous" caller_level=Public ok=false code=DIAGNOSE_SYNC_SELF_ONLY
+2026-04-26T03:41:33.931578Z  INFO agent_assist::audit: agent assistance request (free-form) tool="session" request_id="req_1777174892b448" caller_did="anonymous" caller_level=Public ok=false code=DIAGNOSE_MESSAGE_ORDERING_REQUIRES_MEMBERSHIP llm_provider="openai-compat:mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit"
+2026-04-26T03:41:35.329197Z  INFO agent_assist::audit: agent assistance request (free-form) tool="session" request_id="req_17771748933130" caller_did="anonymous" caller_level=Public ok=false code=CONFIG_HAS_WARNINGS llm_provider="openai-compat:mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit"
+2026-04-26T03:41:36.071365Z  INFO agent_assist::audit: agent assistance request (free-form) tool="session" request_id="req_17771748956548" caller_did="anonymous" caller_level=Public ok=false code=DIAGNOSE_SYNC_SELF_ONLY llm_provider="openai-compat:mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit"
+2026-04-26T03:41:36.636450Z  INFO agent_assist::audit: agent assistance request (free-form) tool="session" request_id="req_17771748965478" caller_did="anonymous" caller_level=Public ok=false code=INTENT_UNCLEAR llm_provider="openai-compat:mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit"
+2026-04-26T03:41:37.134900Z  INFO agent_assist::audit: agent assistance request (free-form) tool="session" request_id="req_1777174896c628" caller_did="anonymous" caller_level=Public ok=false code=INTENT_UNCLEAR llm_provider="openai-compat:mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit"
+2026-04-26T03:41:37.169583Z  INFO agent_assist::audit: agent assistance request tool="session" request_id="req_17771748978e10" caller_did="anonymous" caller_level=Public ok=false code=MESSAGE_TOO_LARGE
+2026-04-26T03:41:38.142371Z  INFO agent_assist::audit: agent assistance request (free-form) tool="session" request_id="req_17771748973710" caller_did="anonymous" caller_level=Public ok=false code=DIAGNOSE_MESSAGE_ORDERING_REQUIRES_MEMBERSHIP llm_provider="openai-compat:mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit"
+2026-04-26T03:41:39.141294Z  INFO agent_assist::audit: agent assistance request (free-form) tool="session" request_id="req_17771748984c70" caller_did="anonymous" caller_level=Public ok=false code=DIAGNOSE_MESSAGE_ORDERING_REQUIRES_MEMBERSHIP llm_provider="openai-compat:mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit"
+2026-04-26T03:41:40.077940Z  INFO agent_assist::audit: agent assistance request (free-form) tool="session" request_id="req_17771748994170" caller_did="anonymous" caller_level=Public ok=false code=DIAGNOSE_MESSAGE_ORDERING_REQUIRES_MEMBERSHIP llm_provider="openai-compat:mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit"
 ```
-
-
-# Appendix: cross-model comparison (Groq vs local MLX)
-
-The same harness was run a second time after pointing `FREEQ_LLM_BASE_URL`
-at the local MLX server (an OpenAI-compatible inference daemon already
-running on `127.0.0.1:8080`). Only one env var changed; no code changed.
-Same Rust binary, same routing layer, same deterministic tools.
-
-Full second transcript: [`agent-assist-test-session-mlx.md`](./agent-assist-test-session-mlx.md).
-
-## Setup
-
-| | Hosted | Local |
-|---|---|---|
-| Provider env | `openai` (compat) | `openai` (compat) |
-| Endpoint | `https://api.groq.com/openai/v1` | `http://127.0.0.1:8080/v1` |
-| Model | `llama-3.3-70b-versatile` | `mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit` |
-| Quant | bf16 (Groq) | 4-bit (MLX) |
-| Wall-clock for 14 requests | ~3.5 s | ~9 s |
-
-## Routing decisions agree on every LLM-routed case
-
-```
-case   groq                              mlx                               match
-----   ----                              ----                              -----
-7      diagnose_message_ordering         diagnose_message_ordering         ✓
-8      validate_client_config            validate_client_config            ✓
-9      diagnose_sync                     diagnose_sync                     ✓
-10     (null — off-topic)                (null — off-topic)                ✓
-11     (null — injection refused)        (null — injection refused)        ✓
-13a    diagnose_message_ordering         diagnose_message_ordering         ✓
-13b    diagnose_message_ordering         diagnose_message_ordering         ✓
-13c    diagnose_message_ordering         diagnose_message_ordering         ✓
-```
-
-8/8. The pluggable abstraction is doing its job — the diagnosis a
-caller sees doesn't depend on which model classified the request,
-because the model is a fuzzy adapter and the deterministic tool is
-the source of truth.
-
-## Where the models differ
-
-The deterministic `diagnosis` block is byte-identical between runs
-(same tools, same inputs after extraction, same outputs). The only
-thing that meaningfully differs is the optional `classification.summary`
-field — the model's own one-line description of what it understood.
-
-**Case 7 — model summarises differently:**
-
-> **groq:** "The user is reporting that messages are displaying out
-> of order in the #freeq-dev channel after reconnecting."
->
-> **mlx:**  "User is reporting that after reconnect, messages are
-> displayed in the wrong order in #freeq-dev, with msg_1205
-> appearing before msg_1204."
-
-Qwen3-Coder is a code-specialised model and tends to include the
-specific identifiers it extracted; the llama-3.3-70b summary is
-slightly more terse.
-
-**Case 9 — Qwen3-Coder omits the optional summary:**
-
-```json
-"classification": {
-  "provider": "openai-compat:mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
-  "tool": "diagnose_sync",
-  "confidence": "high"
-}
-```
-
-The tool/confidence are present; `summary` is absent. The Rust struct
-uses `#[serde(default)] Option<String>` for `summary` so an omitted
-field deserialises to `None` and the response handler skips it on
-serialisation. Models that emit the field get it round-tripped;
-models that don't, don't break anything.
-
-**Case 8 — args extraction byte-identical:**
-
-Both models extracted the same `client_name` + `supports` map from the
-prose-wrapped JSON blob, so the deterministic validator's `safe_facts`
-list is identical between runs (same warnings, same suggested fixes).
-
-## Latency
-
-A 30B local model on Apple Silicon (4-bit quantised) finished the
-14-request batch in ~2.5× the wall-clock of Groq's hosted llama-3.3-70b.
-For agent-assistance routing — where an interactive agent is OK
-waiting a second per call — both are comfortably usable. Groq is the
-right choice for high-throughput automation; the local MLX run shows
-the system stays usable when there's no network or you don't want to
-pay per token.
-
-## What this proves about the design
-
-- **Pluggable LLM abstraction works in practice, not just in tests.**
-  One env-var swap moved every classification call from a hosted
-  endpoint to a local inference daemon, with zero code change and
-  identical routing outcomes.
-- **The deterministic tool layer absorbs model variance.** Regardless
-  of which model wrote the JSON, the caller sees the same
-  diagnoses, safe_facts, and suggested_fixes. That's the whole point
-  of structured tools instead of free-form chat.
-- **Models that drop optional fields don't break anything.** Defensive
-  serde defaults (`#[serde(default)]`, `skip_serializing_if`) keep
-  the wire shape stable across model implementations.
-
