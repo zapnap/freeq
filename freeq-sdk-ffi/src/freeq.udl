@@ -81,6 +81,9 @@ interface FreeqClient {
     void set_platform(string platform);
 
     [Throws=FreeqError]
+    void set_websocket_url(string url);
+
+    [Throws=FreeqError]
     void connect();
 
     void disconnect();

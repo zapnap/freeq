@@ -3,7 +3,27 @@
 use once_cell::sync::Lazy;
 use std::sync::{Arc, Mutex};
 
+/// Install a tracing subscriber that writes to stderr the first time anyone
+/// touches the SDK. iOS captures this in the Xcode console pane while
+/// debugging — invaluable for triaging connect-path hangs. Idempotent: a
+/// second install is a no-op.
+fn install_tracing_subscriber() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("freeq_sdk=debug,freeq_sdk_ffi=debug,info")),
+            )
+            .with_writer(std::io::stderr)
+            .with_target(true)
+            .with_ansi(false)
+            .try_init();
+    });
+}
+
 static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
+    install_tracing_subscriber();
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(2)
@@ -164,6 +184,10 @@ pub struct FreeqClient {
     connected: Arc<Mutex<bool>>,
     web_token: Arc<Mutex<Option<String>>>,
     platform: Arc<Mutex<String>>,
+    /// WebSocket URL (`wss://host/path`). When set, connect() prefers this
+    /// transport over raw TCP — used by iOS so it can reach the server on
+    /// networks that block port 6667.
+    websocket_url: Arc<Mutex<Option<String>>>,
 }
 
 impl FreeqClient {
@@ -180,6 +204,7 @@ impl FreeqClient {
             connected: Arc::new(Mutex::new(false)),
             web_token: Arc::new(Mutex::new(None)),
             platform: Arc::new(Mutex::new("freeq ios".to_string())),
+            websocket_url: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -194,13 +219,29 @@ impl FreeqClient {
         Ok(())
     }
 
+    /// Set the WebSocket URL the next `connect()` should use. Pass an empty
+    /// string to clear and fall back to the configured `server` (TCP).
+    pub fn set_websocket_url(&self, url: String) -> Result<(), FreeqError> {
+        let trimmed = url.trim();
+        let value = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        };
+        tracing::debug!("[FFI] set_websocket_url: {:?}", value);
+        *self.websocket_url.lock().unwrap() = value;
+        Ok(())
+    }
+
     pub fn connect(&self) -> Result<(), FreeqError> {
         let nick = self.nick.lock().unwrap().clone();
         let web_token = self.web_token.lock().unwrap().take();
+        let websocket_url = self.websocket_url.lock().unwrap().clone();
         tracing::debug!(
-            "[FFI] connect: nick={}, web_token={}",
+            "[FFI] connect: nick={}, web_token={}, ws={}",
             nick,
-            web_token.is_some()
+            web_token.is_some(),
+            websocket_url.is_some()
         );
         let config = freeq_sdk::client::ConnectConfig {
             server_addr: self.server.clone(),
@@ -210,6 +251,7 @@ impl FreeqClient {
             tls: self.server.contains(":6697") || self.server.contains(":443"),
             tls_insecure: false,
             web_token,
+            websocket_url,
         };
 
         // MUST call connect() inside the runtime — it uses tokio::spawn internally.

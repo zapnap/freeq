@@ -62,6 +62,11 @@ pub struct ConnectConfig {
     pub tls_insecure: bool,
     /// One-time web-token for SASL WEB-TOKEN authentication (from OAuth flow).
     pub web_token: Option<String>,
+    /// WebSocket URL — `wss://host/path` or `ws://host/path`. When set, the
+    /// SDK connects via WebSocket instead of raw TCP. Mirrors the JS
+    /// client's transport (`freeq-sdk-js/src/transport.ts`) so iOS can
+    /// reach the server on networks that block port 6667.
+    pub websocket_url: Option<String>,
 }
 
 impl Default for ConnectConfig {
@@ -74,6 +79,7 @@ impl Default for ConnectConfig {
             tls: false,
             tls_insecure: false,
             web_token: None,
+            websocket_url: None,
         }
     }
 }
@@ -671,15 +677,47 @@ impl ClientHandle {
 /// This is done **before** the TUI starts so that connection errors
 /// are visible on stderr. Returns the established connection for
 /// `connect_with_stream` to use.
+/// Cap any single transport-layer connect attempt at this duration. The
+/// underlying OS TCP timeout on iOS/macOS is ~75s — that's the cliff that
+/// produces the user-visible "Connecting…" hang on networks that drop the
+/// SYN to port 6667 silently. 10s is long enough for any real network and
+/// short enough to fall through to a WebSocket fallback in time.
+pub const TRANSPORT_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 pub async fn establish_connection(config: &ConnectConfig) -> Result<EstablishedConnection> {
+    // If a WebSocket URL is configured, prefer that transport. iOS sets this
+    // so it can reach the server on networks that block port 6667.
+    #[cfg(feature = "websocket")]
+    if let Some(ref ws_url) = config.websocket_url {
+        return establish_ws_connection(ws_url).await;
+    }
+
     // Auto-detect TLS from port if not explicitly set
     let use_tls = config.tls || config.server_addr.ends_with(":6697");
     let mode = if use_tls { "TLS" } else { "plain" };
 
     tracing::debug!("Resolving {}...", config.server_addr);
-    let tcp = TcpStream::connect(&config.server_addr)
-        .await
-        .map_err(|e| anyhow::anyhow!("TCP connect to {} failed: {e}", config.server_addr))?;
+    let tcp = match tokio::time::timeout(
+        TRANSPORT_CONNECT_TIMEOUT,
+        TcpStream::connect(&config.server_addr),
+    )
+    .await
+    {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
+            return Err(anyhow::anyhow!(
+                "TCP connect to {} failed: {e}",
+                config.server_addr
+            ))
+        }
+        Err(_) => {
+            return Err(anyhow::anyhow!(
+                "TCP connect to {} timed out after {}s",
+                config.server_addr,
+                TRANSPORT_CONNECT_TIMEOUT.as_secs()
+            ))
+        }
+    };
     tracing::debug!("TCP connected to {} ({mode})", config.server_addr);
 
     if use_tls {
@@ -716,6 +754,13 @@ pub enum EstablishedConnection {
     /// Iroh QUIC connection (already encrypted, NAT-traversing).
     #[cfg(feature = "iroh-transport")]
     Iroh(tokio::io::DuplexStream),
+    /// WebSocket connection (encrypted via TLS for `wss://`). The client
+    /// speaks raw IRC line bytes; the bridge tasks frame them as
+    /// WebSocket text messages and unframe inbound messages identically.
+    /// Reuses the same `DuplexStream` plumbing as Iroh so `run_irc()`
+    /// doesn't need to know which transport it's running over.
+    #[cfg(feature = "websocket")]
+    WebSocket(tokio::io::DuplexStream),
 }
 
 /// ALPN for IRC-over-iroh (must match server).
@@ -937,6 +982,20 @@ pub fn connect_with_stream(
                 )
                 .await
             }
+            #[cfg(feature = "websocket")]
+            EstablishedConnection::WebSocket(duplex) => {
+                let (reader, writer) = tokio::io::split(duplex);
+                run_irc(
+                    BufReader::new(reader),
+                    writer,
+                    &config,
+                    signer,
+                    event_tx.clone(),
+                    cmd_rx,
+                    echo_reg,
+                )
+                .await
+            }
         };
         if let Err(e) = result {
             let _ = event_tx
@@ -1034,7 +1093,135 @@ async fn run_client(
             )
             .await
         }
+        #[cfg(feature = "websocket")]
+        EstablishedConnection::WebSocket(duplex) => {
+            let (reader, writer) = tokio::io::split(duplex);
+            run_irc(
+                BufReader::new(reader),
+                writer,
+                &config,
+                signer,
+                event_tx,
+                cmd_rx,
+                echo_registry,
+            )
+            .await
+        }
     }
+}
+
+/// Connect via WebSocket and bridge the framed transport to a `DuplexStream`
+/// that `run_irc()` reads/writes as plain IRC bytes.
+///
+/// The server-side counterpart is `freeq-server/src/web.rs::bridge_ws()`,
+/// which terminates the WebSocket and feeds bytes into the same IRC handler
+/// it uses for raw TCP. Here we do the mirror: outbound bytes from
+/// `run_irc` are wrapped in `WsMessage::Text`, and inbound text/binary
+/// frames are written back into the duplex.
+#[cfg(feature = "websocket")]
+async fn establish_ws_connection(url: &str) -> Result<EstablishedConnection> {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+    // The rustls default crypto provider must be installed before any TLS
+    // handshake — including the one tokio-tungstenite does internally for
+    // wss://. The TCP-with-TLS path covers this in `rustls_default_config()`,
+    // but the WebSocket path bypasses that helper, so the install was being
+    // skipped and the wss handshake silently hung.
+    install_crypto_provider();
+
+    tracing::debug!("Connecting WebSocket {url}...");
+    let connect_result = tokio::time::timeout(
+        TRANSPORT_CONNECT_TIMEOUT,
+        tokio_tungstenite::connect_async(url),
+    )
+    .await;
+    let (ws, _resp) = match connect_result {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(e)) => {
+            return Err(anyhow::anyhow!("WebSocket connect to {url} failed: {e}"))
+        }
+        Err(_) => {
+            return Err(anyhow::anyhow!(
+                "WebSocket connect to {url} timed out after {}s",
+                TRANSPORT_CONNECT_TIMEOUT.as_secs()
+            ))
+        }
+    };
+    tracing::debug!("WebSocket connected: {url}");
+
+    // 64 KiB matches the JS transport's bufferedAmount threshold and gives
+    // both directions room without unbounded memory.
+    let (client_side, bridge_side) = tokio::io::duplex(65_536);
+    let (mut bridge_reader, mut bridge_writer) = tokio::io::split(bridge_side);
+    let (mut ws_writer, mut ws_reader) = ws.split();
+
+    // Wire framing: mirror what `freeq-server/src/web.rs::bridge_ws()` does
+    // on the server side. One WebSocket text frame == one IRC line without
+    // its trailing CRLF. The server appends `\r\n` on receive and strips it
+    // before forwarding outbound frames; we do the symmetric thing here.
+
+    // Outbound: read CRLF-terminated lines from `run_irc`'s write half and
+    // emit each as its own WS text frame (without the CRLF).
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; 4096];
+        let mut line_buf: Vec<u8> = Vec::new();
+        loop {
+            match bridge_reader.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    line_buf.extend_from_slice(&buf[..n]);
+                    while let Some(pos) = line_buf.windows(2).position(|w| w == b"\r\n") {
+                        let line = String::from_utf8_lossy(&line_buf[..pos]).into_owned();
+                        line_buf.drain(..pos + 2);
+                        if ws_writer
+                            .send(WsMessage::Text(line.into()))
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        let _ = ws_writer.close().await;
+    });
+
+    // Inbound: each WS text frame is one IRC line without CRLF — append
+    // CRLF before writing into the duplex so `run_irc`'s line reader sees
+    // properly terminated lines and doesn't hang waiting for `\n`.
+    tokio::spawn(async move {
+        while let Some(msg) = ws_reader.next().await {
+            match msg {
+                Ok(WsMessage::Text(t)) => {
+                    let mut bytes = t.as_bytes().to_vec();
+                    bytes.extend_from_slice(b"\r\n");
+                    if bridge_writer.write_all(&bytes).await.is_err() {
+                        break;
+                    }
+                }
+                Ok(WsMessage::Binary(b)) => {
+                    let mut bytes = b.to_vec();
+                    if !bytes.ends_with(b"\r\n") {
+                        bytes.extend_from_slice(b"\r\n");
+                    }
+                    if bridge_writer.write_all(&bytes).await.is_err() {
+                        break;
+                    }
+                }
+                Ok(WsMessage::Ping(_)) | Ok(WsMessage::Pong(_)) => continue,
+                Ok(WsMessage::Close(_)) => break,
+                Ok(WsMessage::Frame(_)) => continue,
+                Err(_) => break,
+            }
+        }
+        let _ = bridge_writer.shutdown().await;
+    });
+
+    Ok(EstablishedConnection::WebSocket(client_side))
 }
 
 fn install_crypto_provider() {

@@ -679,6 +679,8 @@ public protocol FreeqClientProtocol: AnyObject, Sendable {
     
     func setWebToken(token: String) throws 
     
+    func setWebsocketUrl(url: String) throws 
+    
 }
 open class FreeqClient: FreeqClientProtocol, @unchecked Sendable {
     fileprivate let pointer: UnsafeMutableRawPointer!
@@ -822,6 +824,13 @@ open func setTopic(channel: String, topic: String)throws   {try rustCallWithErro
 open func setWebToken(token: String)throws   {try rustCallWithError(FfiConverterTypeFreeqError_lift) {
     uniffi_freeq_sdk_ffi_fn_method_freeqclient_set_web_token(self.uniffiClonePointer(),
         FfiConverterString.lower(token),$0
+    )
+}
+}
+    
+open func setWebsocketUrl(url: String)throws   {try rustCallWithError(FfiConverterTypeFreeqError_lift) {
+    uniffi_freeq_sdk_ffi_fn_method_freeqclient_set_websocket_url(self.uniffiClonePointer(),
+        FfiConverterString.lower(url),$0
     )
 }
 }
@@ -3020,6 +3029,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_freeq_sdk_ffi_checksum_method_freeqclient_set_web_token() != 47149) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_freeq_sdk_ffi_checksum_method_freeqclient_set_websocket_url() != 40379) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_freeq_sdk_ffi_checksum_method_freeqe2ee_decrypt_message() != 42382) {
