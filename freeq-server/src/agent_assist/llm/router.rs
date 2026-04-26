@@ -199,11 +199,15 @@ fn execute_intent(
     provider_name: &str,
     input: SessionInput<'_>,
 ) -> RoutedResponse {
+    // Scrub model-controlled fields before they reach the wire.
+    // `tool` and `summary` come straight from the LLM and could carry
+    // control chars or HTML if the model is hostile / jailbroken.
+    // CTF-03 regression test pins this for the unknown-tool path.
     let classification = Classification {
         provider: provider_name.to_string(),
-        tool: Some(intent.tool.clone()),
+        tool: Some(scrub_for_display(&intent.tool)),
         confidence: intent.confidence,
-        summary: intent.summary.clone(),
+        summary: intent.summary.as_deref().map(scrub_for_display),
     };
 
     let bundle = match run_tool(&intent.tool, intent.args, input.caller, input.state) {
@@ -267,8 +271,30 @@ fn run_tool(
                 .map_err(|e| format!("invalid args for explain_message_routing: {e}"))?;
             Ok(tools::explain_message_routing(&typed))
         }
-        other => Err(format!("unknown tool name: `{other}`")),
+        other => Err(format!("unknown tool name: `{}`", scrub_for_display(other))),
     }
+}
+
+/// Strip control chars and HTML-significant characters from a string
+/// before embedding it into a [`FactBundle`]. Used wherever
+/// model-controlled or attacker-controlled identifiers reach the
+/// response body, so that downstream renderers (UIs, logs, future
+/// HTML views) don't reflect raw payloads.
+///
+/// CTF-03 regression test pins this for the unknown-tool-name path
+/// in `bad_args_bundle`.
+pub(crate) fn scrub_for_display(s: &str) -> String {
+    const MAX: usize = 96;
+    s.chars()
+        .take(MAX)
+        .map(|c| {
+            if c.is_control() || matches!(c, '<' | '>' | '`' | '\\' | '\'' | '"') {
+                '?'
+            } else {
+                c
+            }
+        })
+        .collect()
 }
 
 // ─── Fallback bundles ────────────────────────────────────────────────────
@@ -352,17 +378,24 @@ fn not_configured_response() -> RoutedResponse {
 }
 
 fn bad_args_bundle(tool: &str, reason: &str) -> FactBundle {
+    // Both `tool` and `reason` come from the LLM's classification or
+    // from this router's own error formatting (which itself includes
+    // the model-supplied tool name). A jailbroken or hostile model
+    // could try to slip control chars or HTML into either. Scrub
+    // before reflection.
+    let safe_tool = scrub_for_display(tool);
+    let safe_reason = scrub_for_display(reason);
     FactBundle {
         ok: false,
         code: "BAD_TOOL_ARGS".into(),
         summary: format!(
-            "The classifier picked `{tool}` but the args it produced did not match the \
+            "The classifier picked `{safe_tool}` but the args it produced did not match the \
              tool's input schema."
         ),
         confidence: Confidence::High,
-        safe_facts: vec![format!("Decoder error: {reason}")],
+        safe_facts: vec![format!("Decoder error: {safe_reason}")],
         suggested_fixes: vec![SuggestedFix {
-            summary: format!("Call POST /agent/tools/{tool} directly with valid JSON."),
+            summary: format!("Call POST /agent/tools/{safe_tool} directly with valid JSON."),
             details: None,
         }],
         redactions: vec![],

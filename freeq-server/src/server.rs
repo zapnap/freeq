@@ -1785,6 +1785,17 @@ impl Server {
     /// Start the server with both IRC and HTTP listeners.
     /// Returns (irc_addr, http_addr, handle).
     pub async fn start_with_web(self) -> Result<(SocketAddr, SocketAddr, JoinHandle<Result<()>>)> {
+        let (irc, web, handle, _state) = self.start_with_web_state().await?;
+        Ok((irc, web, handle))
+    }
+
+    /// Test-helper variant of [`start_with_web`] that also yields the
+    /// `Arc<SharedState>` so integration tests can inject fixture data
+    /// (channels, sessions, messages) before driving the public HTTP
+    /// surface. Production callers should use [`start_with_web`].
+    pub async fn start_with_web_state(
+        self,
+    ) -> Result<(SocketAddr, SocketAddr, JoinHandle<Result<()>>, Arc<SharedState>)> {
         let listener = TcpListener::bind(&self.config.listen_addr).await?;
         let irc_addr = listener.local_addr()?;
 
@@ -1792,6 +1803,7 @@ impl Server {
         let web_addr = web_listener.local_addr()?;
 
         let state = self.build_state()?;
+        let state_for_caller = Arc::clone(&state);
 
         let web_state = Arc::clone(&state);
         let router = crate::web::router(web_state);
@@ -1818,7 +1830,7 @@ impl Server {
             }
         });
 
-        Ok((irc_addr, web_addr, handle))
+        Ok((irc_addr, web_addr, handle, state_for_caller))
     }
 
     /// Start the server with both plain and TLS listeners for testing.

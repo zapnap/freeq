@@ -71,6 +71,13 @@ pub fn system_prompt(ctx: &ClassificationContext) -> String {
 ///
 /// The truncation cap (4 KB) is independent of the LLM's context size;
 /// it limits how much caller-controlled text we'll relay.
+///
+/// SECURITY: any literal `</user_message>` substring inside the caller
+/// content is rewritten to `<\/user_message>` (a benign placeholder
+/// the LLM treats as data, not a closing delimiter). Without this
+/// rewrite a caller could close the envelope and inject text that the
+/// model interprets as out-of-envelope (system-prompt-style)
+/// instructions. CTF-02 regression test pins this.
 pub fn user_envelope(message: &str) -> String {
     const MAX_CHARS: usize = 4096;
     let truncated: String = message.chars().take(MAX_CHARS).collect();
@@ -81,7 +88,13 @@ pub fn user_envelope(message: &str) -> String {
         .chars()
         .map(|c| if c.is_control() && c != '\n' { ' ' } else { c })
         .collect();
-    format!("<user_message>\n{cleaned}\n</user_message>")
+    // Rewrite any literal close-tag inside the caller content, both
+    // case-sensitively and with a leading angle-slash variant the LLM
+    // would still recognise as XML-ish.
+    let safe = cleaned
+        .replace("</user_message>", "<\\/user_message>")
+        .replace("</USER_MESSAGE>", "<\\/USER_MESSAGE>");
+    format!("<user_message>\n{safe}\n</user_message>")
 }
 
 #[cfg(test)]

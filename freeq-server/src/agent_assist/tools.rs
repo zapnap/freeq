@@ -223,12 +223,18 @@ pub fn diagnose_message_ordering(
 
     // Resolve each msgid to (server_sequence, server_time). Missing
     // ones are reported but not fatal.
+    //
+    // SECURITY: lookup is **channel-scoped** via `get_message_by_msgid`
+    // — NOT `find_message_by_msgid`, which is cross-channel and would
+    // let a member of `#public` probe a msgid from `#private` and have
+    // its server_sequence + timestamp echoed back here. The CTF-01
+    // regression test pins this.
     let lookups: Vec<(String, Option<(i64, u64)>)> = input
         .message_ids
         .iter()
         .map(|id| {
             let row = state
-                .with_db(|db| db.find_message_by_msgid(id))
+                .with_db(|db| db.get_message_by_msgid(&channel, id))
                 .flatten();
             (id.clone(), row.map(|r| (r.id, r.timestamp)))
         })
@@ -1015,8 +1021,13 @@ pub fn replay_missed_messages(
 
     let limit = input.limit.unwrap_or(1000).min(2000);
     // Anchor: look up the since_msgid to get its timestamp.
+    //
+    // SECURITY: channel-scoped lookup. The cross-channel
+    // `find_message_by_msgid` would leak the server_sequence and
+    // timestamp of a `#private` msgid to any caller who is a member of
+    // some other channel. CTF-01 regression test pins this.
     let anchor = state
-        .with_db(|db| db.find_message_by_msgid(&input.since_msgid))
+        .with_db(|db| db.get_message_by_msgid(&channel, &input.since_msgid))
         .flatten();
     let Some(anchor) = anchor else {
         return FactBundle {
@@ -1275,6 +1286,33 @@ pub fn predict_message_outcome(
 /// the routing footguns (self-echo, mention false-positive, encrypted,
 /// edit, delete, action). No state read.
 pub fn explain_message_routing(input: &ExplainMessageRoutingInput) -> FactBundle {
+    // Refuse oversized lines outright. RFC 1459 §2.3 caps IRC lines
+    // at 512 bytes; IRCv3 message-tags raise that to ~8KiB in practice.
+    // The HTTP body limit is 12 MB, which would otherwise let a caller
+    // hand the SDK parser megabytes of pathological input. CTF-04 pins
+    // this — the bundle is the same shape the parse-failure branch
+    // returns so callers don't need a special-case.
+    const MAX_WIRE_BYTES: usize = 8 * 1024;
+    if input.wire_line.len() > MAX_WIRE_BYTES {
+        return FactBundle {
+            ok: false,
+            code: "WIRE_LINE_TOO_LARGE".into(),
+            summary: format!(
+                "wire_line is {} bytes; the maximum accepted is {MAX_WIRE_BYTES} bytes \
+                 (well above the 512-byte IRC line limit). Refusing to parse.",
+                input.wire_line.len()
+            ),
+            confidence: Confidence::High,
+            safe_facts: vec![],
+            suggested_fixes: vec![SuggestedFix {
+                summary: "Send only one IRC line at a time, with no line above ~8 KiB.".into(),
+                details: None,
+            }],
+            redactions: vec![],
+            followups: vec![],
+            min_disclosure: DisclosureLevel::Public,
+        };
+    }
     let line = input.wire_line.trim_end_matches(['\r', '\n']);
     let Some(msg) = freeq_sdk::irc::Message::parse(line) else {
         return FactBundle {
