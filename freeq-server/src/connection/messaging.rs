@@ -89,15 +89,99 @@ pub(super) fn handle_tagmsg(
     // ── Coordination event storage (+freeq.at/event) ──
     if let Some(event_type) = tags.get("+freeq.at/event") {
         if let Some(ref did) = conn.authenticated_did {
+            // SECURITY (CTF-20): rate-limit event storage per session.
+            // Previously TAGMSG had no flood protection, so an
+            // authenticated user could spam hundreds of event TAGMSGs
+            // per second to fill the DB. Cap at 5 events / 2s, same
+            // window as PRIVMSG flood protection.
+            //
+            // Reuses msg_timestamps under a session-derived synthetic
+            // key so this counter is independent of the PRIVMSG one.
+            {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                let key = format!("event:{}", conn.id);
+                let mut ts_map = state.msg_timestamps.lock();
+                let ts = ts_map.entry(key).or_default();
+                ts.retain(|&t| now.saturating_sub(t) < 2000);
+                if ts.len() >= 5 {
+                    let nick = conn.nick_or_star();
+                    let reply = Message::from_server(
+                        &state.server_name,
+                        "FAIL",
+                        vec![
+                            "TAGMSG",
+                            "RATE_LIMITED",
+                            "event-storage TAGMSG flood: 5 events / 2s per session",
+                        ],
+                    );
+                    if let Some(tx) = state.connections.lock().get(&conn.id) {
+                        let _ = tx.try_send(format!("{reply}\r\n"));
+                    }
+                    tracing::warn!(
+                        actor = %did, nick = %nick,
+                        "Rate-limited coordination-event TAGMSG flood",
+                    );
+                    return;
+                }
+                ts.push(now);
+            }
+            // SECURITY (CTF-20 cont.): also cap payload size before
+            // decoding + storing. The 8 KB IRC line cap already bounds
+            // each payload, but the explicit cap here is defense in
+            // depth — and lets us return a clean FAIL instead of a
+            // silent truncation.
+            const MAX_PAYLOAD_BYTES: usize = 64 * 1024;
+            let raw_payload = tags
+                .get("+freeq.at/payload")
+                .map(String::as_str)
+                .unwrap_or("");
+            if raw_payload.len() > MAX_PAYLOAD_BYTES {
+                let nick = conn.nick_or_star();
+                let reply = Message::from_server(
+                    &state.server_name,
+                    "FAIL",
+                    vec![
+                        "TAGMSG",
+                        "PAYLOAD_TOO_LARGE",
+                        &format!(
+                            "+freeq.at/payload exceeds {MAX_PAYLOAD_BYTES} bytes; got {}",
+                            raw_payload.len()
+                        ),
+                    ],
+                );
+                if let Some(tx) = state.connections.lock().get(&conn.id) {
+                    let _ = tx.try_send(format!("{reply}\r\n"));
+                }
+                tracing::warn!(
+                    actor = %did, nick = %nick, size = raw_payload.len(),
+                    "Refused oversized coordination event payload",
+                );
+                return;
+            }
             let event_id = tags.get("msgid")
                 .cloned()
                 .unwrap_or_else(|| crate::msgid::generate());
             let ref_id = tags.get("+freeq.at/ref")
                 .or_else(|| tags.get("+freeq.at/task-id"))
                 .cloned();
-            let payload = tags.get("+freeq.at/payload")
-                .map(|p| urlencoding::decode(p).unwrap_or_else(|_| p.clone().into()).into_owned())
-                .unwrap_or_else(|| "{}".to_string());
+            let payload = if raw_payload.is_empty() {
+                "{}".to_string()
+            } else {
+                urlencoding::decode(raw_payload)
+                    .unwrap_or_else(|_| raw_payload.into())
+                    .into_owned()
+            };
+            // Re-check after decoding: percent-decoding can expand by
+            // up to ~3x if the input was all `%xx`, so even a
+            // payload that fit before decoding may exceed the cap
+            // after.
+            if payload.len() > MAX_PAYLOAD_BYTES {
+                tracing::warn!(actor = %did, "Decoded payload exceeded cap; dropping");
+                return;
+            }
             let signature = tags.get("+freeq.at/sig").cloned();
             let now = chrono::Utc::now().timestamp();
             let event = crate::db::CoordinationEventRow {
@@ -424,18 +508,28 @@ pub(super) fn handle_privmsg(
                     }
                     return;
                 }
-                // +E: encrypted-only mode
-                if ch.encrypted_only && !tags.contains_key("+encrypted") {
+                // +E: encrypted-only mode.
+                //
+                // SECURITY (CTF-21): require BOTH the `+encrypted` tag
+                // AND an actual ENC1-prefixed ciphertext body. Previously
+                // only the tag was checked, so a malicious client could
+                // send `@+encrypted PRIVMSG #ch :leaked plaintext` and
+                // any logger or non-aware viewer would see the body in
+                // the clear.
+                let has_tag = tags.contains_key("+encrypted");
+                let has_enc1 = text.starts_with("ENC1:") && text.len() > 5;
+                if ch.encrypted_only && !(has_tag && has_enc1) {
                     if !is_notice {
                         let nick = conn.nick_or_star();
+                        let reason = if !has_tag {
+                            "Cannot send to channel (+E) — messages must carry the +encrypted tag"
+                        } else {
+                            "Cannot send to channel (+E) — body must be ENC1-prefixed ciphertext"
+                        };
                         let reply = Message::from_server(
                             &state.server_name,
                             irc::ERR_CANNOTSENDTOCHAN,
-                            vec![
-                                nick,
-                                target,
-                                "Cannot send to channel (+E) — messages must be encrypted",
-                            ],
+                            vec![nick, target, reason],
                         );
                         if let Some(tx) = state.connections.lock().get(&conn.id) {
                             let _ = tx.try_send(format!("{reply}\r\n"));

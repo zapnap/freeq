@@ -3420,42 +3420,55 @@ async fn api_get_keys(
 /// called after SASL authentication when the client generates encryption keys.
 async fn api_upload_keys(
     State(state): State<Arc<crate::server::SharedState>>,
+    headers: axum::http::HeaderMap,
     axum::Json(body): axum::Json<serde_json::Value>,
 ) -> impl axum::response::IntoResponse {
     let did = body.get("did").and_then(|v| v.as_str());
     let bundle = body.get("bundle");
 
-    match (did, bundle) {
-        (Some(did), Some(bundle)) => {
-            // Verify the requester is authenticated as this DID
-            let did_is_authenticated = {
-                let session_dids = state.session_dids.lock();
-                session_dids.values().any(|d| d == did)
-            };
-            if !did_is_authenticated {
-                return (
-                    axum::http::StatusCode::FORBIDDEN,
-                    axum::Json(serde_json::json!({ "error": "DID not authenticated" })),
-                );
-            }
-            state
-                .prekey_bundles
-                .lock()
-                .insert(did.to_string(), bundle.clone());
-            // Persist to DB so bundles survive server restart
-            let bundle_json = serde_json::to_string(bundle).unwrap_or_default();
-            let did_owned = did.to_string();
-            state.with_db(|db| db.save_prekey_bundle(&did_owned, &bundle_json));
-            (
-                axum::http::StatusCode::OK,
-                axum::Json(serde_json::json!({ "ok": true })),
-            )
-        }
-        _ => (
+    let (Some(did), Some(bundle)) = (did, bundle) else {
+        return (
             axum::http::StatusCode::BAD_REQUEST,
             axum::Json(serde_json::json!({ "error": "Missing 'did' or 'bundle'" })),
-        ),
+        );
+    };
+
+    // SECURITY (CTF-19): the requester must prove they OWN the named
+    // DID, not just that the DID is logged in somewhere on this server.
+    // Previously this endpoint accepted any anonymous request as long
+    // as the named DID had any active session — letting an unauth'd
+    // attacker overwrite the victim's pre-key bundle and decrypt the
+    // victim's next DMs. Require a Bearer session id whose DID matches
+    // the body's `did`.
+    let bearer_session = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let caller_did = bearer_session.and_then(|sid| state.session_dids.lock().get(sid).cloned());
+    let owned = caller_did.as_deref() == Some(did);
+    if !owned {
+        return (
+            axum::http::StatusCode::FORBIDDEN,
+            axum::Json(serde_json::json!({
+                "error": "Pre-key upload requires Bearer auth as the named DID."
+            })),
+        );
     }
+
+    state
+        .prekey_bundles
+        .lock()
+        .insert(did.to_string(), bundle.clone());
+    // Persist to DB so bundles survive server restart
+    let bundle_json = serde_json::to_string(bundle).unwrap_or_default();
+    let did_owned = did.to_string();
+    state.with_db(|db| db.save_prekey_bundle(&did_owned, &bundle_json));
+    (
+        axum::http::StatusCode::OK,
+        axum::Json(serde_json::json!({ "ok": true })),
+    )
 }
 
 // ── Per-IP rate limiting ──────────────────────────────────────────────
