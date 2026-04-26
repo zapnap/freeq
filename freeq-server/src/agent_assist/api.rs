@@ -26,9 +26,17 @@ use std::sync::Arc;
 pub fn routes() -> Router<Arc<SharedState>> {
     Router::new()
         .route("/.well-known/agent.json", get(get_discovery))
+        // Original validators / diagnosers (batch 1).
         .route("/agent/tools/validate_client_config", post(post_validate_client_config))
         .route("/agent/tools/diagnose_message_ordering", post(post_diagnose_message_ordering))
         .route("/agent/tools/diagnose_sync", post(post_diagnose_sync))
+        // Bot-developer batch (batch 2).
+        .route("/agent/tools/inspect_my_session", post(post_inspect_my_session))
+        .route("/agent/tools/diagnose_join_failure", post(post_diagnose_join_failure))
+        .route("/agent/tools/diagnose_disconnect", post(post_diagnose_disconnect))
+        .route("/agent/tools/replay_missed_messages", post(post_replay_missed_messages))
+        .route("/agent/tools/predict_message_outcome", post(post_predict_message_outcome))
+        .route("/agent/tools/explain_message_routing", post(post_explain_message_routing))
         // Free-form router (LLM-backed). Returns LLM_NOT_CONFIGURED if
         // no provider is installed.
         .route("/agent/session", post(post_session))
@@ -40,6 +48,12 @@ const CAPABILITIES: &[&str] = &[
     "validate_client_config",
     "diagnose_message_ordering",
     "diagnose_sync",
+    "inspect_my_session",
+    "diagnose_join_failure",
+    "diagnose_disconnect",
+    "replay_missed_messages",
+    "predict_message_outcome",
+    "explain_message_routing",
     "free_form_session",
 ];
 
@@ -117,6 +131,80 @@ async fn post_diagnose_sync(
     let request_id = new_request_id();
     let bundle = tools::diagnose_sync(&input, &caller, &state);
     log_audit("diagnose_sync", &request_id, &caller, &bundle);
+    Json(envelope(request_id, bundle, &caller)).into_response()
+}
+
+// ─── Batch 2 handlers ────────────────────────────────────────────────────
+
+async fn post_inspect_my_session(
+    State(state): State<Arc<SharedState>>,
+    headers: HeaderMap,
+    Json(input): Json<InspectMySessionInput>,
+) -> impl IntoResponse {
+    let caller = caller::extract(&headers, &state);
+    let request_id = new_request_id();
+    let bundle = tools::inspect_my_session(&input, &caller, &state);
+    log_audit("inspect_my_session", &request_id, &caller, &bundle);
+    Json(envelope(request_id, bundle, &caller)).into_response()
+}
+
+async fn post_diagnose_join_failure(
+    State(state): State<Arc<SharedState>>,
+    headers: HeaderMap,
+    Json(input): Json<DiagnoseJoinFailureInput>,
+) -> impl IntoResponse {
+    let caller = caller::extract(&headers, &state);
+    let request_id = new_request_id();
+    let bundle = tools::diagnose_join_failure(&input, &caller, &state);
+    log_audit("diagnose_join_failure", &request_id, &caller, &bundle);
+    Json(envelope(request_id, bundle, &caller)).into_response()
+}
+
+async fn post_diagnose_disconnect(
+    State(state): State<Arc<SharedState>>,
+    headers: HeaderMap,
+    Json(input): Json<DiagnoseDisconnectInput>,
+) -> impl IntoResponse {
+    let caller = caller::extract(&headers, &state);
+    let request_id = new_request_id();
+    let bundle = tools::diagnose_disconnect(&input, &caller, &state);
+    log_audit("diagnose_disconnect", &request_id, &caller, &bundle);
+    Json(envelope(request_id, bundle, &caller)).into_response()
+}
+
+async fn post_replay_missed_messages(
+    State(state): State<Arc<SharedState>>,
+    headers: HeaderMap,
+    Json(input): Json<ReplayMissedMessagesInput>,
+) -> impl IntoResponse {
+    let caller = caller::extract(&headers, &state);
+    let request_id = new_request_id();
+    let bundle = tools::replay_missed_messages(&input, &caller, &state);
+    log_audit("replay_missed_messages", &request_id, &caller, &bundle);
+    Json(envelope(request_id, bundle, &caller)).into_response()
+}
+
+async fn post_predict_message_outcome(
+    State(state): State<Arc<SharedState>>,
+    headers: HeaderMap,
+    Json(input): Json<PredictMessageOutcomeInput>,
+) -> impl IntoResponse {
+    let caller = caller::extract(&headers, &state);
+    let request_id = new_request_id();
+    let bundle = tools::predict_message_outcome(&input, &caller, &state);
+    log_audit("predict_message_outcome", &request_id, &caller, &bundle);
+    Json(envelope(request_id, bundle, &caller)).into_response()
+}
+
+async fn post_explain_message_routing(
+    State(state): State<Arc<SharedState>>,
+    headers: HeaderMap,
+    Json(input): Json<ExplainMessageRoutingInput>,
+) -> impl IntoResponse {
+    let caller = caller::extract(&headers, &state);
+    let request_id = new_request_id();
+    let bundle = tools::explain_message_routing(&input);
+    log_audit("explain_message_routing", &request_id, &caller, &bundle);
     Json(envelope(request_id, bundle, &caller)).into_response()
 }
 
