@@ -324,7 +324,31 @@ async fn main() {
     let encryption_key = derive_encryption_key(&shared_secret);
     tracing::info!("Session encryption key derived from BROKER_SHARED_SECRET");
 
-    let db = rusqlite::Connection::open(&db_path).expect("Failed to open broker db");
+    // On Miren, the persistent disk is mounted async — the container can boot
+    // before the disk lease is bound. Retry the open with a bounded backoff
+    // so we don't crash-loop while waiting for the mount, but we still surface
+    // a real failure (bad path, missing perms) within ~60s.
+    let db_open_deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let mut delay = std::time::Duration::from_secs(1);
+    let db = loop {
+        match rusqlite::Connection::open(&db_path) {
+            Ok(db) => break db,
+            Err(e) if std::time::Instant::now() < db_open_deadline => {
+                tracing::warn!(
+                    db_path = %db_path,
+                    delay_secs = delay.as_secs(),
+                    error = %e,
+                    "Broker DB not openable yet — retrying (waiting for disk mount?)"
+                );
+                std::fs::create_dir_all(
+                    std::path::Path::new(&db_path).parent().unwrap_or(std::path::Path::new(".")),
+                ).ok();
+                std::thread::sleep(delay);
+                delay = (delay * 2).min(std::time::Duration::from_secs(8));
+            }
+            Err(e) => panic!("Failed to open broker db after 60s of retries: {e}"),
+        }
+    };
     init_db(&db).expect("Failed to init db");
 
     let state = Arc::new(BrokerState {
