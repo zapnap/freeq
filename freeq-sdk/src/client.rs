@@ -1165,28 +1165,37 @@ async fn establish_ws_connection(url: &str) -> Result<EstablishedConnection> {
     // Outbound: read CRLF-terminated lines from `run_irc`'s write half and
     // emit each as its own WS text frame (without the CRLF).
     tokio::spawn(async move {
+        tracing::info!("WS: outbound bridge task started");
         let mut buf = vec![0u8; 4096];
         let mut line_buf: Vec<u8> = Vec::new();
+        let mut frames_out: u64 = 0;
         loop {
             match bridge_reader.read(&mut buf).await {
-                Ok(0) => break,
+                Ok(0) => {
+                    tracing::warn!(frames_out, "WS: outbound EOF on bridge_read");
+                    break;
+                }
                 Ok(n) => {
                     line_buf.extend_from_slice(&buf[..n]);
                     while let Some(pos) = line_buf.windows(2).position(|w| w == b"\r\n") {
                         let line = String::from_utf8_lossy(&line_buf[..pos]).into_owned();
                         line_buf.drain(..pos + 2);
-                        if ws_writer
-                            .send(WsMessage::Text(line.into()))
-                            .await
-                            .is_err()
-                        {
+                        frames_out += 1;
+                        let preview: String = line.chars().take(80).collect();
+                        tracing::debug!(n = frames_out, preview = %preview, "WS: → text frame");
+                        if let Err(e) = ws_writer.send(WsMessage::Text(line.into())).await {
+                            tracing::warn!("WS: outbound send error: {e}");
                             return;
                         }
                     }
                 }
-                Err(_) => break,
+                Err(e) => {
+                    tracing::warn!("WS: bridge_read error: {e}");
+                    break;
+                }
             }
         }
+        tracing::warn!(frames_out, "WS: outbound bridge task ending");
         let _ = ws_writer.close().await;
     });
 
@@ -1194,30 +1203,40 @@ async fn establish_ws_connection(url: &str) -> Result<EstablishedConnection> {
     // CRLF before writing into the duplex so `run_irc`'s line reader sees
     // properly terminated lines and doesn't hang waiting for `\n`.
     tokio::spawn(async move {
+        tracing::info!("WS: inbound bridge task started");
+        let mut frames_in: u64 = 0;
         while let Some(msg) = ws_reader.next().await {
-            match msg {
+            let mut bytes = match msg {
                 Ok(WsMessage::Text(t)) => {
-                    let mut bytes = t.as_bytes().to_vec();
-                    bytes.extend_from_slice(b"\r\n");
-                    if bridge_writer.write_all(&bytes).await.is_err() {
-                        break;
-                    }
+                    frames_in += 1;
+                    let preview: String = t.chars().take(80).collect();
+                    tracing::debug!(n = frames_in, len = t.len(), preview = %preview, "WS: ← text frame");
+                    t.as_bytes().to_vec()
                 }
                 Ok(WsMessage::Binary(b)) => {
-                    let mut bytes = b.to_vec();
-                    if !bytes.ends_with(b"\r\n") {
-                        bytes.extend_from_slice(b"\r\n");
-                    }
-                    if bridge_writer.write_all(&bytes).await.is_err() {
-                        break;
-                    }
+                    frames_in += 1;
+                    tracing::debug!(n = frames_in, len = b.len(), "WS: ← binary frame");
+                    b.to_vec()
                 }
-                Ok(WsMessage::Ping(_)) | Ok(WsMessage::Pong(_)) => continue,
-                Ok(WsMessage::Close(_)) => break,
-                Ok(WsMessage::Frame(_)) => continue,
-                Err(_) => break,
+                Ok(WsMessage::Ping(_)) | Ok(WsMessage::Pong(_)) | Ok(WsMessage::Frame(_)) => continue,
+                Ok(WsMessage::Close(c)) => {
+                    tracing::warn!(close = ?c, "WS: ← close frame");
+                    break;
+                }
+                Err(e) => {
+                    tracing::warn!("WS: read error: {e}");
+                    break;
+                }
+            };
+            if !bytes.ends_with(b"\r\n") {
+                bytes.extend_from_slice(b"\r\n");
+            }
+            if let Err(e) = bridge_writer.write_all(&bytes).await {
+                tracing::warn!("WS: bridge_write error: {e}");
+                break;
             }
         }
+        tracing::warn!(frames_in, "WS: inbound bridge task ending");
         let _ = bridge_writer.shutdown().await;
     });
 

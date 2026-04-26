@@ -43,6 +43,13 @@ struct ChatDetailView: View {
                     .animation(.easeInOut(duration: 0.3), value: appState.connectionState)
                 }
 
+                // Voice/video call panel — pinned above the message list
+                // when an AV session is active in this channel.
+                if appState.isInCall && isChannel,
+                   appState.currentCallChannel?.lowercased() == channelName.lowercased() {
+                    CallView(channel: channelName)
+                }
+
                 if let channel = channelState {
                     ZStack {
                         MessageListView(channel: channel)
@@ -105,6 +112,20 @@ struct ChatDetailView: View {
 
             ToolbarItemGroup(placement: .topBarTrailing) {
                 if isChannel {
+                    // Voice call — green when in this call, accent when a
+                    // session is active but we haven't joined, muted otherwise.
+                    Button(action: { appState.startOrJoinVoice(channel: channelName) }) {
+                        let inThisCall = appState.isInCall
+                            && appState.currentCallChannel?.lowercased() == channelName.lowercased()
+                        let sessionActive = appState.activeAvSessions[channelName.lowercased()] != nil
+                        Image(systemName: inThisCall ? "speaker.wave.2.fill" : "speaker.wave.2")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundColor(
+                                inThisCall ? Theme.success
+                                : (sessionActive ? Theme.accent : Theme.textSecondary)
+                            )
+                    }
+
                     Button(action: { showingSearch = true }) {
                         Image(systemName: "magnifyingglass")
                             .font(.system(size: 14))
