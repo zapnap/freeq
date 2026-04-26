@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo, type KeyboardEvent, type DragEvent } from 'react';
 import { useStore } from '../store';
 import { sendMessage, sendReply, sendEdit, sendMarkdown, joinChannel, partChannel, setTopic, setMode, kickUser, inviteUser, setAway, rawCommand, sendWhois } from '../irc/client';
+import { detectStepUpRequired, requestStepUp } from '../lib/oauth-step-up';
 import { EmojiPicker, EMOJI_DATA } from './EmojiPicker';
 import { SlashCommands, getCommandCount } from './SlashCommands';
 import { FormatToolbar } from './FormatToolbar';
@@ -201,7 +202,33 @@ export function ComposeBox() {
         form.append('cross_post', 'true');
       }
 
+      const buildForm = () => {
+        const f = new FormData();
+        f.append('file', pendingUpload.file);
+        f.append('did', authDid);
+        if (activeChannel !== 'server' && activeChannel.startsWith('#')) f.append('channel', activeChannel);
+        if (text.trim()) f.append('alt', text.trim());
+        if (crossPost) f.append('cross_post', 'true');
+        return f;
+      };
+
       let resp = await fetch('/api/v1/upload', { method: 'POST', body: form });
+
+      // 403 step_up_required: the user has a Login session but hasn't
+      // granted blob upload yet. Drive the step-up popup, then retry
+      // once with a fresh form. This is the Phase 2 incremental-auth
+      // path — we never asked for blob upload at sign-in time.
+      const purpose = await detectStepUpRequired(resp);
+      if (purpose === 'blob_upload') {
+        const ok = await requestStepUp('blob_upload', authDid);
+        if (ok) {
+          resp = await fetch('/api/v1/upload', { method: 'POST', body: buildForm() });
+        } else {
+          throw new Error(
+            'Image upload needs Bluesky permission. Reopen the upload popup or close & retry.',
+          );
+        }
+      }
 
       // If session expired, try to refresh via broker and retry once
       if (resp.status === 401) {
