@@ -67,14 +67,22 @@ function logValidation(stage: string, tool: string, request: unknown, response: 
   );
 }
 
+/**
+ * Mutable holder so callTool() picks up the bearer the moment SASL
+ * succeeds — without having to thread the client into every call site.
+ * Set by main() either from `FREEQ_BEARER` (for testing) or from
+ * `client.apiBearer` once the SDK captures the API-BEARER NOTICE.
+ */
+let bearer: string | null = process.env.FREEQ_BEARER ?? null;
+
 async function callTool(
   stage: string, name: string, body: unknown
 ): Promise<Record<string, unknown> | null> {
   try {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (bearer) headers['Authorization'] = `Bearer ${bearer}`;
     const resp = await fetch(`${SERVER_HTTP}/agent/tools/${name}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      method: 'POST', headers, body: JSON.stringify(body),
     });
     const json = await resp.json() as Record<string, unknown>;
     logValidation(stage, name, body, json);
@@ -300,6 +308,23 @@ async function main() {
     console.log(`[ready] ${client.nick} on ${SERVER_WS} — channels=${CHANNELS.join(',')}`);
     // Don't announce — would be noisy and the prediction layer will
     // exercise itself on the first real reply anyway.
+  });
+
+  // Once SASL completes the SDK captures the server-emitted
+  // `NOTICE * :API-BEARER <session_id>` and exposes it as
+  // `client.apiBearer`. Mirror it into our module-level `bearer` so
+  // every subsequent callTool() goes out as the authenticated bot.
+  client.on('connectionStateChanged', (state) => {
+    if (state === 'connected') {
+      // Drain on a microtask so apiBearer has time to be set
+      // (we don't have a separate "bearer ready" event).
+      setTimeout(() => {
+        if (client.apiBearer && !bearer) {
+          bearer = client.apiBearer;
+          console.log('[auth] captured API bearer from SDK — diagnostic calls now authenticated');
+        }
+      }, 1000);
+    }
   });
 
   client.connect();

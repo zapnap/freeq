@@ -12,6 +12,11 @@ export declare class FreeqClient extends EventEmitter {
     private transport;
     private _nick;
     private _authDid;
+    /** Bearer token usable for `/agent/tools/*` HTTP calls. Populated
+     *  from the server-emitted `NOTICE * :API-BEARER <session_id>` that
+     *  fires immediately after SASL success. Bots use this to call
+     *  diagnostic tools as themselves instead of as anonymous. */
+    private _apiBearer;
     private _connectionState;
     private _registered;
     private opts;
@@ -44,6 +49,11 @@ export declare class FreeqClient extends EventEmitter {
     get nick(): string;
     /** Authenticated AT Protocol DID, or null if guest. */
     get authDid(): string | null;
+    /** Bearer token for `/agent/tools/*` HTTP calls. Set automatically
+     *  on SASL success; null while unauthenticated. Use as
+     *  `Authorization: Bearer <client.apiBearer>` to make diagnostic
+     *  calls as the same identity the IRC session is bound to. */
+    get apiBearer(): string | null;
     /** Current connection state. */
     get connectionState(): TransportState;
     /** Whether IRC registration is complete (001 received). */

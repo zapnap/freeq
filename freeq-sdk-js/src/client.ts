@@ -22,6 +22,11 @@ export class FreeqClient extends EventEmitter {
   private transport: Transport | null = null;
   private _nick = '';
   private _authDid: string | null = null;
+  /** Bearer token usable for `/agent/tools/*` HTTP calls. Populated
+   *  from the server-emitted `NOTICE * :API-BEARER <session_id>` that
+   *  fires immediately after SASL success. Bots use this to call
+   *  diagnostic tools as themselves instead of as anonymous. */
+  private _apiBearer: string | null = null;
   private _connectionState: TransportState = 'disconnected';
   private _registered = false;
   private opts: FreeqClientOptions;
@@ -70,6 +75,12 @@ export class FreeqClient extends EventEmitter {
 
   /** Authenticated AT Protocol DID, or null if guest. */
   get authDid(): string | null { return this._authDid; }
+
+  /** Bearer token for `/agent/tools/*` HTTP calls. Set automatically
+   *  on SASL success; null while unauthenticated. Use as
+   *  `Authorization: Bearer <client.apiBearer>` to make diagnostic
+   *  calls as the same identity the IRC session is bound to. */
+  get apiBearer(): string | null { return this._apiBearer; }
 
   /** Current connection state. */
   get connectionState(): TransportState { return this._connectionState; }
@@ -128,6 +139,7 @@ export class FreeqClient extends EventEmitter {
     this.transport = null;
     this._nick = '';
     this._authDid = null;
+    this._apiBearer = null;
     this._registered = false;
     this._saslFailed = false;
     this.ackedCaps.clear();
@@ -577,6 +589,7 @@ export class FreeqClient extends EventEmitter {
         const hadSaslAttempt = !!this.sasl?.token;
         this.sasl = null;
         this._authDid = null;
+        this._apiBearer = null;
         this.emit('authError', reason);
         // Mirror the wire identity to the app: did is now empty.
         this.emit('authenticated', '', reason);
@@ -813,6 +826,18 @@ export class FreeqClient extends EventEmitter {
         const noticeActorClass = (msg.tags?.['freeq.at/actor-class'] || msg.tags?.['+freeq.at/actor-class']) as Member['actorClass'] | undefined;
         if (noticeActorClass && from && (target.startsWith('#') || target.startsWith('&'))) {
           this.emit('memberJoined', target, { nick: from, actorClass: noticeActorClass });
+        }
+
+        // API bearer (sent by the server immediately after SASL success).
+        // Capture so the bot can use the same identity it just authenticated
+        // to IRC with when calling the /agent/tools/* HTTP surface. The
+        // bearer is the bot's IRC session_id, which only the server knows;
+        // without this NOTICE there's no production path for a bot to
+        // discover its own bearer.
+        const bearerMatch = text.match(/^API-BEARER (\S+)$/);
+        if (bearerMatch) {
+          this._apiBearer = bearerMatch[1];
+          break; // suppress; do not surface to systemMessage
         }
 
         // AV ticket

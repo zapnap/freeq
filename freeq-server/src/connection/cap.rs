@@ -315,6 +315,25 @@ pub(super) async fn handle_authenticate(
                             send(state, session_id, format!("{success}\r\n"));
                             tracing::info!(%session_id, %did, nick = %nick, "SASL authentication successful");
 
+                            // Surface the API bearer for this connection so the
+                            // bot can hit /agent/tools/* with the same identity
+                            // it just authenticated to IRC with. Without this,
+                            // bots have no way to discover their own session_id
+                            // and every diagnostic call comes in as anonymous.
+                            //
+                            // Format: `NOTICE * :API-BEARER <session_id>` — chosen
+                            // so it's a single greppable line that doesn't collide
+                            // with any standard IRC numeric or NOTICE format.
+                            // Clients that don't need the bearer can ignore it
+                            // (their pre-existing notice handling will display
+                            // it as a server message; harmless).
+                            let bearer_notice = Message::from_server(
+                                server_name,
+                                "NOTICE",
+                                vec!["*", &format!("API-BEARER {session_id}")],
+                            );
+                            send(state, session_id, format!("{bearer_notice}\r\n"));
+
                             // Broadcast account-notify to shared channels
                             broadcast_account_notify(state, session_id, &nick, &did);
                         }

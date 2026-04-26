@@ -80,9 +80,50 @@ Sample output (5-second smoke run on prod):
 
 The two `*_SELF_ONLY` codes are the per-tool disclosure-filter
 denying an anonymous caller — exactly the safety enforcement we want
-to see firing. Set `FREEQ_BOT_DID=did:plc:yours` after authenticating
-and those denials become real `PREDICTED_ACCEPTED` / `JOIN_DENIED` etc.
-that the bot can act on.
+to see firing.
+
+## Unlocking the full diagnostic surface (with auth)
+
+Anonymous bots get 2 of 5 hooks (discovery + validate_client_config).
+The other 3 (`predict_message_outcome`, `diagnose_join_failure`,
+`replay_missed_messages`) are SELF_ONLY-gated.
+
+**To unlock them, the bot needs to authenticate.** When SASL
+succeeds, the server now emits a special NOTICE:
+
+```
+:irc.freeq.at NOTICE * :API-BEARER <session_id>
+```
+
+The TypeScript SDK captures this automatically and exposes it as
+`client.apiBearer`. The karma bot mirrors it into the `Authorization:
+Bearer` header on every diagnostic call after that — and the tools
+start returning real content (`PREDICTED_ACCEPTED`, `SESSION_REPORTED`,
+`CHANNEL_DOES_NOT_EXIST`, etc.) instead of `*_SELF_ONLY`.
+
+You can also set `FREEQ_BEARER` directly to short-circuit (useful for
+testing against a server where you've authenticated via another route).
+
+The auth flow is verified end-to-end in
+`freeq-server/tests/agent_assist_authenticated.rs` — 4 tests covering:
+
+- Server emits `API-BEARER` after SASL ✓
+- Anonymous baseline returns SELF_ONLY ✓
+- Authenticated bearer unlocks predict / inspect / diagnose ✓
+- Bearer is properly scoped (can't reuse to inspect a different DID) ✓
+
+### Known gap
+
+The TypeScript SDK doesn't yet implement did:key SASL (only PDS
+session/oauth flows). Until it does, a JS bot needs:
+
+- a real Bluesky account with OAuth, or
+- to run inside an already-authenticated web session and have the
+  `FREEQ_BEARER` passed in by env, or
+- a future SDK addition for did:key SASL signing.
+
+The Rust SDK (`freeq-sdk`) already supports `KeySigner` for did:key,
+so a Rust port of this bot would auth-and-validate end-to-end today.
 
 ## Design notes
 
