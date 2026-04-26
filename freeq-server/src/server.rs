@@ -809,16 +809,16 @@ fn install_llm_provider(config: &ServerConfig) {
                 .llm_model
                 .clone()
                 .unwrap_or_else(|| "gpt-4o-mini".to_string());
-            let display = format!("openai-compat:{model}");
+            let display_name = format!("openai-compat:{model}");
             let provider = crate::agent_assist::llm::openai::OpenAiCompatible::new(
-                display.clone(),
+                display_name.clone(),
                 base.clone(),
                 config.llm_api_key.clone(),
                 model,
                 Duration::from_secs(config.llm_timeout_secs.max(1)),
             );
             crate::agent_assist::llm::global::set_provider(Arc::new(provider));
-            tracing::info!("agent-assist LLM provider: {display} via {base}");
+            tracing::info!("agent-assist LLM provider: {} via {}", display_name, base);
         }
         Some(other) => {
             tracing::warn!(

@@ -26,7 +26,7 @@ use super::{
 use crate::agent_assist::tools;
 use crate::agent_assist::types::{
     Caller, Confidence, DiagnoseMessageOrderingInput, DiagnoseSyncInput, DisclosureLevel,
-    FactBundle, Followup, SuggestedFix, ValidateClientConfigInput,
+    FactBundle, SuggestedFix, ValidateClientConfigInput,
 };
 use crate::server::SharedState;
 use serde::Serialize;
@@ -323,7 +323,8 @@ mod tests {
 
     #[test]
     fn descriptors_match_runnable_tools() {
-        let names: Vec<&str> = descriptors().iter().map(|d| d.name.as_str()).collect();
+        let descriptors_vec = descriptors();
+        let names: Vec<&str> = descriptors_vec.iter().map(|d| d.name.as_str()).collect();
         for name in &names {
             // Every advertised tool must dispatch to *something* in
             // run_tool, even if to a "bad args" branch with empty

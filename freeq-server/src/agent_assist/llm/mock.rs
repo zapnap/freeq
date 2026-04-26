@@ -309,8 +309,11 @@ mod tests {
 
     #[test]
     fn extracts_msgid_ulid_form() {
-        let ids = extract_msgid_candidates("see 01HZX0000000000000000ABCD please");
-        assert_eq!(ids, vec!["01HZX0000000000000000ABCD".to_string()]);
+        // Real ULIDs are exactly 26 Crockford-base32 chars.
+        let ulid = "01HZX5MK0WJYM3MQRJSP3K1XGZ";
+        assert_eq!(ulid.len(), 26, "test ULID must be 26 chars");
+        let ids = extract_msgid_candidates(&format!("see {ulid} please"));
+        assert_eq!(ids, vec![ulid.to_string()]);
     }
 
     #[test]
