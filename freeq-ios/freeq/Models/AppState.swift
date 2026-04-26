@@ -844,8 +844,13 @@ class AppState: ObservableObject {
             }
 
             // 401 = broker token might be invalid, but could also be transient
-            // (e.g., broker DB was just recreated). Only clear after 3 consecutive 401s
-            // across separate reconnect attempts AND past the 14-day grace window.
+            // (e.g., broker DB was just recreated). Two clear paths:
+            //   - past the 14-day grace window: clear after 3 consecutive 401s
+            //   - within grace but persistent (>= 8 across reconnect cycles):
+            //     clear regardless. This covers broker DB wipes / persistent
+            //     storage rotations where every single retry is doomed and
+            //     the grace window would otherwise hold the user hostage in
+            //     "Connecting…" forever.
             if status == 401 {
                 await MainActor.run { self.consecutive401Count += 1 }
                 if attempt < 3 {
@@ -856,11 +861,13 @@ class AppState: ObservableObject {
                 let count = await MainActor.run { self.consecutive401Count }
                 let lastLogin = await MainActor.run { self.lastLoginDate }
                 let withinGrace = !canAutoClearBrokerCredentials
-                if count >= 3 && !withinGrace {
+                let escalated = count >= 8
+                let shouldClear = (count >= 3 && !withinGrace) || escalated
+                if shouldClear {
                     // Genuinely invalid — clear credentials.
                     let sinceLoginHours = lastLogin.map { Date().timeIntervalSince($0) / 3600 } ?? -1
                     authLog.error(
-                        "Clearing broker credentials: consecutive401=\(count, privacy: .public) sinceLoginHours=\(sinceLoginHours, privacy: .public) lastStatus=401"
+                        "Clearing broker credentials: consecutive401=\(count, privacy: .public) sinceLoginHours=\(sinceLoginHours, privacy: .public) lastStatus=401 escalated=\(escalated, privacy: .public)"
                     )
                     await MainActor.run {
                         self.brokerToken = nil

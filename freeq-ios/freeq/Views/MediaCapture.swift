@@ -475,28 +475,35 @@ struct AudioRecorderSheet: View {
             request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
             request.httpBody = body
 
-            do {
-                let (responseData, response) = try await URLSession.shared.data(for: request)
-                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-                if status == 200,
-                   let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
-                   let url = json["url"] as? String {
-                    await MainActor.run {
-                        let durationStr = formatDuration(recordingTime)
-                        appState.sendMessage(target: channel, text: "🎤 Voice message (\(durationStr)) \(url)")
-                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                        dismiss()
-                    }
-                } else {
-                    await MainActor.run {
-                        uploading = false
-                        self.error = "Upload failed"
-                    }
-                }
-            } catch {
+            let result = await StepUpAuth.uploadWithStepUp(
+                request: request, did: did, appState: appState
+            )
+            guard let (responseData, response) = result else {
                 await MainActor.run {
                     uploading = false
-                    self.error = error.localizedDescription
+                    self.error = "Upload failed"
+                }
+                return
+            }
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if status == 200,
+               let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
+               let url = json["url"] as? String {
+                await MainActor.run {
+                    let durationStr = formatDuration(recordingTime)
+                    appState.sendMessage(target: channel, text: "🎤 Voice message (\(durationStr)) \(url)")
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    dismiss()
+                }
+            } else if StepUpAuth.detectStepUpRequired(status: status, body: responseData) != nil {
+                await MainActor.run {
+                    uploading = false
+                    self.error = "Permission needed for upload"
+                }
+            } else {
+                await MainActor.run {
+                    uploading = false
+                    self.error = "Upload failed"
                 }
             }
         }
@@ -739,33 +746,40 @@ struct MediaPreviewSheet: View {
             request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
             request.httpBody = body
 
-            do {
-                let (responseData, response) = try await URLSession.shared.data(for: request)
-                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-                if status == 200,
-                   let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
-                   let url = json["url"] as? String {
-                    await MainActor.run {
-                        let text = caption.trimmingCharacters(in: .whitespacesAndNewlines)
-                        if text.isEmpty {
-                            appState.sendMessage(target: channel, text: url)
-                        } else {
-                            appState.sendMessage(target: channel, text: "\(url) \(text)")
-                        }
-                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                        dismiss()
-                    }
-                } else {
-                    let responseText = String(data: responseData, encoding: .utf8) ?? ""
-                    await MainActor.run {
-                        uploading = false
-                        uploadError = "Upload failed: \(responseText.prefix(80))"
-                    }
-                }
-            } catch {
+            let result = await StepUpAuth.uploadWithStepUp(
+                request: request, did: did, appState: appState
+            )
+            guard let (responseData, response) = result else {
                 await MainActor.run {
                     uploading = false
-                    uploadError = error.localizedDescription
+                    uploadError = "Upload failed"
+                }
+                return
+            }
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if status == 200,
+               let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
+               let url = json["url"] as? String {
+                await MainActor.run {
+                    let text = caption.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if text.isEmpty {
+                        appState.sendMessage(target: channel, text: url)
+                    } else {
+                        appState.sendMessage(target: channel, text: "\(url) \(text)")
+                    }
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    dismiss()
+                }
+            } else if StepUpAuth.detectStepUpRequired(status: status, body: responseData) != nil {
+                await MainActor.run {
+                    uploading = false
+                    uploadError = "Image upload needs Bluesky permission. Tap Send to retry."
+                }
+            } else {
+                let responseText = String(data: responseData, encoding: .utf8) ?? ""
+                await MainActor.run {
+                    uploading = false
+                    uploadError = "Upload failed: \(responseText.prefix(80))"
                 }
             }
         }
