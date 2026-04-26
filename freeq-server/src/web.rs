@@ -1551,6 +1551,55 @@ async fn client_metadata(headers: axum::http::HeaderMap) -> Json<serde_json::Val
 }
 
 /// Derive web origin and scheme from Host header.
+/// Validate a URL we're about to fetch from on behalf of an OAuth flow.
+///
+/// Returns a DNS-pinned `reqwest::Client` and the parsed URL. Refuses
+/// URLs that:
+///   - aren't http/https,
+///   - have no host,
+///   - resolve to a loopback / private / link-local / metadata-service
+///     IP (per `freeq_sdk::ssrf::resolve_and_check`).
+///
+/// This is the SSRF guard for the OAuth chain: every URL after the
+/// first call (DID document → PDS URL → auth-server → token-endpoint)
+/// is fully attacker-controlled in the worst case, so we validate at
+/// every hop. Returns a generic error message that does NOT echo the
+/// host or IP back to the requester (info-leak hardening).
+async fn safe_outbound_client(
+    url_str: &str,
+    timeout: std::time::Duration,
+) -> Result<(url::Url, reqwest::Client), (StatusCode, &'static str)> {
+    let parsed = url::Url::parse(url_str)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "Refused: malformed URL"))?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Refused: URL scheme must be http or https",
+        ));
+    }
+    let host = parsed
+        .host_str()
+        .ok_or((StatusCode::BAD_REQUEST, "Refused: URL has no host"))?
+        .to_string();
+    let port = parsed
+        .port()
+        .unwrap_or(if parsed.scheme() == "https" { 443 } else { 80 });
+    let addrs = freeq_sdk::ssrf::resolve_and_check(&host, port)
+        .await
+        .map_err(|_| (StatusCode::BAD_REQUEST, "Refused: target is not publicly routable"))?;
+
+    let mut builder = reqwest::Client::builder()
+        .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none());
+    for addr in &addrs {
+        builder = builder.resolve(&host, *addr);
+    }
+    let client = builder
+        .build()
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "client build failed"))?;
+    Ok((parsed, client))
+}
+
 fn derive_web_origin(headers: &axum::http::HeaderMap) -> (String, String) {
     let raw_host = headers
         .get("host")
@@ -1688,8 +1737,11 @@ async fn auth_login(
     // Derive the origin from the Host header so redirect_uri matches what the browser sees
     let (web_origin, _scheme) = derive_web_origin(&headers);
 
-    // Resolve handle → DID → PDS
-    let resolver = freeq_sdk::did::DidResolver::http();
+    // Resolve handle → DID → PDS via the *configured* resolver so tests
+    // can swap implementations and so any future federation-aware
+    // resolver setting is honoured. (Was previously hardcoded to
+    // DidResolver::http().)
+    let resolver = state.did_resolver.clone();
     let did = resolver.resolve_handle(&handle).await.map_err(|e| {
         (
             StatusCode::BAD_REQUEST,
@@ -1707,30 +1759,24 @@ async fn auth_login(
         )
     })?;
 
-    // Discover authorization server
-    let client = reqwest::Client::new();
+    // Discover authorization server. SSRF-guard every external URL the
+    // DID document points us at — the document is attacker-controlled.
+    // CTF-07/08/09 regression tests pin this.
     let pr_url = format!(
         "{}/.well-known/oauth-protected-resource",
         pds_url.trim_end_matches('/')
     );
-    let pr_meta: serde_json::Value = client
+    let (_pr_parsed, pr_client) = safe_outbound_client(&pr_url, std::time::Duration::from_secs(8))
+        .await
+        .map_err(|(s, m)| (s, m.to_string()))?;
+    let pr_meta: serde_json::Value = pr_client
         .get(&pr_url)
         .send()
         .await
-        .map_err(|e| {
-            (
-                StatusCode::BAD_GATEWAY,
-                format!("PDS metadata fetch failed: {e}"),
-            )
-        })?
+        .map_err(|_| (StatusCode::BAD_GATEWAY, "PDS metadata fetch failed".to_string()))?
         .json()
         .await
-        .map_err(|e| {
-            (
-                StatusCode::BAD_GATEWAY,
-                format!("PDS metadata parse failed: {e}"),
-            )
-        })?;
+        .map_err(|_| (StatusCode::BAD_GATEWAY, "PDS metadata parse failed".to_string()))?;
 
     let auth_server = pr_meta["authorization_servers"][0]
         .as_str()
@@ -1745,24 +1791,17 @@ async fn auth_login(
         "{}/.well-known/oauth-authorization-server",
         auth_server.trim_end_matches('/')
     );
-    let auth_meta: serde_json::Value = client
+    let (_as_parsed, as_client) = safe_outbound_client(&as_url, std::time::Duration::from_secs(8))
+        .await
+        .map_err(|(s, m)| (s, m.to_string()))?;
+    let auth_meta: serde_json::Value = as_client
         .get(&as_url)
         .send()
         .await
-        .map_err(|e| {
-            (
-                StatusCode::BAD_GATEWAY,
-                format!("Auth server metadata failed: {e}"),
-            )
-        })?
+        .map_err(|_| (StatusCode::BAD_GATEWAY, "Auth server metadata failed".to_string()))?
         .json()
         .await
-        .map_err(|e| {
-            (
-                StatusCode::BAD_GATEWAY,
-                format!("Auth server metadata parse failed: {e}"),
-            )
-        })?;
+        .map_err(|_| (StatusCode::BAD_GATEWAY, "Auth server metadata parse failed".to_string()))?;
 
     let authorization_endpoint = auth_meta["authorization_endpoint"]
         .as_str()
@@ -1778,6 +1817,19 @@ async fn auth_login(
     let par_endpoint = auth_meta["pushed_authorization_request_endpoint"]
         .as_str()
         .ok_or_else(|| (StatusCode::BAD_GATEWAY, "No PAR endpoint".to_string()))?;
+    // Validate every endpoint the auth-server metadata named — these go
+    // straight from PDS-controlled JSON into URLs we POST credentials
+    // to, so the SSRF surface extends past the metadata fetches.
+    let _ = safe_outbound_client(authorization_endpoint, std::time::Duration::from_secs(8))
+        .await
+        .map_err(|(s, m)| (s, m.to_string()))?;
+    let _ = safe_outbound_client(token_endpoint, std::time::Duration::from_secs(8))
+        .await
+        .map_err(|(s, m)| (s, m.to_string()))?;
+    let (_par_parsed, par_client) =
+        safe_outbound_client(par_endpoint, std::time::Duration::from_secs(10))
+            .await
+            .map_err(|(s, m)| (s, m.to_string()))?;
 
     // Build redirect URI and client_id. Default purpose for `/auth/login`
     // is `Login` — narrow `atproto` scope only. Phase-2 step-up flows
@@ -1814,13 +1866,16 @@ async fn auth_login(
                 format!("DPoP proof failed: {e}"),
             )
         })?;
-    let resp = client
+    // Use the SSRF-validated par_client (DNS-pinned + timeout). Error
+    // strings are deliberately generic — the PDS body could otherwise
+    // be reflected into our error response.
+    let resp = par_client
         .post(par_endpoint)
         .header("DPoP", &dpop_proof)
         .form(&params)
         .send()
         .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("PAR failed: {e}")))?;
+        .map_err(|_| (StatusCode::BAD_GATEWAY, "PAR failed".to_string()))?;
 
     let status = resp.status();
     let dpop_nonce = resp
@@ -1834,37 +1889,27 @@ async fn auth_login(
         let nonce = dpop_nonce.as_deref().unwrap();
         let dpop_proof2 = dpop_key
             .proof("POST", par_endpoint, Some(nonce), None)
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("DPoP retry failed: {e}"),
-                )
-            })?;
-        let resp2 = client
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "DPoP retry failed".to_string()))?;
+        let resp2 = par_client
             .post(par_endpoint)
             .header("DPoP", &dpop_proof2)
             .form(&params)
             .send()
             .await
-            .map_err(|e| (StatusCode::BAD_GATEWAY, format!("PAR retry failed: {e}")))?;
+            .map_err(|_| (StatusCode::BAD_GATEWAY, "PAR retry failed".to_string()))?;
         if !resp2.status().is_success() {
-            let text = resp2.text().await.unwrap_or_default();
-            return Err((StatusCode::BAD_GATEWAY, format!("PAR failed: {text}")));
+            return Err((StatusCode::BAD_GATEWAY, "PAR retry failed".to_string()));
         }
         resp2
             .json()
             .await
-            .map_err(|e| (StatusCode::BAD_GATEWAY, format!("PAR parse failed: {e}")))?
+            .map_err(|_| (StatusCode::BAD_GATEWAY, "PAR parse failed".to_string()))?
     } else if status.is_success() {
         resp.json()
             .await
-            .map_err(|e| (StatusCode::BAD_GATEWAY, format!("PAR parse failed: {e}")))?
+            .map_err(|_| (StatusCode::BAD_GATEWAY, "PAR parse failed".to_string()))?
     } else {
-        let text = resp.text().await.unwrap_or_default();
-        return Err((
-            StatusCode::BAD_GATEWAY,
-            format!("PAR failed ({status}): {text}"),
-        ));
+        return Err((StatusCode::BAD_GATEWAY, format!("PAR failed ({status})")));
     };
 
     let request_uri = par_resp["request_uri"].as_str().ok_or_else(|| {
@@ -1964,8 +2009,9 @@ async fn auth_step_up(
     let (web_origin, _) = derive_web_origin(&headers);
 
     // Discover the PDS authorization server. Reuse the resolver path
-    // from auth_login — it's a couple of well-known fetches.
-    let resolver = freeq_sdk::did::DidResolver::http();
+    // from auth_login — it's a couple of well-known fetches. Use the
+    // *configured* resolver so tests can swap implementations.
+    let resolver = state.did_resolver.clone();
     let did_doc = resolver
         .resolve(&q.did)
         .await
@@ -1974,19 +2020,28 @@ async fn auth_step_up(
         StatusCode::BAD_REQUEST,
         "No PDS in DID document".to_string(),
     ))?;
-    let client = reqwest::Client::new();
+    // SSRF guard: validate every external URL before fetching, and use a
+    // DNS-pinned client with a hard timeout. The DID document is
+    // attacker-controlled (anyone can register a DID with whatever PDS
+    // URL they like), so without these the server happily fetches from
+    // 127.0.0.1, 169.254.169.254 (cloud metadata service), 10.x.x.x,
+    // etc. CTF-07 regression test pins this.
     let pr_url = format!(
         "{}/.well-known/oauth-protected-resource",
         pds_url.trim_end_matches('/')
     );
-    let pr_meta: serde_json::Value = client
+    let (_pr_parsed, pr_client) =
+        safe_outbound_client(&pr_url, std::time::Duration::from_secs(8))
+            .await
+            .map_err(|(s, m)| (s, m.to_string()))?;
+    let pr_meta: serde_json::Value = pr_client
         .get(&pr_url)
         .send()
         .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("PDS metadata fetch failed: {e}")))?
+        .map_err(|_| (StatusCode::BAD_GATEWAY, "PDS metadata fetch failed".to_string()))?
         .json()
         .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("PDS metadata parse failed: {e}")))?;
+        .map_err(|_| (StatusCode::BAD_GATEWAY, "PDS metadata parse failed".to_string()))?;
     let auth_server = pr_meta["authorization_servers"][0]
         .as_str()
         .ok_or((StatusCode::BAD_GATEWAY, "No authorization server".to_string()))?;
@@ -1994,14 +2049,18 @@ async fn auth_step_up(
         "{}/.well-known/oauth-authorization-server",
         auth_server.trim_end_matches('/')
     );
-    let auth_meta: serde_json::Value = client
+    let (_as_parsed, as_client) =
+        safe_outbound_client(&as_url, std::time::Duration::from_secs(8))
+            .await
+            .map_err(|(s, m)| (s, m.to_string()))?;
+    let auth_meta: serde_json::Value = as_client
         .get(&as_url)
         .send()
         .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Auth server metadata failed: {e}")))?
+        .map_err(|_| (StatusCode::BAD_GATEWAY, "Auth server metadata failed".to_string()))?
         .json()
         .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Auth server metadata parse failed: {e}")))?;
+        .map_err(|_| (StatusCode::BAD_GATEWAY, "Auth server metadata parse failed".to_string()))?;
     let authorization_endpoint = auth_meta["authorization_endpoint"]
         .as_str()
         .ok_or((StatusCode::BAD_GATEWAY, "No authorization_endpoint".to_string()))?;
@@ -2011,6 +2070,22 @@ async fn auth_step_up(
     let par_endpoint = auth_meta["pushed_authorization_request_endpoint"]
         .as_str()
         .ok_or((StatusCode::BAD_GATEWAY, "No PAR endpoint".to_string()))?;
+    // The auth-server metadata is fully attacker-controlled too — the
+    // PDS could point at evil.com for token / par. Validate before we
+    // POST credentials there. We don't need to keep the
+    // `_authorize_parsed` since the user-redirect is built from the
+    // string verbatim — but we DO need to confirm it's safe to redirect
+    // to (we won't 30x a user to localhost either).
+    let _ = safe_outbound_client(authorization_endpoint, std::time::Duration::from_secs(8))
+        .await
+        .map_err(|(s, m)| (s, m.to_string()))?;
+    let _ = safe_outbound_client(token_endpoint, std::time::Duration::from_secs(8))
+        .await
+        .map_err(|(s, m)| (s, m.to_string()))?;
+    let (_par_parsed, par_client) =
+        safe_outbound_client(par_endpoint, std::time::Duration::from_secs(10))
+            .await
+            .map_err(|(s, m)| (s, m.to_string()))?;
 
     let redirect_uri = format!("{web_origin}/auth/callback");
     let scope = purpose.requested_scope();
@@ -2031,22 +2106,21 @@ async fn auth_step_up(
         ("login_hint", &login_session.handle),
     ];
 
-    // PAR with DPoP (handles nonce retry the same way as auth_login)
+    // PAR with DPoP (handles nonce retry the same way as auth_login).
+    // Use the SSRF-validated `par_client` instead of a fresh
+    // reqwest::Client::new() — the client is DNS-pinned + has a
+    // timeout. Error messages are deliberately generic so we don't
+    // reflect attacker-controlled URLs back in the response body.
     let dpop_proof = dpop_key
         .proof("POST", par_endpoint, None, None)
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("DPoP proof failed: {e}"),
-            )
-        })?;
-    let resp = client
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "DPoP proof failed".to_string()))?;
+    let resp = par_client
         .post(par_endpoint)
         .header("DPoP", &dpop_proof)
         .form(&params)
         .send()
         .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("PAR failed: {e}")))?;
+        .map_err(|_| (StatusCode::BAD_GATEWAY, "PAR failed".to_string()))?;
     let status = resp.status();
     let dpop_nonce = resp
         .headers()
@@ -2058,40 +2132,27 @@ async fn auth_step_up(
         let nonce = dpop_nonce.as_deref().unwrap();
         let dpop_proof2 = dpop_key
             .proof("POST", par_endpoint, Some(nonce), None)
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("DPoP retry failed: {e}"),
-                )
-            })?;
-        let resp2 = client
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "DPoP retry failed".to_string()))?;
+        let resp2 = par_client
             .post(par_endpoint)
             .header("DPoP", &dpop_proof2)
             .form(&params)
             .send()
             .await
-            .map_err(|e| (StatusCode::BAD_GATEWAY, format!("PAR retry failed: {e}")))?;
+            .map_err(|_| (StatusCode::BAD_GATEWAY, "PAR retry failed".to_string()))?;
         if !resp2.status().is_success() {
-            let text = resp2.text().await.unwrap_or_default();
-            return Err((
-                StatusCode::BAD_GATEWAY,
-                format!("PAR retry failed: {text}"),
-            ));
+            return Err((StatusCode::BAD_GATEWAY, "PAR retry failed".to_string()));
         }
         resp2
             .json()
             .await
-            .map_err(|e| (StatusCode::BAD_GATEWAY, format!("PAR parse failed: {e}")))?
+            .map_err(|_| (StatusCode::BAD_GATEWAY, "PAR parse failed".to_string()))?
     } else if status.is_success() {
         resp.json()
             .await
-            .map_err(|e| (StatusCode::BAD_GATEWAY, format!("PAR parse failed: {e}")))?
+            .map_err(|_| (StatusCode::BAD_GATEWAY, "PAR parse failed".to_string()))?
     } else {
-        let text = resp.text().await.unwrap_or_default();
-        return Err((
-            StatusCode::BAD_GATEWAY,
-            format!("PAR failed ({status}): {text}"),
-        ));
+        return Err((StatusCode::BAD_GATEWAY, format!("PAR failed ({status})")));
     };
     let request_uri = par_resp["request_uri"].as_str().ok_or((
         StatusCode::BAD_GATEWAY,
@@ -2556,6 +2617,29 @@ fn oauth_result_html(message: &str, result: Option<&crate::server::OAuthResult>)
         String::new()
     };
 
+    // SECURITY: HTML-escape the message before interpolating it into
+    // the page body. `message` may carry attacker-controlled content
+    // — most directly via /auth/callback?error=<script>… (anyone can
+    // land a victim on that URL), but also via PDS-controlled error
+    // bodies. The page's CSP allows inline scripts so any unescaped
+    // `<script>` would actually execute. CTF-11 regression test pins
+    // this.
+    fn html_escape(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        for c in s.chars() {
+            match c {
+                '<' => out.push_str("&lt;"),
+                '>' => out.push_str("&gt;"),
+                '&' => out.push_str("&amp;"),
+                '"' => out.push_str("&quot;"),
+                '\'' => out.push_str("&#x27;"),
+                _ => out.push(c),
+            }
+        }
+        out
+    }
+    let safe_message = html_escape(message);
+
     // Show different text depending on whether this is a popup or same-window flow
     let close_hint = if result.is_some() {
         "<p id=\"hint\" style=\"color:#6c7086\">Connecting...</p>\
@@ -2576,7 +2660,7 @@ body {{ font-family: system-ui; background: #1e1e2e; color: #cdd6f4; display: fl
 h1 {{ color: #89b4fa; font-size: 20px; }}
 p {{ color: #a6adc8; }}
 </style></head>
-<body><div class="box"><h1>freeq</h1><p>{message}</p>{close_hint}</div>
+<body><div class="box"><h1>freeq</h1><p>{safe_message}</p>{close_hint}</div>
 {script}
 </body></html>"#
     )
