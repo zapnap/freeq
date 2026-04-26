@@ -234,38 +234,45 @@ struct ImagePreviewSheet: View {
             request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
             request.httpBody = body
 
-            do {
-                let (responseData, response) = try await URLSession.shared.data(for: request)
-                let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
-
-                if statusCode == 200 {
-                    let json = try JSONSerialization.jsonObject(with: responseData) as? [String: Any]
-                    if let url = json?["url"] as? String {
-                        await MainActor.run {
-                            // Send image URL, then caption if provided
-                            let text = caption.trimmingCharacters(in: .whitespacesAndNewlines)
-                            if text.isEmpty {
-                                appState.sendMessage(target: channel, text: url)
-                            } else {
-                                appState.sendMessage(target: channel, text: "\(url) \(text)")
-                            }
-                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                            dismiss()
-                        }
-                    }
-                } else {
-                    let responseText = String(data: responseData, encoding: .utf8) ?? ""
-                    await MainActor.run {
-                        uploading = false
-                        uploadError = "Upload failed: \(responseText.prefix(80))"
-                    }
-                }
-            } catch {
+            // Step-up if the server says blob_upload needs a fresh PDS-grant.
+            let result = await StepUpAuth.uploadWithStepUp(
+                request: request, did: did, appState: appState
+            )
+            guard let (responseData, response) = result else {
                 await MainActor.run {
                     uploading = false
-                    uploadError = error.localizedDescription.contains("timed out")
-                        ? "Upload timed out — tap Retry"
-                        : "Error: \(error.localizedDescription)"
+                    uploadError = "Upload failed"
+                }
+                return
+            }
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+
+            if statusCode == 200 {
+                let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any]
+                if let url = json?["url"] as? String {
+                    await MainActor.run {
+                        let text = caption.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if text.isEmpty {
+                            appState.sendMessage(target: channel, text: url)
+                        } else {
+                            appState.sendMessage(target: channel, text: "\(url) \(text)")
+                        }
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        dismiss()
+                    }
+                }
+            } else if StepUpAuth.detectStepUpRequired(status: statusCode, body: responseData) != nil {
+                // Step-up was offered and the user declined / cancelled —
+                // surface that state instead of a generic upload error.
+                await MainActor.run {
+                    uploading = false
+                    uploadError = "Image upload needs Bluesky permission. Tap Retry to try again."
+                }
+            } else {
+                let responseText = String(data: responseData, encoding: .utf8) ?? ""
+                await MainActor.run {
+                    uploading = false
+                    uploadError = "Upload failed: \(responseText.prefix(80))"
                 }
             }
         }

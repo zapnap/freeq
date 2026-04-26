@@ -419,30 +419,41 @@ struct ComposeView: View {
             request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
             request.httpBody = body
 
-            do {
-                let (responseData, response) = try await URLSession.shared.data(for: request)
-                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-                if status == 200,
-                   let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
-                   let url = json["url"] as? String {
-                    let trimmedTranscript = (await transcript)?
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                    let body: String
-                    if let t = trimmedTranscript, !t.isEmpty {
-                        body = "🎤 Voice message (\(duration)) \(url)\n💬 \(t)"
-                    } else {
-                        body = "🎤 Voice message (\(duration)) \(url)"
-                    }
-                    await MainActor.run {
-                        appState.sendMessage(target: target, text: body)
-                        ToastManager.shared.show("Voice message sent", icon: "checkmark.circle")
-                    }
-                } else {
-                    await MainActor.run {
-                        ToastManager.shared.show("Upload failed", icon: "exclamationmark.triangle")
-                    }
+            // Funnel through StepUpAuth so a `step_up_required` 403 drives
+            // the ASWebAuthenticationSession permission prompt and retries
+            // the upload once when the user grants.
+            let result = await StepUpAuth.uploadWithStepUp(
+                request: request, did: did, appState: appState
+            )
+
+            guard let (responseData, response) = result else {
+                await MainActor.run {
+                    ToastManager.shared.show("Upload failed", icon: "exclamationmark.triangle")
                 }
-            } catch {
+                return
+            }
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if status == 200,
+               let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
+               let url = json["url"] as? String {
+                let trimmedTranscript = (await transcript)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let body: String
+                if let t = trimmedTranscript, !t.isEmpty {
+                    body = "🎤 Voice message (\(duration)) \(url)\n💬 \(t)"
+                } else {
+                    body = "🎤 Voice message (\(duration)) \(url)"
+                }
+                await MainActor.run {
+                    appState.sendMessage(target: target, text: body)
+                    ToastManager.shared.show("Voice message sent", icon: "checkmark.circle")
+                }
+            } else if StepUpAuth.detectStepUpRequired(status: status, body: responseData) != nil {
+                // User declined or cancelled the step-up — surface clearly.
+                await MainActor.run {
+                    ToastManager.shared.show("Permission needed for upload", icon: "lock.shield")
+                }
+            } else {
                 await MainActor.run {
                     ToastManager.shared.show("Upload failed", icon: "exclamationmark.triangle")
                 }

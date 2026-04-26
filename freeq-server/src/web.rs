@@ -2394,6 +2394,28 @@ p {{ color: #a0a0b0; margin: 8px 0; }}
     // Just signal "step-up complete for purpose=X" so the web client
     // can retry whatever it was doing (e.g. re-POST the upload).
     if is_step_up {
+        // Mobile clients use ASWebAuthenticationSession with a freeq://
+        // callback — the BroadcastChannel HTML doesn't reach them. Send a
+        // custom-scheme redirect they can intercept and resume the upload.
+        if pending.mobile {
+            let redirect = format!(
+                "freeq://step-up?ok=1&purpose={}",
+                urlencod(pending.purpose.as_str()),
+            );
+            let html = format!(
+                r#"<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url={redirect}"></head><body><script>window.location.href = "{redirect}";</script><p>Returning to freeq…</p></body></html>"#
+            );
+            return Ok((
+                [
+                    ("content-type", "text/html; charset=utf-8"),
+                    (
+                        "content-security-policy",
+                        "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'",
+                    ),
+                ],
+                html,
+            ));
+        }
         return Ok(step_up_result_page(pending.purpose.as_str()));
     }
 
