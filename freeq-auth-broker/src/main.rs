@@ -418,7 +418,7 @@ async fn client_metadata(State(state): State<Arc<BrokerState>>) -> Json<serde_js
         // issued before this change. We never request it at /authorize
         // — the broker only asks for `atproto`. Remove transition:generic
         // once the PDS grace period closes.
-        "scope": "atproto blob:image/* repo:app.bsky.feed.post transition:generic",
+        "scope": "atproto blob:image/* repo:app.blue.irc.media?action=create repo:app.bsky.feed.post transition:generic",
         "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],
         "token_endpoint_auth_method": "none",
@@ -1334,7 +1334,7 @@ fn build_client_id(web_origin: &str, redirect_uri: &str) -> String {
         // Loopback client_id advertises the union of scopes the broker
         // could ever use, including the legacy transition:generic for
         // refresh-token grace period. Actual login asks for "atproto".
-        let scope = "atproto blob:image/* repo:app.bsky.feed.post transition:generic";
+        let scope = "atproto blob:image/* repo:app.blue.irc.media?action=create repo:app.bsky.feed.post transition:generic";
         format!(
             "http://localhost?redirect_uri={}&scope={}",
             urlencod(redirect_uri),

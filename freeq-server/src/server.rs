@@ -242,8 +242,12 @@ impl OauthPurpose {
             Self::Login => "atproto",
             // Upload images to the user's repo. Narrow MIME on purpose so
             // the consent screen says "upload images" instead of "upload
-            // anything".
-            Self::BlobUpload => "atproto blob:image/*",
+            // anything". Also requests `repo:app.blue.irc.media?action=create`
+            // because the server's media upload flow creates a record in
+            // that collection alongside the blob — without this scope the
+            // PDS rejects record creation with ScopeMissingError even
+            // though the blob upload itself succeeds.
+            Self::BlobUpload => "atproto blob:image/* repo:app.blue.irc.media?action=create",
             // Cross-post to Bluesky's feed. Repo write narrowed to a single
             // collection.
             Self::BlueskyPost => "atproto repo:app.bsky.feed.post",
@@ -267,9 +271,22 @@ pub fn scope_satisfies_purpose(granted: &str, purpose: OauthPurpose) -> bool {
     }
     match purpose {
         OauthPurpose::Login => granted.split_whitespace().any(|s| s == "atproto"),
-        OauthPurpose::BlobUpload => granted.split_whitespace().any(|s| {
-            s == "blob:*/*" || s == "blob:image/*" || s.starts_with("blob:image/")
-        }),
+        OauthPurpose::BlobUpload => {
+            let has_blob = granted.split_whitespace().any(|s| {
+                s == "blob:*/*" || s == "blob:image/*" || s.starts_with("blob:image/")
+            });
+            // The record-creation scope can be granted explicitly, via a
+            // wildcard `repo:*`, or by the legacy `transition:generic`
+            // (which the early-return at the top of this function already
+            // covers). Without it the PDS allows blob upload but rejects
+            // the accompanying app.blue.irc.media record creation.
+            let has_record = granted.split_whitespace().any(|s| {
+                s == "repo:*"
+                    || s == "repo:app.blue.irc.media"
+                    || s.starts_with("repo:app.blue.irc.media")
+            });
+            has_blob && has_record
+        },
         OauthPurpose::BlueskyPost => granted.split_whitespace().any(|s| {
             s == "repo:app.bsky.feed.post" || s == "repo:*"
         }),
