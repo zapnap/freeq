@@ -42,7 +42,7 @@ fn url(http: SocketAddr, path: &str) -> String {
 // ─── Phase 1 ─────────────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn client_metadata_does_not_advertise_transition_generic() {
+async fn client_metadata_advertises_narrow_scopes() {
     let (_irc, http, _h) = start_server().await;
     let body: serde_json::Value = reqwest::Client::new()
         .get(url(http, "/client-metadata.json"))
@@ -54,21 +54,21 @@ async fn client_metadata_does_not_advertise_transition_generic() {
         .unwrap();
 
     let scope = body["scope"].as_str().expect("scope field present");
+    let tokens: std::collections::HashSet<&str> = scope.split_whitespace().collect();
     assert!(
-        !scope.contains("transition:generic"),
-        "client-metadata.json must not advertise the legacy `transition:generic` scope; \
-         got: {scope}"
+        tokens.contains("atproto"),
+        "metadata must include `atproto` for identity proof; got: {scope}"
     );
     assert!(
-        scope.contains("atproto"),
-        "scope must still include `atproto` for identity proof; got: {scope}"
+        tokens.iter().any(|t| t.starts_with("blob:image/")),
+        "metadata must include the granular blob upload scope so step-up can request it; got: {scope}"
     );
-    // The metadata is the *union* of all flows the client may request, so
-    // we expect to see at least the granular blob upload scope listed.
     assert!(
-        scope.contains("blob:image/"),
-        "scope union should advertise blob:image/* so step-up flows can request it; got: {scope}"
+        tokens.contains("repo:app.bsky.feed.post"),
+        "metadata must include the granular Bluesky cross-post scope; got: {scope}"
     );
+    // (transition:generic remains until the grace period closes — see
+    // `metadata_keeps_transition_generic_for_refresh_grace_period`.)
 }
 
 // ─── Phase 2 ─────────────────────────────────────────────────────────────
@@ -197,4 +197,201 @@ fn requested_scopes_are_narrow_not_transition_generic() {
         );
         assert!(s.contains("atproto"), "purpose {:?} missing atproto: {s}", p);
     }
+}
+
+// ─── Adversarial: scope predicate edge cases ─────────────────────────────
+
+#[test]
+fn scope_predicate_handles_extra_whitespace() {
+    // Real PDS responses sometimes have multiple spaces; tabs are unusual
+    // but let's be tolerant.
+    assert!(scope_satisfies_purpose(
+        "atproto    blob:image/*",
+        OauthPurpose::BlobUpload,
+    ));
+    assert!(scope_satisfies_purpose(
+        "atproto\tblob:image/*",
+        OauthPurpose::BlobUpload,
+    ));
+    assert!(scope_satisfies_purpose("\n  atproto  \n", OauthPurpose::Login));
+}
+
+#[test]
+fn scope_predicate_is_case_sensitive_per_spec() {
+    // OAuth scope strings are case-sensitive. ATPROTO (uppercase) is not
+    // a valid scope; predicate must reject so we don't wrongly accept a
+    // typo or a confused PDS.
+    assert!(!scope_satisfies_purpose("ATPROTO", OauthPurpose::Login));
+    assert!(!scope_satisfies_purpose(
+        "atproto BLOB:image/*",
+        OauthPurpose::BlobUpload,
+    ));
+}
+
+#[test]
+fn scope_predicate_rejects_empty_or_unrelated() {
+    assert!(!scope_satisfies_purpose("", OauthPurpose::Login));
+    assert!(!scope_satisfies_purpose("openid email", OauthPurpose::Login));
+    assert!(!scope_satisfies_purpose("atproto", OauthPurpose::BlobUpload));
+    assert!(!scope_satisfies_purpose(
+        "atproto blob:audio/*",
+        OauthPurpose::BlobUpload,
+    ));
+}
+
+#[test]
+fn scope_predicate_accepts_blob_image_subtype_grant() {
+    // bsky.social may grant `blob:image/png` (subtype-narrowed) instead
+    // of the wildcard. We accept it — the user has SOME image-upload
+    // permission. NOTE: this is intentionally permissive; the upload
+    // path doesn't enforce per-MIME beyond what the PDS itself enforces
+    // at the uploadBlob call.
+    assert!(scope_satisfies_purpose(
+        "atproto blob:image/png",
+        OauthPurpose::BlobUpload,
+    ));
+    assert!(scope_satisfies_purpose(
+        "atproto blob:image/jpeg",
+        OauthPurpose::BlobUpload,
+    ));
+}
+
+#[test]
+fn scope_predicate_treats_repo_wildcard_as_satisfying_post() {
+    // `repo:*` is the "all collections" grant. Satisfies any specific
+    // repo: requirement.
+    assert!(scope_satisfies_purpose(
+        "atproto repo:*",
+        OauthPurpose::BlueskyPost,
+    ));
+}
+
+// ─── Adversarial: legacy granted_scope from old PDSes ───────────────────
+
+#[test]
+fn legacy_transition_generic_satisfies_all_purposes_for_grace_period() {
+    // The whole point of accepting transition:generic: an existing
+    // session originally granted under the old wide scope must keep
+    // working post-deploy until the user re-authenticates.
+    for p in [
+        OauthPurpose::Login,
+        OauthPurpose::BlobUpload,
+        OauthPurpose::BlueskyPost,
+    ] {
+        assert!(
+            scope_satisfies_purpose("atproto transition:generic", p),
+            "legacy wide grant should satisfy {:?}",
+            p
+        );
+    }
+    // Solo `transition:generic` (without atproto) is unusual but seen in
+    // the wild — accept it for the grace period.
+    assert!(scope_satisfies_purpose(
+        "transition:generic",
+        OauthPurpose::BlobUpload,
+    ));
+}
+
+// ─── Adversarial: step-up endpoint quirks ────────────────────────────────
+
+#[tokio::test]
+async fn step_up_purpose_is_case_sensitive() {
+    // `BLOB_UPLOAD` (uppercase) must not be treated as `blob_upload`,
+    // otherwise URL fuzzers could discover unintended branches and a
+    // typo would silently work in some places and not others.
+    let (_irc, http, _h) = start_server().await;
+    let resp = reqwest::Client::new()
+        .get(url(http, "/auth/step-up?purpose=BLOB_UPLOAD&did=did:plc:abc"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn step_up_missing_did_query_returns_4xx() {
+    let (_irc, http, _h) = start_server().await;
+    let resp = reqwest::Client::new()
+        .get(url(http, "/auth/step-up?purpose=blob_upload"))
+        .send()
+        .await
+        .unwrap();
+    // axum returns 400 for missing required query params; we just want
+    // the request to not crash or 500.
+    assert!(
+        resp.status().is_client_error(),
+        "missing did should be a client error, got {}",
+        resp.status()
+    );
+}
+
+#[tokio::test]
+async fn step_up_with_garbage_did_is_unauthorized() {
+    // No active Login session for "abc" → 401. Treats the malformed DID
+    // the same as any other unknown DID — the endpoint never tries to
+    // resolve / contact a remote.
+    let (_irc, http, _h) = start_server().await;
+    let resp = reqwest::Client::new()
+        .get(url(http, "/auth/step-up?purpose=blob_upload&did=abc"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+}
+
+// ─── Adversarial: client metadata superset must include every requested ──
+
+#[tokio::test]
+async fn metadata_scope_contains_every_requested_purpose_scope() {
+    let (_irc, http, _h) = start_server().await;
+    let body: serde_json::Value = reqwest::Client::new()
+        .get(url(http, "/client-metadata.json"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let metadata_scope: std::collections::HashSet<&str> = body["scope"]
+        .as_str()
+        .unwrap()
+        .split_whitespace()
+        .collect();
+    for p in [
+        OauthPurpose::Login,
+        OauthPurpose::BlobUpload,
+        OauthPurpose::BlueskyPost,
+    ] {
+        for token in p.requested_scope().split_whitespace() {
+            assert!(
+                metadata_scope.contains(token),
+                "client-metadata.json scope ({:?}) is missing token `{token}` requested by purpose {:?}; \
+                 PDSes that verify metadata-superset will reject the /authorize call",
+                metadata_scope,
+                p,
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn metadata_keeps_transition_generic_for_refresh_grace_period() {
+    // Existing refresh tokens in the broker DB were issued under the
+    // legacy wide scope. Some PDSes reject refresh requests when the
+    // current client metadata no longer permits the original grant
+    // scope. Until the grace period closes we keep advertising it.
+    let (_irc, http, _h) = start_server().await;
+    let body: serde_json::Value = reqwest::Client::new()
+        .get(url(http, "/client-metadata.json"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let scope = body["scope"].as_str().unwrap();
+    assert!(
+        scope.split_whitespace().any(|s| s == "transition:generic"),
+        "metadata must still list transition:generic during grace period, got: {scope}"
+    );
 }

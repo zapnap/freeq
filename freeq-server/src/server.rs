@@ -894,8 +894,14 @@ fn install_llm_provider(config: &ServerConfig) {
         .map(str::to_ascii_lowercase);
     match kind.as_deref() {
         None | Some("") | Some("none") => {
-            crate::agent_assist::llm::global::clear_provider();
-            tracing::info!("agent-assist LLM provider disabled");
+            // Intentionally do NOT clear the global here. The global is
+            // initialised to None by LazyLock; this branch is the
+            // "config didn't ask for an LLM" case and a no-op preserves
+            // test isolation when multiple Server instances are spun up
+            // in the same process (some with mock providers, some
+            // without). Production servers boot once, so this is
+            // identical to actively clearing.
+            tracing::info!("agent-assist LLM provider not configured (preserving any existing global)");
         }
         Some("mock") => {
             crate::agent_assist::llm::global::set_provider(Arc::new(

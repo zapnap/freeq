@@ -220,13 +220,19 @@ export function ComposeBox() {
       // path — we never asked for blob upload at sign-in time.
       const purpose = await detectStepUpRequired(resp);
       if (purpose === 'blob_upload') {
-        const ok = await requestStepUp('blob_upload', authDid);
-        if (ok) {
+        const outcome = await requestStepUp('blob_upload', authDid);
+        if (outcome.ok) {
           resp = await fetch('/api/v1/upload', { method: 'POST', body: buildForm() });
         } else {
-          throw new Error(
-            'Image upload needs Bluesky permission. Reopen the upload popup or close & retry.',
-          );
+          // Tailor the message to *why* it failed so the user knows
+          // whether to allow popups, retry, or wait less next time.
+          const msg =
+            outcome.reason === 'popup_blocked'
+              ? 'Allow popups for this site so freeq can request the image-upload permission, then retry.'
+              : outcome.reason === 'timeout'
+                ? 'The Bluesky permission popup timed out. Try the upload again.'
+                : 'Image upload needs one extra Bluesky permission. Try again and complete the popup.';
+          throw new Error(msg);
         }
       }
 

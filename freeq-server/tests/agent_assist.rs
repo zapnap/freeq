@@ -23,8 +23,21 @@ fn llm_test_guard() -> MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// Tests that assert "no LLM is configured" must call this. It explicitly
+/// clears the process-global slot — safe because the caller is holding
+/// `llm_test_guard()`, so no other LLM test is concurrently observing
+/// the global.
+fn expect_no_llm() {
+    freeq_server::agent_assist::llm::global::clear_provider();
+}
+
 /// Start a server with both IRC and HTTP listeners on random ports,
 /// no LLM provider configured.
+///
+/// Does NOT touch the process-global LLM slot — that would race with
+/// any LLM test running in parallel that doesn't share this helper.
+/// Tests that genuinely need "no LLM" hold the LLM_TEST_LOCK and
+/// explicitly clear via `expect_no_llm()` below.
 async fn start_server() -> (
     SocketAddr,
     SocketAddr,
@@ -354,6 +367,7 @@ async fn diagnose_message_ordering_caps_input_size() {
 #[tokio::test]
 async fn session_returns_llm_not_configured_when_disabled() {
     let _g = llm_test_guard();
+    expect_no_llm();
     let (_irc, http, _h) = start_server().await;
     let body: serde_json::Value = reqwest::Client::new()
         .post(url(http, "/agent/session"))

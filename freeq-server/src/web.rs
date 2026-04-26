@@ -1528,14 +1528,21 @@ async fn client_metadata(headers: axum::http::HeaderMap) -> Json<serde_json::Val
         "tos_uri": format!("{web_origin}"),
         "policy_uri": format!("{web_origin}"),
         "redirect_uris": [redirect_uri],
-        // Advertise the union of scopes we ever request. The PDS uses
-        // this when the actual /authorize call asks for a subset, which
-        // it always does (Login asks for `atproto` only; step-up flows
-        // narrow further). Listing the union here is required by the
-        // AT Proto OAuth spec — clients can only request scopes that
-        // appear in their client metadata.
-        "scope": "atproto blob:image/* repo:app.bsky.feed.post",
-        "grant_types": ["authorization_code"],
+        // Advertise the union of scopes any flow may request. The AT
+        // Proto OAuth spec requires that scopes used at /authorize time
+        // appear here. Actual per-flow requests are narrower:
+        //   - Login (default sign-in)        → "atproto" only
+        //   - BlobUpload step-up             → "atproto blob:image/*"
+        //   - BlueskyPost step-up            → "atproto repo:app.bsky.feed.post"
+        //
+        // `transition:generic` is included for the grace-period: existing
+        // refresh tokens issued under the old wide grant must still be
+        // refreshable, and some PDSes verify that the original grant scope
+        // remains permitted by the current client metadata. We never ask
+        // for it on a fresh /authorize. Remove this entry once the PDS
+        // ecosystem has fully sunset transitional scopes.
+        "scope": "atproto blob:image/* repo:app.bsky.feed.post transition:generic",
+        "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],
         "token_endpoint_auth_method": "none",
         "application_type": "web",
@@ -1581,9 +1588,9 @@ fn build_client_id(web_origin: &str, redirect_uri: &str) -> String {
         || web_origin.starts_with("http://10.")
     {
         // Loopback client — use http://localhost form per AT Protocol spec.
-        // Advertise the union of scopes we may request across Login +
-        // step-up flows (same union as the production client-metadata.json).
-        let scope = "atproto blob:image/* repo:app.bsky.feed.post";
+        // Same union as the production client-metadata.json (with the
+        // legacy transition:generic kept for refresh-token grace period).
+        let scope = "atproto blob:image/* repo:app.bsky.feed.post transition:generic";
         format!(
             "http://localhost?redirect_uri={}&scope={}",
             urlencod(redirect_uri),
@@ -2170,12 +2177,20 @@ async fn auth_callback(
             )
         })?;
 
-    // Check expiry (5 minutes)
+    // Check expiry. Step-up flows live in a popup that the user might
+    // ignore briefly to read what Bluesky's consent screen says, so
+    // give them a longer window than primary login. Pre-existing
+    // primary-login behaviour (5 min) is preserved.
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    if now - pending.created_at > 300 {
+    let ttl = if matches!(pending.purpose, crate::server::OauthPurpose::Login) {
+        300
+    } else {
+        600
+    };
+    if now - pending.created_at > ttl {
         return Err((StatusCode::BAD_REQUEST, "OAuth session expired".to_string()));
     }
 
