@@ -247,6 +247,9 @@ pub fn router(state: Arc<SharedState>) -> Router {
         app = app.merge(crate::policy::api::routes());
     }
 
+    // Agent Assistance Interface (.well-known/agent.json + /agent/tools/*)
+    app = app.merge(crate::agent_assist::api::routes());
+
     // Build verifier router (stashed, merged after .with_state())
     let verifier_router = {
         let github_config =
