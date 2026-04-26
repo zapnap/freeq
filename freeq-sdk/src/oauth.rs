@@ -369,7 +369,11 @@ pub async fn login(handle: &str) -> Result<OAuthSession> {
     // client_id = http://localhost with query params declaring scopes and redirect_uri
     // The auth server infers metadata from these params for loopback clients.
     let redirect_uri = format!("http://127.0.0.1:{port}/callback");
-    let scope = "atproto transition:generic";
+    // Identity-only scope. Matches the freeq-server's `Login` purpose.
+    // Programs that need broader PDS permissions (e.g. blob upload) call
+    // their own `step_up()` with a wider scope; this default keeps the
+    // CLI consent screen narrow for the common case.
+    let scope = "atproto";
     let client_id = format!(
         "http://localhost?redirect_uri={}&scope={}",
         urlencod(&redirect_uri),
@@ -503,7 +507,10 @@ async fn push_authorization_request(
         ("redirect_uri", redirect_uri),
         ("code_challenge", code_challenge),
         ("code_challenge_method", "S256"),
-        ("scope", "atproto transition:generic"),
+        // Narrow scope. SDK callers that need PDS write access do a
+        // separate auth round with a wider scope rather than asking for
+        // it on every login.
+        ("scope", "atproto"),
         ("state", state),
         ("login_hint", login_hint),
     ];

@@ -174,6 +174,10 @@ pub fn router(state: Arc<SharedState>) -> Router {
         // OAuth endpoints for web client
         .route("/auth/login", get(auth_login))
         .route("/auth/callback", get(auth_callback))
+        // Phase-2 incremental authorization: drive a second OAuth flow
+        // for a specific purpose (image upload, Bluesky cross-post)
+        // without replacing the user's primary login session.
+        .route("/auth/step-up", get(auth_step_up))
         .route("/auth/broker/web-token", post(auth_broker_web_token))
         .route("/auth/broker/session", post(auth_broker_session))
         .route("/client-metadata.json", get(client_metadata))
@@ -246,6 +250,9 @@ pub fn router(state: Arc<SharedState>) -> Router {
     if state.policy_engine.is_some() {
         app = app.merge(crate::policy::api::routes());
     }
+
+    // Agent Assistance Interface (.well-known/agent.json + /agent/tools/*)
+    app = app.merge(crate::agent_assist::api::routes());
 
     // Build verifier router (stashed, merged after .with_state())
     let verifier_router = {
@@ -1346,6 +1353,16 @@ struct BrokerSessionRequest {
     access_token: String,
     dpop_key_b64: String,
     dpop_nonce: Option<String>,
+    /// What the PDS actually granted (read from the token endpoint's `scope`
+    /// field). Defaults to `transition:generic` for backward compat with
+    /// older broker builds that don't send this field — those brokers
+    /// always asked for the legacy broad scope so this is conservative.
+    #[serde(default = "default_legacy_scope")]
+    granted_scope: String,
+}
+
+fn default_legacy_scope() -> String {
+    "atproto transition:generic".to_string()
 }
 
 #[derive(Serialize)]
@@ -1400,9 +1417,9 @@ async fn auth_broker_session(
     let req: BrokerSessionRequest = serde_json::from_slice(&body)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid JSON: {e}")))?;
 
-    tracing::info!(did = %req.did, "Broker pushed web session");
+    tracing::info!(did = %req.did, scope = %req.granted_scope, "Broker pushed web session");
     state.web_sessions.lock().insert(
-        req.did.clone(),
+        (req.did.clone(), crate::server::OauthPurpose::Login),
         crate::server::WebSession {
             did: req.did.clone(),
             handle: req.handle.clone(),
@@ -1411,6 +1428,7 @@ async fn auth_broker_session(
             dpop_key_b64: req.dpop_key_b64.clone(),
             dpop_nonce: req.dpop_nonce.clone(),
             created_at: std::time::Instant::now(),
+            granted_scope: req.granted_scope.clone(),
         },
     );
 
@@ -1510,8 +1528,21 @@ async fn client_metadata(headers: axum::http::HeaderMap) -> Json<serde_json::Val
         "tos_uri": format!("{web_origin}"),
         "policy_uri": format!("{web_origin}"),
         "redirect_uris": [redirect_uri],
-        "scope": "atproto transition:generic",
-        "grant_types": ["authorization_code"],
+        // Advertise the union of scopes any flow may request. The AT
+        // Proto OAuth spec requires that scopes used at /authorize time
+        // appear here. Actual per-flow requests are narrower:
+        //   - Login (default sign-in)        → "atproto" only
+        //   - BlobUpload step-up             → "atproto blob:image/*"
+        //   - BlueskyPost step-up            → "atproto repo:app.bsky.feed.post"
+        //
+        // `transition:generic` is included for the grace-period: existing
+        // refresh tokens issued under the old wide grant must still be
+        // refreshable, and some PDSes verify that the original grant scope
+        // remains permitted by the current client metadata. We never ask
+        // for it on a fresh /authorize. Remove this entry once the PDS
+        // ecosystem has fully sunset transitional scopes.
+        "scope": "atproto blob:image/* repo:app.bsky.feed.post transition:generic",
+        "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],
         "token_endpoint_auth_method": "none",
         "application_type": "web",
@@ -1556,8 +1587,10 @@ fn build_client_id(web_origin: &str, redirect_uri: &str) -> String {
         || web_origin.starts_with("http://192.168.")
         || web_origin.starts_with("http://10.")
     {
-        // Loopback client — use http://localhost form per AT Protocol spec
-        let scope = "atproto transition:generic";
+        // Loopback client — use http://localhost form per AT Protocol spec.
+        // Same union as the production client-metadata.json (with the
+        // legacy transition:generic kept for refresh-token grace period).
+        let scope = "atproto blob:image/* repo:app.bsky.feed.post transition:generic";
         format!(
             "http://localhost?redirect_uri={}&scope={}",
             urlencod(redirect_uri),
@@ -1746,9 +1779,13 @@ async fn auth_login(
         .as_str()
         .ok_or_else(|| (StatusCode::BAD_GATEWAY, "No PAR endpoint".to_string()))?;
 
-    // Build redirect URI and client_id
+    // Build redirect URI and client_id. Default purpose for `/auth/login`
+    // is `Login` — narrow `atproto` scope only. Phase-2 step-up flows
+    // (image upload, Bluesky cross-post) hit `/auth/step-up` instead and
+    // request additional scopes there.
     let redirect_uri = format!("{web_origin}/auth/callback");
-    let scope = "atproto transition:generic";
+    let purpose = crate::server::OauthPurpose::Login;
+    let scope = purpose.requested_scope();
     let client_id = build_client_id(&web_origin, &redirect_uri);
 
     // Generate PKCE + DPoP key + state
@@ -1856,6 +1893,8 @@ async fn auth_login(
             created_at: now,
             mobile: q.mobile.as_deref() == Some("1"),
             irc_state: q.irc_state.clone(),
+            purpose,
+            requested_scope: scope.to_string(),
         },
     );
 
@@ -1868,6 +1907,230 @@ async fn auth_login(
     );
 
     tracing::info!(handle = %handle, did = %did, "OAuth login started, redirecting to auth server");
+    Ok(Redirect::temporary(&auth_url))
+}
+
+#[derive(Deserialize)]
+struct AuthStepUpQuery {
+    /// `blob_upload` or `bluesky_post` — see [`crate::server::OauthPurpose`].
+    purpose: String,
+    /// DID to step up. Must match an active Login session on this server,
+    /// otherwise the step-up is refused (we'd have nothing to "upgrade").
+    did: String,
+    /// If `1`, send a freeq:// custom-scheme redirect on completion (mobile).
+    mobile: Option<String>,
+}
+
+/// `GET /auth/step-up?purpose=blob_upload&did=did:plc:…`
+///
+/// Drives a second OAuth flow with a wider scope than the original login,
+/// without replacing the primary `Login` session. The callback at
+/// `/auth/callback` lands in the [`OauthPurpose::BlobUpload`] (or
+/// `BlueskyPost`) slot rather than overwriting `Login`, so the user can
+/// log out of media-upload permission later without losing their chat
+/// session.
+///
+/// Returns a temporary redirect to the PDS authorization endpoint.
+async fn auth_step_up(
+    headers: axum::http::HeaderMap,
+    Query(q): Query<AuthStepUpQuery>,
+    State(state): State<Arc<SharedState>>,
+) -> Result<Redirect, (StatusCode, String)> {
+    // Validate the requested purpose. Login is *not* a valid step-up
+    // purpose — that's what `/auth/login` is for.
+    let purpose = crate::server::OauthPurpose::from_str(&q.purpose).ok_or((
+        StatusCode::BAD_REQUEST,
+        format!("Unknown purpose: {}", q.purpose),
+    ))?;
+    if matches!(purpose, crate::server::OauthPurpose::Login) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Use /auth/login for the primary login flow.".to_string(),
+        ));
+    }
+
+    // Require an existing Login session for this DID so step-up can't be
+    // used as a primary login backdoor by an unauthenticated caller.
+    let login_session = state
+        .web_sessions
+        .lock()
+        .get(&(q.did.clone(), crate::server::OauthPurpose::Login))
+        .cloned();
+    let login_session = login_session.ok_or((
+        StatusCode::UNAUTHORIZED,
+        "Step-up requires an active login session for this DID.".to_string(),
+    ))?;
+
+    let (web_origin, _) = derive_web_origin(&headers);
+
+    // Discover the PDS authorization server. Reuse the resolver path
+    // from auth_login — it's a couple of well-known fetches.
+    let resolver = freeq_sdk::did::DidResolver::http();
+    let did_doc = resolver
+        .resolve(&q.did)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Cannot resolve DID: {e}")))?;
+    let pds_url = freeq_sdk::pds::pds_endpoint(&did_doc).ok_or((
+        StatusCode::BAD_REQUEST,
+        "No PDS in DID document".to_string(),
+    ))?;
+    let client = reqwest::Client::new();
+    let pr_url = format!(
+        "{}/.well-known/oauth-protected-resource",
+        pds_url.trim_end_matches('/')
+    );
+    let pr_meta: serde_json::Value = client
+        .get(&pr_url)
+        .send()
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("PDS metadata fetch failed: {e}")))?
+        .json()
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("PDS metadata parse failed: {e}")))?;
+    let auth_server = pr_meta["authorization_servers"][0]
+        .as_str()
+        .ok_or((StatusCode::BAD_GATEWAY, "No authorization server".to_string()))?;
+    let as_url = format!(
+        "{}/.well-known/oauth-authorization-server",
+        auth_server.trim_end_matches('/')
+    );
+    let auth_meta: serde_json::Value = client
+        .get(&as_url)
+        .send()
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Auth server metadata failed: {e}")))?
+        .json()
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Auth server metadata parse failed: {e}")))?;
+    let authorization_endpoint = auth_meta["authorization_endpoint"]
+        .as_str()
+        .ok_or((StatusCode::BAD_GATEWAY, "No authorization_endpoint".to_string()))?;
+    let token_endpoint = auth_meta["token_endpoint"]
+        .as_str()
+        .ok_or((StatusCode::BAD_GATEWAY, "No token_endpoint".to_string()))?;
+    let par_endpoint = auth_meta["pushed_authorization_request_endpoint"]
+        .as_str()
+        .ok_or((StatusCode::BAD_GATEWAY, "No PAR endpoint".to_string()))?;
+
+    let redirect_uri = format!("{web_origin}/auth/callback");
+    let scope = purpose.requested_scope();
+    let client_id = build_client_id(&web_origin, &redirect_uri);
+
+    let dpop_key = freeq_sdk::oauth::DpopKey::generate();
+    let (code_verifier, code_challenge) = generate_pkce();
+    let oauth_state = generate_random_string(16);
+
+    let params = [
+        ("response_type", "code"),
+        ("client_id", &client_id),
+        ("redirect_uri", &redirect_uri),
+        ("code_challenge", &code_challenge),
+        ("code_challenge_method", "S256"),
+        ("scope", scope),
+        ("state", &oauth_state),
+        ("login_hint", &login_session.handle),
+    ];
+
+    // PAR with DPoP (handles nonce retry the same way as auth_login)
+    let dpop_proof = dpop_key
+        .proof("POST", par_endpoint, None, None)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("DPoP proof failed: {e}"),
+            )
+        })?;
+    let resp = client
+        .post(par_endpoint)
+        .header("DPoP", &dpop_proof)
+        .form(&params)
+        .send()
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("PAR failed: {e}")))?;
+    let status = resp.status();
+    let dpop_nonce = resp
+        .headers()
+        .get("dpop-nonce")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    let par_resp: serde_json::Value = if status.as_u16() == 400 && dpop_nonce.is_some() {
+        let nonce = dpop_nonce.as_deref().unwrap();
+        let dpop_proof2 = dpop_key
+            .proof("POST", par_endpoint, Some(nonce), None)
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("DPoP retry failed: {e}"),
+                )
+            })?;
+        let resp2 = client
+            .post(par_endpoint)
+            .header("DPoP", &dpop_proof2)
+            .form(&params)
+            .send()
+            .await
+            .map_err(|e| (StatusCode::BAD_GATEWAY, format!("PAR retry failed: {e}")))?;
+        if !resp2.status().is_success() {
+            let text = resp2.text().await.unwrap_or_default();
+            return Err((
+                StatusCode::BAD_GATEWAY,
+                format!("PAR retry failed: {text}"),
+            ));
+        }
+        resp2
+            .json()
+            .await
+            .map_err(|e| (StatusCode::BAD_GATEWAY, format!("PAR parse failed: {e}")))?
+    } else if status.is_success() {
+        resp.json()
+            .await
+            .map_err(|e| (StatusCode::BAD_GATEWAY, format!("PAR parse failed: {e}")))?
+    } else {
+        let text = resp.text().await.unwrap_or_default();
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            format!("PAR failed ({status}): {text}"),
+        ));
+    };
+    let request_uri = par_resp["request_uri"].as_str().ok_or((
+        StatusCode::BAD_GATEWAY,
+        "No request_uri in PAR response".to_string(),
+    ))?;
+
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    state.oauth_pending.lock().insert(
+        oauth_state.clone(),
+        crate::server::OAuthPending {
+            handle: login_session.handle.clone(),
+            did: q.did.clone(),
+            pds_url,
+            code_verifier,
+            redirect_uri: redirect_uri.clone(),
+            client_id: client_id.clone(),
+            token_endpoint: token_endpoint.to_string(),
+            dpop_key_b64: dpop_key.to_base64url(),
+            created_at: now,
+            mobile: q.mobile.as_deref() == Some("1"),
+            irc_state: None,
+            purpose,
+            requested_scope: scope.to_string(),
+        },
+    );
+
+    let auth_url = format!(
+        "{}?client_id={}&request_uri={}",
+        authorization_endpoint,
+        urlencod(&client_id),
+        urlencod(request_uri),
+    );
+    tracing::info!(
+        did = %q.did, purpose = purpose.as_str(), scope = %scope,
+        "OAuth step-up started, redirecting to auth server",
+    );
     Ok(Redirect::temporary(&auth_url))
 }
 
@@ -1914,12 +2177,20 @@ async fn auth_callback(
             )
         })?;
 
-    // Check expiry (5 minutes)
+    // Check expiry. Step-up flows live in a popup that the user might
+    // ignore briefly to read what Bluesky's consent screen says, so
+    // give them a longer window than primary login. Pre-existing
+    // primary-login behaviour (5 min) is preserved.
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    if now - pending.created_at > 300 {
+    let ttl = if matches!(pending.purpose, crate::server::OauthPurpose::Login) {
+        300
+    } else {
+        600
+    };
+    if now - pending.created_at > ttl {
         return Err((StatusCode::BAD_REQUEST, "OAuth session expired".to_string()));
     }
 
@@ -2014,33 +2285,52 @@ async fn auth_callback(
     let access_token = token_resp["access_token"]
         .as_str()
         .ok_or_else(|| (StatusCode::BAD_GATEWAY, "No access_token".to_string()))?;
+    // The PDS reports back which scope it actually granted. May not match
+    // what we requested — older PDSes downgrade granular requests to
+    // `transition:generic`. Store it so per-purpose checks can be honest.
+    let granted_scope = token_resp["scope"]
+        .as_str()
+        .unwrap_or(pending.requested_scope.as_str())
+        .to_string();
 
-    // Generate a one-time web auth token for SASL
-    let web_token = generate_random_string(32);
-    state.web_auth_tokens.lock().insert(
-        web_token.clone(),
-        (
-            pending.did.clone(),
-            pending.handle.clone(),
-            std::time::Instant::now(),
-        ),
-    );
+    let is_step_up = !matches!(pending.purpose, crate::server::OauthPurpose::Login);
+
+    // Mint a one-time SASL web-token only for the primary login flow.
+    // Step-ups produce *additional* PDS grants for the same already-
+    // logged-in user — we don't want to issue a second SASL token and
+    // confuse the IRC layer into thinking the identity changed.
+    let web_token = if is_step_up {
+        None
+    } else {
+        let token = generate_random_string(32);
+        state.web_auth_tokens.lock().insert(
+            token.clone(),
+            (
+                pending.did.clone(),
+                pending.handle.clone(),
+                std::time::Instant::now(),
+            ),
+        );
+        Some(token)
+    };
 
     let result = crate::server::OAuthResult {
         did: pending.did.clone(),
         handle: pending.handle.clone(),
         access_jwt: access_token.to_string(),
         pds_url: pending.pds_url.clone(),
-        web_token: Some(web_token),
+        web_token,
         created_at: SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs(),
     };
 
-    // Store web session for server-proxied operations (media upload)
+    // Store web session for server-proxied operations under the purpose
+    // this OAuth flow was started for (Login, BlobUpload, etc.). A user
+    // with both Login and BlobUpload sessions has two independent grants.
     state.web_sessions.lock().insert(
-        pending.did.clone(),
+        (pending.did.clone(), pending.purpose),
         crate::server::WebSession {
             did: pending.did.clone(),
             handle: pending.handle.clone(),
@@ -2049,10 +2339,15 @@ async fn auth_callback(
             dpop_key_b64: pending.dpop_key_b64.clone(),
             dpop_nonce: dpop_nonce.clone(),
             created_at: std::time::Instant::now(),
+            granted_scope: granted_scope.clone(),
         },
     );
 
-    tracing::info!(did = %pending.did, handle = %pending.handle, mobile = pending.mobile, "OAuth callback: token obtained, session stored");
+    tracing::info!(
+        did = %pending.did, handle = %pending.handle, mobile = pending.mobile,
+        purpose = pending.purpose.as_str(), scope = %granted_scope,
+        "OAuth callback: token obtained, session stored",
+    );
 
     // IRC /login command — complete auth on the IRC connection
     if let Some(ref irc_state) = pending.irc_state {
@@ -2095,6 +2390,13 @@ p {{ color: #a0a0b0; margin: 8px 0; }}
         // If session not found (expired/disconnected), fall through to normal web flow
     }
 
+    // Step-up flow: don't post a new identity to the parent window.
+    // Just signal "step-up complete for purpose=X" so the web client
+    // can retry whatever it was doing (e.g. re-POST the upload).
+    if is_step_up {
+        return Ok(step_up_result_page(pending.purpose.as_str()));
+    }
+
     // Mobile apps get a redirect to freeq:// custom scheme
     if pending.mobile {
         let nick = mobile_nick_from_handle(&pending.handle);
@@ -2125,6 +2427,50 @@ p {{ color: #a0a0b0; margin: 8px 0; }}
         "Authentication successful!",
         Some(&result),
     ))
+}
+
+/// HTML page returned to the popup at the end of a step-up OAuth flow.
+/// Carries no identity — only signals that the caller (the same logged-in
+/// user) gained the additional purpose's permission. The web app picks
+/// this up via `BroadcastChannel('freeq-oauth-step-up')` and retries
+/// whatever it was doing.
+fn step_up_result_page(purpose: &str) -> ([(&'static str, &'static str); 2], String) {
+    let html = format!(
+        r#"<!DOCTYPE html><html><head><meta charset="utf-8"/><title>freeq</title>
+<style>
+body {{ font-family: system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0;
+       display: flex; justify-content: center; align-items: center;
+       min-height: 100vh; margin: 0; }}
+.card {{ background: #16162a; border: 1px solid #2a2a4a; border-radius: 16px;
+        padding: 32px; text-align: center; max-width: 380px; }}
+h1 {{ color: #6c63ff; font-size: 20px; margin: 0 0 12px 0; }}
+p {{ color: #a0a0b0; margin: 6px 0; font-size: 14px; }}
+</style></head><body>
+<div class="card">
+<h1>✓ Permission granted</h1>
+<p>You can close this window — freeq will continue automatically.</p>
+</div>
+<script>
+try {{
+  const msg = {{ type: 'freeq-oauth-step-up', purpose: '{purpose}' }};
+  try {{ const bc = new BroadcastChannel('freeq-oauth-step-up'); bc.postMessage(msg); bc.close(); }} catch(e) {{}}
+  if (window.opener) {{
+    try {{ window.opener.postMessage(msg, window.location.origin); }} catch(e) {{}}
+  }}
+  setTimeout(() => window.close(), 800);
+}} catch(e) {{}}
+</script></body></html>"#,
+    );
+    (
+        [
+            ("content-type", "text/html; charset=utf-8"),
+            (
+                "content-security-policy",
+                "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'",
+            ),
+        ],
+        html,
+    )
 }
 
 /// Generate the HTML page returned by the OAuth callback.
@@ -2354,16 +2700,57 @@ async fn api_upload(
         ));
     }
 
-    // Look up the user's web session (PDS credentials)
-    let session = state.web_sessions.lock().get(&did).cloned();
+    // Look up a session that is allowed to upload blobs. Prefer the
+    // dedicated BlobUpload session (Phase 2 step-up); fall back to the
+    // primary Login session only when its granted scope already covers
+    // blob upload (i.e. the PDS issued `transition:generic` because it
+    // doesn't speak granular scopes yet, or the user got both grants on
+    // the same legacy account).
+    let session = {
+        let sessions = state.web_sessions.lock();
+        let purpose = crate::server::OauthPurpose::BlobUpload;
+        if let Some(s) = sessions.get(&(did.clone(), purpose)) {
+            Some(s.clone())
+        } else if let Some(s) = sessions.get(&(did.clone(), crate::server::OauthPurpose::Login)) {
+            // Legacy/wide grant from the primary login is acceptable.
+            if crate::server::scope_satisfies_purpose(&s.granted_scope, purpose) {
+                Some(s.clone())
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
     let session = match session {
         Some(s) => s,
         None => {
-            let count = state.web_sessions.lock().len();
-            tracing::warn!(did = %did, session_count = count, "Upload 401: no web session for DID");
+            let has_login = state
+                .web_sessions
+                .lock()
+                .contains_key(&(did.clone(), crate::server::OauthPurpose::Login));
+            // Distinguish "you're not logged in" (re-auth) from "you're
+            // logged in but didn't grant blob upload" (step-up). The
+            // structured body lets the web client trigger the right
+            // recovery flow without parsing strings.
+            let body = if has_login {
+                serde_json::json!({
+                    "error": "step_up_required",
+                    "purpose": "blob_upload",
+                    "step_up_url": format!("/auth/step-up?purpose=blob_upload"),
+                    "message": "Image upload to your PDS needs an additional permission. \
+                                Authorize once and we'll proceed.",
+                })
+            } else {
+                serde_json::json!({
+                    "error": "not_authenticated",
+                    "message": "No active session for this DID — please log in.",
+                })
+            };
+            tracing::warn!(did = %did, has_login, "Upload denied: no blob-upload-capable session");
             return Err((
-                StatusCode::UNAUTHORIZED,
-                "No active session for this DID — please re-authenticate".into(),
+                if has_login { StatusCode::FORBIDDEN } else { StatusCode::UNAUTHORIZED },
+                body.to_string(),
             ));
         }
     };
@@ -2402,11 +2789,19 @@ async fn api_upload(
         (status, format!("PDS upload failed: {msg}"))
     })?;
 
-    // Update stored DPoP nonce so subsequent uploads don't start stale
-    if let Some(ref new_nonce) = result.updated_nonce
-        && let Some(session) = state.web_sessions.lock().get_mut(&did)
-    {
-        session.dpop_nonce = Some(new_nonce.clone());
+    // Update stored DPoP nonce so subsequent uploads don't start stale.
+    // Refresh the same session slot we read from above (BlobUpload first;
+    // Login fallback only on legacy wide grants).
+    if let Some(ref new_nonce) = result.updated_nonce {
+        let mut sessions = state.web_sessions.lock();
+        let blob_key = (did.clone(), crate::server::OauthPurpose::BlobUpload);
+        if let Some(s) = sessions.get_mut(&blob_key) {
+            s.dpop_nonce = Some(new_nonce.clone());
+        } else if let Some(s) =
+            sessions.get_mut(&(did.clone(), crate::server::OauthPurpose::Login))
+        {
+            s.dpop_nonce = Some(new_nonce.clone());
+        }
     }
 
     // For non-image content, proxy through our server to avoid PDS

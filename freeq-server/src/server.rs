@@ -139,6 +139,15 @@ pub struct OAuthPending {
     pub mobile: bool,
     /// If set, this login was initiated via IRC `/login` — complete auth on this IRC session.
     pub irc_state: Option<String>,
+    /// Which OAuth purpose this flow is for. `Login` is the default first
+    /// log-in (narrow `atproto` scope); `BlobUpload`/`BlueskyPost` are
+    /// step-ups requested via `/auth/step-up?purpose=…` with broader
+    /// scopes — the callback stores them in their own session slot
+    /// rather than overwriting the primary login.
+    pub purpose: OauthPurpose,
+    /// The scope string we sent in PAR. Used as a fallback for
+    /// `granted_scope` when the token endpoint omits the `scope` field.
+    pub requested_scope: String,
 }
 
 /// Completed OAuth: stored after /auth/callback, consumed by the web client.
@@ -165,7 +174,11 @@ pub struct LinkedIdentity {
 }
 
 /// Active web session with credentials for PDS operations (e.g., media upload).
-/// Keyed by DID in SharedState.web_sessions.
+/// Keyed by `(DID, purpose)` in SharedState.web_sessions where `purpose` is
+/// [`OauthPurpose`]. The default `Login` session is the one created at first
+/// login (narrow scope: `atproto`); additional purposes are created by the
+/// step-up flow at `/auth/step-up?purpose=…` with broader scopes layered on
+/// only when the user actually triggers a feature that needs them.
 #[derive(Debug, Clone)]
 pub struct WebSession {
     pub did: String,
@@ -175,6 +188,92 @@ pub struct WebSession {
     pub dpop_key_b64: String,
     pub dpop_nonce: Option<String>,
     pub created_at: std::time::Instant,
+    /// The actual scope string the PDS granted (read from the token-endpoint
+    /// `scope` field). May differ from what we requested — older PDSes may
+    /// downgrade granular requests to `transition:generic`. Used by per-purpose
+    /// scope checks.
+    pub granted_scope: String,
+}
+
+/// Distinguishes which OAuth grant a [`WebSession`] is for. Each purpose has
+/// its own scope set and lives in its own slot, so escalating to a broader
+/// permission (e.g. blob upload) only happens when the user actually triggers
+/// the feature that needs it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OauthPurpose {
+    /// Identity-only login. Scope: `atproto`. Lets us prove the user owns
+    /// their DID via SASL — that's all most users ever need.
+    Login,
+    /// Image / media upload to the user's PDS. Scope: `atproto blob:image/*`.
+    /// Triggered the first time the user hits the upload button.
+    BlobUpload,
+    /// Cross-posting messages to Bluesky. Scope: adds `repo:app.bsky.feed.post`.
+    /// Triggered the first time a user enables Bluesky mirroring on a channel.
+    BlueskyPost,
+}
+
+impl OauthPurpose {
+    /// Parse the URL-/JSON-friendly form used in `/auth/step-up?purpose=…`.
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "login" => Some(Self::Login),
+            "blob_upload" => Some(Self::BlobUpload),
+            "bluesky_post" => Some(Self::BlueskyPost),
+            _ => None,
+        }
+    }
+
+    /// Reverse of [`from_str`].
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Login => "login",
+            Self::BlobUpload => "blob_upload",
+            Self::BlueskyPost => "bluesky_post",
+        }
+    }
+
+    /// The OAuth scope string we *request* for this purpose. The PDS may
+    /// grant a different one — store that in [`WebSession::granted_scope`]
+    /// and check it at use time via [`scope_satisfies_purpose`].
+    pub fn requested_scope(self) -> &'static str {
+        match self {
+            // Identity-only. Same as a vanilla "Login with Bluesky" button.
+            Self::Login => "atproto",
+            // Upload images to the user's repo. Narrow MIME on purpose so
+            // the consent screen says "upload images" instead of "upload
+            // anything".
+            Self::BlobUpload => "atproto blob:image/*",
+            // Cross-post to Bluesky's feed. Repo write narrowed to a single
+            // collection.
+            Self::BlueskyPost => "atproto repo:app.bsky.feed.post",
+        }
+    }
+}
+
+/// True when the session's actually-granted scope satisfies what the
+/// requested purpose needs at runtime.
+///
+/// Tolerant of two real-world cases:
+/// - Older PDSes may grant `transition:generic` instead of the granular
+///   scope we requested (legacy "App Password" semantics that subsumes
+///   everything). Treat that as satisfying any purpose.
+/// - bsky.social granular grants may include extra `blob:` MIME entries
+///   beyond what we asked; we only need one `blob:image/*` (or the
+///   wildcard `blob:*/*`) for upload.
+pub fn scope_satisfies_purpose(granted: &str, purpose: OauthPurpose) -> bool {
+    if granted.split_whitespace().any(|s| s == "transition:generic") {
+        return true;
+    }
+    match purpose {
+        OauthPurpose::Login => granted.split_whitespace().any(|s| s == "atproto"),
+        OauthPurpose::BlobUpload => granted.split_whitespace().any(|s| {
+            s == "blob:*/*" || s == "blob:image/*" || s.starts_with("blob:image/")
+        }),
+        OauthPurpose::BlueskyPost => granted.split_whitespace().any(|s| {
+            s == "repo:app.bsky.feed.post" || s == "repo:*"
+        }),
+    }
 }
 
 /// Info about a remote user connected via S2S federation.
@@ -473,7 +572,11 @@ pub struct SharedState {
     pub web_auth_tokens: Mutex<HashMap<String, (String, String, std::time::Instant)>>,
     /// Active web sessions with PDS credentials, keyed by DID.
     /// Used for server-proxied operations like media upload.
-    pub web_sessions: Mutex<HashMap<String, WebSession>>,
+    /// Active web sessions keyed by `(DID, purpose)`. Each entry holds an
+    /// independent OAuth grant: a user with both `Login` and `BlobUpload`
+    /// has two PDS-level tokens, with the upload one only obtained when
+    /// they actually clicked an upload button. See [`OauthPurpose`].
+    pub web_sessions: Mutex<HashMap<(String, OauthPurpose), WebSession>>,
     /// Pending IRC LOGIN commands: oauth_state → session_id.
     /// When the OAuth callback fires, the server completes auth on the IRC connection.
     pub login_pending: Mutex<HashMap<String, String>>,
@@ -773,6 +876,69 @@ fn load_msg_signing_key(data_dir: &str) -> ed25519_dalek::SigningKey {
     key
 }
 
+/// Install the agent-assist LLM provider into the process-wide slot
+/// based on `ServerConfig.llm_*` fields. No-op if the provider is
+/// `None` / `"none"` / unset.
+///
+/// Pluggable today: `openai` selects the OpenAI-compatible client,
+/// which works against any /chat/completions endpoint (OpenAI itself,
+/// Together, Fireworks, Groq, vLLM, llama.cpp server, Ollama with
+/// /v1, TGI, LMDeploy, etc — see `agent_assist::llm::openai`).
+/// `mock` selects a deterministic regex matcher used by tests and dev.
+fn install_llm_provider(config: &ServerConfig) {
+    use std::time::Duration;
+    let kind = config
+        .llm_provider
+        .as_deref()
+        .map(str::trim)
+        .map(str::to_ascii_lowercase);
+    match kind.as_deref() {
+        None | Some("") | Some("none") => {
+            // Intentionally do NOT clear the global here. The global is
+            // initialised to None by LazyLock; this branch is the
+            // "config didn't ask for an LLM" case and a no-op preserves
+            // test isolation when multiple Server instances are spun up
+            // in the same process (some with mock providers, some
+            // without). Production servers boot once, so this is
+            // identical to actively clearing.
+            tracing::info!("agent-assist LLM provider not configured (preserving any existing global)");
+        }
+        Some("mock") => {
+            crate::agent_assist::llm::global::set_provider(Arc::new(
+                crate::agent_assist::llm::mock::MockProvider,
+            ));
+            tracing::info!("agent-assist LLM provider: mock");
+        }
+        Some("openai") => {
+            let base = config
+                .llm_base_url
+                .clone()
+                .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+            let model = config
+                .llm_model
+                .clone()
+                .unwrap_or_else(|| "gpt-4o-mini".to_string());
+            let display_name = format!("openai-compat:{model}");
+            let provider = crate::agent_assist::llm::openai::OpenAiCompatible::new(
+                display_name.clone(),
+                base.clone(),
+                config.llm_api_key.clone(),
+                model,
+                Duration::from_secs(config.llm_timeout_secs.max(1)),
+            );
+            crate::agent_assist::llm::global::set_provider(Arc::new(provider));
+            tracing::info!("agent-assist LLM provider: {} via {}", display_name, base);
+        }
+        Some(other) => {
+            tracing::warn!(
+                "Unknown agent-assist LLM provider `{other}`; disabling. \
+                 Set FREEQ_LLM_PROVIDER to one of: openai, mock, none."
+            );
+            crate::agent_assist::llm::global::clear_provider();
+        }
+    }
+}
+
 pub struct Server {
     config: ServerConfig,
     resolver: DidResolver,
@@ -793,6 +959,11 @@ impl Server {
 
     /// Build SharedState, opening the database and loading persisted data.
     fn build_state(&self) -> Result<Arc<SharedState>> {
+        // Install the agent-assist LLM provider (idempotent; no-op if
+        // not configured). Lives in a process-wide slot rather than
+        // SharedState so existing constructors don't need to change.
+        install_llm_provider(&self.config);
+
         // Load message signing key early — it's used to derive DB encryption key
         let msg_signing_key = load_msg_signing_key(self.config.data_dir.as_deref().unwrap_or("."));
 

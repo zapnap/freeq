@@ -643,6 +643,18 @@ impl Db {
                 sender_did
             ],
         )?;
+        // Record into the agent-assist diagnostic ring buffer. We
+        // capture only the fact that a message was accepted — never
+        // the body or tags. The auto-increment row id is the canonical
+        // server sequence used by `diagnose_message_ordering`.
+        let mut ev = crate::agent_assist::recorder::DiagnosticEvent::now(
+            crate::agent_assist::recorder::EventKind::MessageAccepted,
+        );
+        ev.channel = Some(channel.to_string());
+        ev.msgid = msgid.map(|s| s.to_string());
+        ev.did = sender_did.map(|s| s.to_string());
+        ev.server_sequence = Some(self.conn.last_insert_rowid());
+        crate::agent_assist::recorder::record(ev);
         Ok(())
     }
 

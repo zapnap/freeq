@@ -533,6 +533,24 @@ export function ConnectScreen() {
             </button>
           )}
 
+          {/* Consent preview — show what we're asking Bluesky for BEFORE
+              redirecting, so the consent screen there is no surprise. */}
+          {mode === 'at-proto' && !oauthPending && !connecting && (
+            <div className="bg-bg/50 border border-border/60 rounded-lg px-3 py-2.5 text-[11px] leading-relaxed text-fg-dim">
+              <div className="font-semibold text-fg-muted mb-1">
+                What freeq will ask Bluesky for
+              </div>
+              <ul className="space-y-0.5 list-disc list-inside marker:text-fg-dim/60">
+                <li>Prove you are <span className="font-mono">@{handle || 'your.handle'}</span></li>
+              </ul>
+              <div className="mt-1.5 text-fg-dim/80">
+                That's it for sign-in. Image upload to your PDS asks for one
+                extra permission, only the first time you upload — never up
+                front.
+              </div>
+            </div>
+          )}
+
           {/* Connect button */}
           <button
             onClick={mode === 'at-proto' ? doAtLogin : doGuestLogin}

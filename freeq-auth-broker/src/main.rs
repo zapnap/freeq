@@ -413,7 +413,12 @@ async fn client_metadata(State(state): State<Arc<BrokerState>>) -> Json<serde_js
         "tos_uri": state.config.public_url,
         "policy_uri": state.config.public_url,
         "redirect_uris": [redirect_uri],
-        "scope": "atproto transition:generic",
+        // Union of scopes the broker may ever request, plus
+        // `transition:generic` for backward compat with refresh tokens
+        // issued before this change. We never request it at /authorize
+        // — the broker only asks for `atproto`. Remove transition:generic
+        // once the PDS grace period closes.
+        "scope": "atproto blob:image/* repo:app.bsky.feed.post transition:generic",
         "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],
         "token_endpoint_auth_method": "none",
@@ -518,7 +523,11 @@ async fn auth_login(
         "{}/auth/callback",
         state.config.public_url.trim_end_matches('/')
     );
-    let scope = "atproto transition:generic";
+    // Identity-only scope. The broker's job is to mint a session token
+    // for SASL — that needs nothing more than `atproto`. PDS-touching
+    // features (image upload, Bluesky cross-post) are step-ups served
+    // by the freeq-server's `/auth/step-up`, never the broker.
+    let scope = "atproto";
     let client_id = build_client_id(&state.config.public_url, &redirect_uri);
 
     let dpop_key = DpopKey::generate();
@@ -906,9 +915,10 @@ async fn session(
         .await
         .ok_or((StatusCode::UNAUTHORIZED, "Invalid broker token".to_string()))?;
 
-    let (access_token, refresh_token, dpop_nonce) = refresh_access_token(&state.config, &record)
-        .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Refresh failed: {e}")))?;
+    let (access_token, refresh_token, dpop_nonce, granted_scope) =
+        refresh_access_token(&state.config, &record)
+            .await
+            .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Refresh failed: {e}")))?;
 
     // Update stored refresh token + nonce (C-5: encrypt before storing)
     let now = chrono::Utc::now().timestamp();
@@ -946,9 +956,17 @@ async fn session(
         return_to: None,
         popup: false,
     };
-    if let Err(e) =
-        push_web_session_with_token(&state.config, &pending, &access_token, dpop_nonce.clone())
-            .await
+    if let Err(e) = push_web_session_with_token(
+        &state.config,
+        &pending,
+        &access_token,
+        dpop_nonce.clone(),
+        // Forward the actually-granted scope from the refresh response so
+        // the freeq-server's per-purpose checks see the truth, not a
+        // hard-coded narrow assumption.
+        &granted_scope,
+    )
+    .await
     {
         tracing::warn!(error = %e, "Failed to refresh web session on server");
     }
@@ -1001,10 +1019,21 @@ async fn get_session(state: &Arc<BrokerState>, broker_token: &str) -> Option<Bro
     }
 }
 
+/// Returns `(access_token, refresh_token, dpop_nonce, granted_scope)`.
+///
+/// `granted_scope` is read from the refresh response's `scope` field
+/// when present. When the PDS omits it (some implementations do for
+/// refreshes), we default to `transition:generic`. That is intentionally
+/// conservative: the only refresh tokens the broker holds today were
+/// originally granted under `atproto transition:generic` (the broker
+/// only started narrowing to `atproto` in this same release), so the
+/// pre-existing grant is wide. After this release, every NEW broker
+/// session's first refresh response will carry the narrow scope
+/// explicitly and we'll record it correctly.
 async fn refresh_access_token(
     config: &BrokerConfig,
     record: &BrokerSessionRecord,
-) -> Result<(String, String, Option<String>), anyhow::Error> {
+) -> Result<(String, String, Option<String>, String), anyhow::Error> {
     let dpop_key = DpopKey::from_base64url(&record.dpop_key_b64)?;
     let redirect_uri = format!("{}/auth/callback", config.public_url.trim_end_matches('/'));
     let client_id = build_client_id(&config.public_url, &redirect_uri);
@@ -1066,8 +1095,16 @@ async fn refresh_access_token(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .or(dpop_nonce);
+    // Conservative default explained on the function signature: refresh
+    // tokens stored in the broker today were originally granted under
+    // `transition:generic`, so a missing `scope` in the response means
+    // "preserve the existing wide grant".
+    let granted_scope = token_resp["scope"]
+        .as_str()
+        .unwrap_or("atproto transition:generic")
+        .to_string();
 
-    Ok((access_token, refresh_token, dpop_nonce))
+    Ok((access_token, refresh_token, dpop_nonce, granted_scope))
 }
 
 async fn mint_web_token(
@@ -1110,7 +1147,13 @@ async fn push_web_session(
     let access_token = token_resp["access_token"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("No access_token"))?;
-    push_web_session_with_token(config, pending, access_token, dpop_nonce).await
+    // Read the actually-granted scope from the token response. Older
+    // PDSes may downgrade us to `transition:generic`. Defaults to
+    // `atproto` only when missing — that's the scope this broker now
+    // requests at /authorize, so it's the right narrow assumption for
+    // a code-exchange where the response forgot to echo the scope.
+    let granted_scope = token_resp["scope"].as_str().unwrap_or("atproto");
+    push_web_session_with_token(config, pending, access_token, dpop_nonce, granted_scope).await
 }
 
 async fn push_web_session_with_token(
@@ -1118,6 +1161,7 @@ async fn push_web_session_with_token(
     pending: &PendingAuth,
     access_token: &str,
     dpop_nonce: Option<String>,
+    granted_scope: &str,
 ) -> Result<(), anyhow::Error> {
     let body = serde_json::json!({
         "did": pending.did,
@@ -1126,6 +1170,7 @@ async fn push_web_session_with_token(
         "access_token": access_token,
         "dpop_key_b64": pending.dpop_key_b64,
         "dpop_nonce": dpop_nonce,
+        "granted_scope": granted_scope,
     });
     let (sig, ts) = sign_body(&config.shared_secret, &body)?;
     let url = format!(
@@ -1286,7 +1331,10 @@ fn build_client_id(web_origin: &str, redirect_uri: &str) -> String {
         || web_origin.starts_with("http://192.168.")
         || web_origin.starts_with("http://10.")
     {
-        let scope = "atproto transition:generic";
+        // Loopback client_id advertises the union of scopes the broker
+        // could ever use, including the legacy transition:generic for
+        // refresh-token grace period. Actual login asks for "atproto".
+        let scope = "atproto blob:image/* repo:app.bsky.feed.post transition:generic";
         format!(
             "http://localhost?redirect_uri={}&scope={}",
             urlencod(redirect_uri),

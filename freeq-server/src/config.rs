@@ -136,6 +136,33 @@ pub struct ServerConfig {
     /// Comma-separated list.
     #[arg(long, value_delimiter = ',', env = "OPER_DIDS")]
     pub oper_dids: Vec<String>,
+
+    // ── Agent Assistance Interface: LLM provider ───────────────────
+    /// LLM provider for the `POST /agent/session` free-form router.
+    /// `openai` = any OpenAI-compatible /chat/completions endpoint
+    /// (covers OpenAI itself, Together, Fireworks, Groq, vLLM,
+    /// llama.cpp server, Ollama with /v1, TGI, LMDeploy, etc).
+    /// `none` (or unset) = endpoint returns LLM_NOT_CONFIGURED.
+    #[arg(long, env = "FREEQ_LLM_PROVIDER")]
+    pub llm_provider: Option<String>,
+
+    /// Base URL for the OpenAI-compatible endpoint, e.g.
+    /// `https://api.openai.com/v1` or `http://127.0.0.1:11434/v1`.
+    #[arg(long, env = "FREEQ_LLM_BASE_URL")]
+    pub llm_base_url: Option<String>,
+
+    /// API key for the LLM provider (sent as `Authorization: Bearer`).
+    /// Many local OSS servers ignore this field.
+    #[arg(long, env = "FREEQ_LLM_API_KEY")]
+    pub llm_api_key: Option<String>,
+
+    /// Model name passed verbatim to the provider.
+    #[arg(long, env = "FREEQ_LLM_MODEL")]
+    pub llm_model: Option<String>,
+
+    /// Hard ceiling on each LLM HTTP call, in seconds. Default 8.
+    #[arg(long, env = "FREEQ_LLM_TIMEOUT_SECS", default_value = "8")]
+    pub llm_timeout_secs: u64,
 }
 
 impl Default for ServerConfig {
@@ -168,6 +195,11 @@ impl Default for ServerConfig {
             broker_shared_secret: None,
             oper_password: None,
             oper_dids: vec![],
+            llm_provider: None,
+            llm_base_url: None,
+            llm_api_key: None,
+            llm_model: None,
+            llm_timeout_secs: 8,
         }
     }
 }
