@@ -25,8 +25,10 @@ use super::{
 };
 use crate::agent_assist::tools;
 use crate::agent_assist::types::{
-    Caller, Confidence, DiagnoseMessageOrderingInput, DiagnoseSyncInput, DisclosureLevel,
-    FactBundle, SuggestedFix, ValidateClientConfigInput,
+    Caller, Confidence, DiagnoseDisconnectInput, DiagnoseJoinFailureInput,
+    DiagnoseMessageOrderingInput, DiagnoseSyncInput, DisclosureLevel, ExplainMessageRoutingInput,
+    FactBundle, InspectMySessionInput, PredictMessageOutcomeInput, ReplayMissedMessagesInput,
+    SuggestedFix, ValidateClientConfigInput,
 };
 use crate::server::SharedState;
 use serde::Serialize;
@@ -117,6 +119,66 @@ fn descriptors() -> Vec<ToolDescriptor> {
                     .into(),
             args_hint: "{ account: \"did:plc:...\", channel?: \"#name\", symptom?: string }".into(),
         },
+        // ── Bot-developer tools ──
+        ToolDescriptor {
+            name: "inspect_my_session".into(),
+            description:
+                "Show what the server knows about a connected account: nick, handle, joined \
+                 channels, negotiated IRCv3 capabilities, signing-key registration, away \
+                 state, declared actor class. Use when a bot asks 'why does the server think \
+                 X?' or 'what state am I in?'."
+                    .into(),
+            args_hint: "{ account: \"did:plc:...\" }".into(),
+        },
+        ToolDescriptor {
+            name: "diagnose_join_failure".into(),
+            description:
+                "Explain why a JOIN to a channel failed. Reads channel modes (+i/+k/+b), \
+                 invite list, and policy gates. Use when the bot reports 473/474/475/477 \
+                 numerics or a silently-rejected JOIN."
+                    .into(),
+            args_hint:
+                "{ account: \"did:plc:...\", channel: \"#name\", observed_numeric?: \"473\" }"
+                    .into(),
+        },
+        ToolDescriptor {
+            name: "diagnose_disconnect".into(),
+            description:
+                "Best-effort cause inference for a recent disconnect. Reads ghost-session \
+                 grace state, server boot age, and active-session count. Use for \
+                 long-running bots asking 'why did I drop?'."
+                    .into(),
+            args_hint: "{ account: \"did:plc:...\" }".into(),
+        },
+        ToolDescriptor {
+            name: "replay_missed_messages".into(),
+            description:
+                "Given a last-seen msgid in a channel, report the canonical sequence of \
+                 messages that landed since (msgids only, not bodies — the bot fetches \
+                 those via CHATHISTORY AFTER once it knows there's a gap)."
+                    .into(),
+            args_hint:
+                "{ channel: \"#name\", since_msgid: \"<ULID>\", limit?: 1000 }".into(),
+        },
+        ToolDescriptor {
+            name: "predict_message_outcome".into(),
+            description:
+                "Dry-run a PRIVMSG. Reports whether it would be accepted, rate-limited, \
+                 blocked by channel mode, or rejected for non-membership. No actual send."
+                    .into(),
+            args_hint:
+                "{ account: \"did:plc:...\", target: \"#name or nick\", draft_size_bytes?: 100 }"
+                    .into(),
+        },
+        ToolDescriptor {
+            name: "explain_message_routing".into(),
+            description:
+                "Pure parser. Given a raw IRC line and the bot's own nick, explain where \
+                 it routes (channel/DM), who sent it, whether it's a self-echo, an action, \
+                 a mention (with word-boundary check), encrypted, an edit, or a delete."
+                    .into(),
+            args_hint: "{ wire_line: \"<raw IRC line>\", my_nick: \"mybot\" }".into(),
+        },
     ]
 }
 
@@ -174,6 +236,36 @@ fn run_tool(
             let typed: DiagnoseSyncInput = serde_json::from_value(args)
                 .map_err(|e| format!("invalid args for diagnose_sync: {e}"))?;
             Ok(tools::diagnose_sync(&typed, caller, state))
+        }
+        "inspect_my_session" => {
+            let typed: InspectMySessionInput = serde_json::from_value(args)
+                .map_err(|e| format!("invalid args for inspect_my_session: {e}"))?;
+            Ok(tools::inspect_my_session(&typed, caller, state))
+        }
+        "diagnose_join_failure" => {
+            let typed: DiagnoseJoinFailureInput = serde_json::from_value(args)
+                .map_err(|e| format!("invalid args for diagnose_join_failure: {e}"))?;
+            Ok(tools::diagnose_join_failure(&typed, caller, state))
+        }
+        "diagnose_disconnect" => {
+            let typed: DiagnoseDisconnectInput = serde_json::from_value(args)
+                .map_err(|e| format!("invalid args for diagnose_disconnect: {e}"))?;
+            Ok(tools::diagnose_disconnect(&typed, caller, state))
+        }
+        "replay_missed_messages" => {
+            let typed: ReplayMissedMessagesInput = serde_json::from_value(args)
+                .map_err(|e| format!("invalid args for replay_missed_messages: {e}"))?;
+            Ok(tools::replay_missed_messages(&typed, caller, state))
+        }
+        "predict_message_outcome" => {
+            let typed: PredictMessageOutcomeInput = serde_json::from_value(args)
+                .map_err(|e| format!("invalid args for predict_message_outcome: {e}"))?;
+            Ok(tools::predict_message_outcome(&typed, caller, state))
+        }
+        "explain_message_routing" => {
+            let typed: ExplainMessageRoutingInput = serde_json::from_value(args)
+                .map_err(|e| format!("invalid args for explain_message_routing: {e}"))?;
+            Ok(tools::explain_message_routing(&typed))
         }
         other => Err(format!("unknown tool name: `{other}`")),
     }
@@ -330,18 +422,23 @@ mod tests {
             // run_tool, even if to a "bad args" branch with empty
             // input. This catches drift between the catalogue and the
             // dispatcher.
-            let bad = serde_json::json!({});
-            let result = match *name {
-                "validate_client_config" => serde_json::from_value::<
-                    ValidateClientConfigInput,
-                >(bad.clone()).is_ok() || true,
-                "diagnose_message_ordering" => serde_json::from_value::<
-                    DiagnoseMessageOrderingInput,
-                >(bad.clone()).is_ok() || true,
-                "diagnose_sync" => serde_json::from_value::<DiagnoseSyncInput>(bad.clone()).is_ok() || true,
-                _ => false,
-            };
-            assert!(result, "no dispatch arm for advertised tool `{name}`");
+            // Test only checks that every advertised name maps to *some*
+            // dispatch arm in this file — drift catcher. The actual
+            // serde_from_value calls don't matter; the value of `true`
+            // here is the existence of the match arm.
+            let known = matches!(
+                *name,
+                "validate_client_config"
+                    | "diagnose_message_ordering"
+                    | "diagnose_sync"
+                    | "inspect_my_session"
+                    | "diagnose_join_failure"
+                    | "diagnose_disconnect"
+                    | "replay_missed_messages"
+                    | "predict_message_outcome"
+                    | "explain_message_routing"
+            );
+            assert!(known, "no dispatch arm for advertised tool `{name}`");
         }
     }
 }

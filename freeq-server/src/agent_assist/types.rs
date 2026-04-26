@@ -264,6 +264,66 @@ pub struct DiagnoseSyncInput {
     pub symptom: Option<String>,
 }
 
+// ─── Bot-developer tool inputs (batch 2) ─────────────────────────────────
+
+/// "What does the server actually know about me right now?"
+#[derive(Debug, Deserialize)]
+pub struct InspectMySessionInput {
+    /// DID to inspect. Self-only for non-admins.
+    pub account: String,
+}
+
+/// "I tried to JOIN and it failed — explain why."
+#[derive(Debug, Deserialize)]
+pub struct DiagnoseJoinFailureInput {
+    /// DID that attempted the join. Self-only for non-admins.
+    pub account: String,
+    /// Channel name (with or without leading `#`).
+    pub channel: String,
+    /// Optional: the IRC numeric the client received (e.g. `"473"`,
+    /// `"475"`). Lets us be more specific in the diagnosis.
+    #[serde(default)]
+    pub observed_numeric: Option<String>,
+}
+
+/// "I just dropped — what happened?"
+#[derive(Debug, Deserialize)]
+pub struct DiagnoseDisconnectInput {
+    pub account: String,
+}
+
+/// "Between this msgid and now, did I miss anything?"
+#[derive(Debug, Deserialize)]
+pub struct ReplayMissedMessagesInput {
+    pub channel: String,
+    /// Last msgid the bot is sure it processed. Server reports the
+    /// count + bounding msgids of the gap.
+    pub since_msgid: String,
+    /// Optional cap on how far to look. Default 1000.
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+/// "Will this send succeed?"
+#[derive(Debug, Deserialize)]
+pub struct PredictMessageOutcomeInput {
+    pub account: String,
+    pub target: String,
+    /// Reserved for future per-byte size checks. Currently informational
+    /// — the server's wire-line limit is enforced at parse time.
+    #[serde(default)]
+    pub draft_size_bytes: Option<usize>,
+}
+
+/// "Explain this raw IRC line in routing terms."
+#[derive(Debug, Deserialize)]
+pub struct ExplainMessageRoutingInput {
+    /// Raw IRC line (no trailing CRLF needed).
+    pub wire_line: String,
+    /// The recipient's own nick — needed to detect self-echo + mentions.
+    pub my_nick: String,
+}
+
 // ─── Discovery (.well-known/agent.json) ──────────────────────────────────
 
 #[derive(Debug, Serialize)]
