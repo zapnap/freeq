@@ -30,4 +30,8 @@ export { parse, format, prefixNick } from './parser.js';
 export { Transport } from './transport.js';
 // Profiles
 export { fetchProfile, prefetchProfiles, getCachedProfile } from './profiles.js';
+// did:key SASL — generate a fresh authenticatable identity with no
+// PDS, no OAuth, no external service. See `examples/full-validation-bot/`
+// for the canonical usage pattern.
+export { generateDidKey, importDidKey } from './did-key.js';
 //# sourceMappingURL=index.js.map

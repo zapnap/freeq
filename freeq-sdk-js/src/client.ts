@@ -447,8 +447,15 @@ export class FreeqClient extends EventEmitter {
       const brokerToken = this.opts.brokerToken;
       const brokerBase = this.opts.brokerUrl;
 
-      if (this.skipBrokerRefresh && this.sasl?.token) {
+      // Skip broker refresh when we have token-based credentials (the
+      // broker would re-mint them anyway) OR when we have a signer
+      // (did:key auth: no broker needed, no token to refresh).
+      if (this.skipBrokerRefresh && (this.sasl?.token || this.sasl?.signer)) {
         this.skipBrokerRefresh = false;
+        clearTimeout(safetyTimer);
+        sendRegistration();
+      } else if (this.sasl?.signer) {
+        // did:key flow — bypass broker entirely.
         clearTimeout(safetyTimer);
         sendRegistration();
       } else if (brokerToken && brokerBase && this.sasl?.did) {
@@ -548,7 +555,7 @@ export class FreeqClient extends EventEmitter {
         break;
 
       case 'AUTHENTICATE':
-        this.handleAuthenticate(msg);
+        await this.handleAuthenticate(msg);
         break;
 
       case '900':
@@ -1173,7 +1180,12 @@ export class FreeqClient extends EventEmitter {
       for (const c of caps) {
         if (available.includes(c)) wantedCaps.push(c);
       }
-      if (this.sasl?.token && available.includes('sasl')) {
+      // Negotiate `sasl` whenever the bot has SOME way to authenticate:
+      // either a pre-issued token (pds-session/pds-oauth) OR a signer
+      // callback (crypto / did:key). Previously only the token branch
+      // qualified, so JS bots using did:key never reached SASL.
+      const wantsSasl = (this.sasl?.token || this.sasl?.signer) && available.includes('sasl');
+      if (wantsSasl) {
         wantedCaps.push('sasl');
       }
       if (wantedCaps.length) {
@@ -1184,7 +1196,8 @@ export class FreeqClient extends EventEmitter {
     } else if (sub === 'ACK') {
       const caps = msg.params.slice(2).join(' ');
       for (const c of caps.split(' ')) this.ackedCaps.add(c);
-      if (this.ackedCaps.has('sasl') && this.sasl?.token) {
+      const canSasl = this.ackedCaps.has('sasl') && (this.sasl?.token || this.sasl?.signer);
+      if (canSasl) {
         this.raw('AUTHENTICATE ATPROTO-CHALLENGE');
       } else {
         this.raw('CAP END');
@@ -1194,21 +1207,50 @@ export class FreeqClient extends EventEmitter {
     }
   }
 
-  private handleAuthenticate(msg: IRCMessage): void {
+  private async handleAuthenticate(msg: IRCMessage): Promise<void> {
     const param = msg.params[0] || '';
     if (param === '+' || !param) return;
 
+    // Decode the raw challenge bytes the server sent. Two parallel
+    // uses:
+    //   - PDS methods need only the nonce (echoed back so the server
+    //     can bind the PDS verification to this specific challenge).
+    //   - Crypto / did:key signs the raw challenge bytes themselves
+    //     and puts the signature in the response.
+    const padded = param.replace(/-/g, '+').replace(/_/g, '/');
+    let rawChallengeBytes = new Uint8Array(0);
     let challengeNonce: string | undefined;
     try {
-      const challengeJson = atob(param.replace(/-/g, '+').replace(/_/g, '/'));
-      const challenge = JSON.parse(challengeJson);
+      const bin = atob(padded + '='.repeat((4 - (padded.length % 4)) % 4));
+      rawChallengeBytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) rawChallengeBytes[i] = bin.charCodeAt(i);
+      const challenge = JSON.parse(new TextDecoder().decode(rawChallengeBytes));
       challengeNonce = challenge.nonce;
-    } catch { /* proceed without nonce */ }
+    } catch { /* proceed without nonce — pds-* path will still work for legacy servers */ }
+
+    const method = this.sasl?.method || 'pds-session';
+
+    // ── Crypto / did:key auth — sign the raw challenge bytes ──
+    let signature = this.sasl?.token ?? '';
+    if (method === 'crypto') {
+      if (!this.sasl?.signer) {
+        console.warn('[freeq-sdk] SASL method=crypto requires a signer callback in setSaslCredentials; aborting');
+        this.raw('AUTHENTICATE *');
+        return;
+      }
+      try {
+        signature = await this.sasl.signer(rawChallengeBytes);
+      } catch (e) {
+        console.error('[freeq-sdk] Crypto SASL signer threw:', e);
+        this.raw('AUTHENTICATE *');
+        return;
+      }
+    }
 
     const response = JSON.stringify({
       did: this.sasl?.did,
-      method: this.sasl?.method || 'pds-session',
-      signature: this.sasl?.token,
+      method,
+      signature,
       pds_url: this.sasl?.pdsUrl,
       challenge_nonce: challengeNonce,
     });

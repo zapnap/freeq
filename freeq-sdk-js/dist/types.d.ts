@@ -97,12 +97,26 @@ export interface AvSession {
 }
 /** WebSocket transport state. */
 export type TransportState = 'disconnected' | 'connecting' | 'connected';
-/** SASL credentials for AT Protocol authentication. */
+/** SASL credentials for AT Protocol authentication.
+ *
+ * Two flavours:
+ *   - Token-based (`method: "pds-session"` or `"pds-oauth"`): a PDS-
+ *     issued bearer goes in `token`; the server checks it with the PDS.
+ *   - Crypto / did:key (`method: "crypto"`): no token — instead, the
+ *     SDK signs the challenge bytes via the `signer` callback. The
+ *     server resolves `did` and verifies the signature against the
+ *     advertised public key. No PDS, no OAuth, no external service.
+ *     See `generateDidKey()` in `./did-key.ts`.
+ */
 export interface SaslCredentials {
+    /** Bearer token for token-based methods. Empty when method=crypto. */
     token: string;
     did: string;
     pdsUrl: string;
     method: string;
+    /** Required when `method === "crypto"`. Called on the raw challenge
+     *  bytes the server emits in AUTHENTICATE. Returns base64url(sig). */
+    signer?: (challengeBytes: Uint8Array) => Promise<string>;
 }
 /** Options for creating a FreeqClient. */
 export interface FreeqClientOptions {

@@ -265,6 +265,113 @@ async fn authenticated_bot_unlocks_predict_diagnose_inspect() {
 }
 
 #[tokio::test]
+async fn did_key_sasl_resolves_locally_without_pds() {
+    // Proves the path the JS SDK now uses: auth with a did:key the
+    // server has never seen before, no static_map entry, no PDS, no
+    // OAuth. The server resolves did:key locally from the public key
+    // embedded in the DID string itself — and verify_crypto signs the
+    // raw challenge bytes against that key.
+    //
+    // This is the wire-level equivalent of `generateDidKey()` +
+    // `setSaslCredentials({method: "crypto", signer})` from the JS
+    // SDK — if the Rust verifier accepts it, the JS bot will too.
+    let resolver = DidResolver::http(); // production resolver, no static map
+    let tmp = tempfile::Builder::new()
+        .prefix("freeq-didkey-")
+        .suffix(".db")
+        .tempfile()
+        .unwrap();
+    let db_path = tmp.path().to_str().unwrap().to_string();
+    std::mem::forget(tmp);
+    let config = freeq_server::config::ServerConfig {
+        listen_addr: "127.0.0.1:0".to_string(),
+        server_name: "didkey-test".to_string(),
+        challenge_timeout_secs: 60,
+        db_path: Some(db_path),
+        ..Default::default()
+    };
+    let server = freeq_server::server::Server::with_resolver(config, resolver);
+    let (irc, web, _handle, _state) = server.start_with_web_state().await.unwrap();
+
+    // Generate a fresh ed25519 key + derive did:key from its multibase
+    // public form — same algorithm as `generateDidKey()` in the JS
+    // SDK. The DID is `did:key:<multibase>` and the server resolves it
+    // by parsing that string alone.
+    let key = PrivateKey::generate_ed25519();
+    let multibase = key.public_key_multibase();
+    let did = format!("did:key:{multibase}");
+
+    let irc_addr = irc;
+    let did_for_thread = did.clone();
+    let (bearer, _w, _r) = tokio::task::spawn_blocking(move || {
+        auth_and_capture_bearer_with_did(irc_addr, &did_for_thread, key)
+    })
+    .await
+    .unwrap();
+
+    // The server must have accepted the did:key SASL response and
+    // emitted the API-BEARER NOTICE. Use the bearer to call a
+    // SELF_ONLY-gated tool.
+    let resp = call_tool(
+        web,
+        &bearer,
+        "inspect_my_session",
+        serde_json::json!({"account": did}),
+    )
+    .await;
+    assert_eq!(
+        resp["diagnosis"]["code"], "SESSION_REPORTED",
+        "did:key SASL must unlock the diagnostic surface; got {resp:#}"
+    );
+}
+
+/// Same as `auth_and_capture_bearer` but takes an explicit DID — used
+/// when the test generates its own did:key rather than using the static
+/// `DID_BOT` constant.
+fn auth_and_capture_bearer_with_did(
+    addr: SocketAddr, did: &str, key: PrivateKey,
+) -> (String, TcpStream, BufReader<TcpStream>) {
+    let s = TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(5))).ok();
+    let writer = s.try_clone().unwrap();
+    let mut reader = BufReader::new(s);
+    let mut writer = writer;
+
+    fn tx(w: &mut TcpStream, line: &str) {
+        writeln!(w, "{line}\r").unwrap();
+        w.flush().ok();
+    }
+    fn rx_until(r: &mut BufReader<TcpStream>, p: impl Fn(&str) -> bool) -> String {
+        loop {
+            let mut b = String::new();
+            if r.read_line(&mut b).unwrap() == 0 {
+                panic!("EOF");
+            }
+            let l = b.trim_end().to_string();
+            if p(&l) { return l; }
+        }
+    }
+
+    tx(&mut writer, "CAP LS 302");
+    tx(&mut writer, "NICK didkeybot");
+    tx(&mut writer, "USER didkeybot 0 * :test");
+    tx(&mut writer, "CAP REQ :sasl message-tags server-time");
+    rx_until(&mut reader, |l| l.contains("ACK"));
+    tx(&mut writer, "AUTHENTICATE ATPROTO-CHALLENGE");
+    let challenge_line = rx_until(&mut reader, |l| l.starts_with("AUTHENTICATE "));
+    let challenge = challenge_line.strip_prefix("AUTHENTICATE ").unwrap();
+    let bytes = auth::decode_challenge_bytes(challenge).unwrap();
+    let signer = KeySigner::new(did.to_string(), key);
+    let resp = signer.respond(&bytes).unwrap();
+    tx(&mut writer, &format!("AUTHENTICATE {}", auth::encode_response(&resp)));
+    let notice = rx_until(&mut reader, |l| l.contains("API-BEARER"));
+    let bearer = notice.split_whitespace().last().unwrap().to_string();
+    tx(&mut writer, "CAP END");
+    rx_until(&mut reader, |l| l.contains(" 001 "));
+    (bearer, writer, reader)
+}
+
+#[tokio::test]
 async fn bot_cannot_use_someone_elses_bearer_to_inspect_their_session() {
     // Defense in depth: make sure the bearer authenticates ONLY the
     // session that minted it. A bot using its own bearer to inspect

@@ -55,3 +55,9 @@ export type {
 // Profiles
 export { fetchProfile, prefetchProfiles, getCachedProfile } from './profiles.js';
 export type { ATProfile } from './profiles.js';
+
+// did:key SASL — generate a fresh authenticatable identity with no
+// PDS, no OAuth, no external service. See `examples/full-validation-bot/`
+// for the canonical usage pattern.
+export { generateDidKey, importDidKey } from './did-key.js';
+export type { DidKey } from './did-key.js';

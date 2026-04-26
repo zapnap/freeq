@@ -29,4 +29,6 @@ export { Transport } from './transport.js';
 export type { IRCMessage, Message, Member, Channel, PinnedMessage, WhoisInfo, ChannelListEntry, AvSession, AvParticipant, TransportState, SaslCredentials, FreeqClientOptions, Batch, } from './types.js';
 export { fetchProfile, prefetchProfiles, getCachedProfile } from './profiles.js';
 export type { ATProfile } from './profiles.js';
+export { generateDidKey, importDidKey } from './did-key.js';
+export type { DidKey } from './did-key.js';
 //# sourceMappingURL=index.d.ts.map
