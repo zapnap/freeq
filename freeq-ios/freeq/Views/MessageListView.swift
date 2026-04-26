@@ -12,6 +12,8 @@ struct MessageListView: View {
     @State private var showScrollButton = false
     @State private var lastReadId: String? = nil
     @State private var isNearBottom = true
+    /// Throttle so a rapid scroll-up doesn't spam CHATHISTORY requests.
+    @State private var lastHistoryFetch: Date = .distantPast
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -30,10 +32,18 @@ struct MessageListView: View {
                 }
 
                 ScrollView {
+                    // Auto-fetch older messages when the top of the list scrolls into view.
+                    // The button below is kept as a manual fallback (errors, or for users
+                    // who want to pull more without scrolling all the way up).
+                    Color.clear
+                        .frame(height: 1)
+                        .onAppear { autoFetchOlder() }
+
                     // Pull to load older messages
                     Button(action: {
                         let oldest = channel.messages.first?.timestamp
                         appState.requestHistory(channel: channel.name, before: oldest)
+                        lastHistoryFetch = Date()
                         UIImpactFeedbackGenerator(style: .light).impactOccurred()
                     }) {
                         HStack(spacing: 6) {
@@ -378,6 +388,21 @@ struct MessageListView: View {
         .padding(.vertical, 6)
     }
 
+    // MARK: - History
+
+    /// Fire a CHATHISTORY BEFORE request when the top of the message list comes into
+    /// view, throttled to once every 2 seconds so a fast scroll-up doesn't spam the server.
+    /// Skip when the channel has no messages — there's nothing to anchor the request on
+    /// and the initial CHATHISTORY LATEST will populate it.
+    private func autoFetchOlder() {
+        guard !channel.messages.isEmpty else { return }
+        let now = Date()
+        guard now.timeIntervalSince(lastHistoryFetch) > 2.0 else { return }
+        lastHistoryFetch = now
+        let oldest = channel.messages.first?.timestamp
+        appState.requestHistory(channel: channel.name, before: oldest)
+    }
+
     // MARK: - Message Grouping
 
     private func shouldShowHeader(at idx: Int) -> Bool {
@@ -497,6 +522,13 @@ struct MessageListView: View {
                                 .font(.system(size: 11))
                                 .foregroundColor(Theme.textMuted)
 
+                            if msg.isSigned {
+                                Image(systemName: "lock.fill")
+                                    .font(.system(size: 9, weight: .semibold))
+                                    .foregroundColor(Theme.success)
+                                    .help("Signed by sender")
+                            }
+
                             if msg.isEdited {
                                 Text("edited")
                                     .font(.system(size: 10, weight: .semibold))
@@ -596,7 +628,14 @@ struct MessageListView: View {
                 let isMine = nicks.contains(where: { $0.lowercased() == appState.nick.lowercased() })
 
                 Button(action: {
-                    appState.sendReaction(target: channel.name, msgId: msg.id, emoji: emoji)
+                    // Optimistic local update so the pill flips immediately;
+                    // the inbound TAGMSG echo will reconcile with the server's view.
+                    if isMine {
+                        channel.removeReaction(msgId: msg.id, emoji: emoji, from: appState.nick)
+                    } else {
+                        channel.applyReaction(msgId: msg.id, emoji: emoji, from: appState.nick)
+                    }
+                    appState.toggleReaction(target: channel.name, msgId: msg.id, emoji: emoji, currentlyMine: isMine)
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
                 }) {
                     HStack(spacing: 3) {

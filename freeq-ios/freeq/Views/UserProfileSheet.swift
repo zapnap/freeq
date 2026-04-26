@@ -7,6 +7,8 @@ struct UserProfileSheet: View {
     let nick: String
     @State private var profile: BlueskyProfile? = nil
     @State private var loading = true
+    @State private var recentPosts: [BskyFeedItem] = []
+    @State private var loadingFeed = false
 
     var body: some View {
         NavigationView {
@@ -122,6 +124,30 @@ struct UserProfileSheet: View {
                                 .padding(.top, 8)
                         }
 
+                        // Recent Bluesky posts
+                        if !recentPosts.isEmpty {
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("Recent Posts")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundColor(Theme.textMuted)
+                                    .padding(.horizontal, 16)
+
+                                ForEach(recentPosts, id: \.uri) { item in
+                                    if let rkey = item.uri.split(separator: "/").last.map(String.init),
+                                       let handle = profile?.handle {
+                                        BlueskyEmbed(handle: handle, rkey: rkey)
+                                            .padding(.horizontal, 16)
+                                    }
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 16)
+                        } else if loadingFeed {
+                            ProgressView()
+                                .tint(Theme.textMuted)
+                                .padding(.top, 16)
+                        }
+
                         Spacer()
                     }
                 }
@@ -162,10 +188,27 @@ struct UserProfileSheet: View {
     }
 
     private func fetchProfile() async {
-        let handles = nick.contains(".") ? [nick] : ["\(nick).bsky.social"]
+        // Resolve preferred actor: DID first (most reliable; survives handle
+        // changes / custom domains), then nick-as-handle fallbacks.
+        let didFromMembers = await MainActor.run { () -> String? in
+            for ch in appState.channels {
+                if let m = ch.members.first(where: { $0.nick.lowercased() == nick.lowercased() }),
+                   let did = m.did, !did.isEmpty {
+                    return did
+                }
+            }
+            return nil
+        }
+        var actors: [String] = []
+        if let did = didFromMembers { actors.append(did) }
+        if nick.contains(".") {
+            actors.append(nick)
+        } else {
+            actors.append("\(nick).bsky.social")
+        }
 
-        for handle in handles {
-            let urlStr = "https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile?actor=\(handle.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? handle)"
+        for actor in actors {
+            let urlStr = "https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile?actor=\(actor.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? actor)"
             guard let url = URL(string: urlStr) else { continue }
 
             do {
@@ -174,9 +217,10 @@ struct UserProfileSheet: View {
                 let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
                 guard let json = json else { continue }
 
+                let resolvedHandle = json["handle"] as? String ?? actor
                 await MainActor.run {
                     profile = BlueskyProfile(
-                        handle: json["handle"] as? String ?? handle,
+                        handle: resolvedHandle,
                         displayName: json["displayName"] as? String,
                         description: json["description"] as? String,
                         avatar: json["avatar"] as? String,
@@ -185,13 +229,50 @@ struct UserProfileSheet: View {
                         postsCount: json["postsCount"] as? Int
                     )
                     loading = false
+                    loadingFeed = true
                 }
+                await fetchAuthorFeed(actor: resolvedHandle)
                 return
             } catch { }
         }
 
         await MainActor.run { loading = false }
     }
+
+    private func fetchAuthorFeed(actor: String) async {
+        let urlStr = "https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed?actor=\(actor.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? actor)&limit=5&filter=posts_no_replies"
+        guard let url = URL(string: urlStr) else {
+            await MainActor.run { loadingFeed = false }
+            return
+        }
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                await MainActor.run { loadingFeed = false }
+                return
+            }
+            let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            let feed = (json?["feed"] as? [[String: Any]]) ?? []
+            let items: [BskyFeedItem] = feed.compactMap { entry in
+                guard let post = entry["post"] as? [String: Any],
+                      let uri = post["uri"] as? String else { return nil }
+                let record = post["record"] as? [String: Any]
+                let text = record?["text"] as? String ?? ""
+                return BskyFeedItem(uri: uri, text: text)
+            }
+            await MainActor.run {
+                recentPosts = items
+                loadingFeed = false
+            }
+        } catch {
+            await MainActor.run { loadingFeed = false }
+        }
+    }
+}
+
+struct BskyFeedItem {
+    let uri: String
+    let text: String
 }
 
 struct BlueskyProfile {

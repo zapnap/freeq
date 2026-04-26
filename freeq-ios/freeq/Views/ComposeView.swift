@@ -371,12 +371,19 @@ struct ComposeView: View {
         // Send the voice message
         guard let data = try? Data(contentsOf: recorder.url) else { return }
         let duration = formatDuration(recordingTime)
+        let recordedURL = recorder.url
 
         guard let target = appState.activeChannel else { return }
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         isUploadingVoice = true
 
         Task {
+            // Kick off on-device transcription in parallel with the audio
+            // upload — by the time the upload finishes we usually have a
+            // transcript ready to attach. If transcription fails (unauth /
+            // unsupported / silent clip) we fall back to audio-only.
+            async let transcript: String? = VoiceTranscriber.transcribe(recordedURL)
+
             defer {
                 Task { @MainActor in
                     isUploadingVoice = false
@@ -418,8 +425,16 @@ struct ComposeView: View {
                 if status == 200,
                    let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
                    let url = json["url"] as? String {
+                    let trimmedTranscript = (await transcript)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    let body: String
+                    if let t = trimmedTranscript, !t.isEmpty {
+                        body = "🎤 Voice message (\(duration)) \(url)\n💬 \(t)"
+                    } else {
+                        body = "🎤 Voice message (\(duration)) \(url)"
+                    }
                     await MainActor.run {
-                        appState.sendMessage(target: target, text: "🎤 Voice message (\(duration)) \(url)")
+                        appState.sendMessage(target: target, text: body)
                         ToastManager.shared.show("Voice message sent", icon: "checkmark.circle")
                     }
                 } else {
@@ -513,16 +528,25 @@ struct ComposeView: View {
 
         completions = []
 
+        let succeeded: Bool
         if trimmed.hasPrefix("/") {
             handleCommand(trimmed)
-            text = ""
+            succeeded = true
         } else {
-            if appState.sendMessage(target: target, text: trimmed) {
-                text = ""
-            } else {
-                UINotificationFeedbackGenerator().notificationOccurred(.error)
-                return
-            }
+            succeeded = appState.sendMessage(target: target, text: trimmed)
+        }
+
+        guard succeeded else {
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+            return
+        }
+
+        // Clear the buffer. Dispatch async so the assignment runs after the
+        // button-tap + any in-flight IME composition settle — assigning ""
+        // synchronously while the field is focused is a SwiftUI quirk that
+        // leaves stale text visible in TextField(axis: .vertical).
+        DispatchQueue.main.async {
+            text = ""
         }
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }

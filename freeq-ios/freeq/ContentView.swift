@@ -65,24 +65,46 @@ struct ContentView: View {
                 ProgressView()
                     .tint(Theme.accent)
                     .scaleEffect(1.2)
-                Text(reconnectSeconds < 8 ? "Connecting..." : "Still connecting...")
+                Text(reconnectSeconds < 12 ? "Connecting..." : "Still connecting...")
                     .font(.system(size: 15, weight: .medium))
                     .foregroundColor(Theme.textMuted)
 
-                if reconnectSeconds >= 15 {
+                if reconnectSeconds >= 20 {
+                    Text("Network looks slow — your session is still saved.")
+                        .font(.system(size: 12))
+                        .foregroundColor(Theme.textMuted.opacity(0.8))
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 32)
+                        .transition(.opacity)
+                }
+
+                // FEAT-006: only surface the cliff after realistic broker tail
+                // latency (45 s, not 15 s). The button now navigates to
+                // ConnectView WITHOUT calling disconnect() — saved credentials
+                // stay intact, and "Sign in with a different account" is a
+                // truer name for what the action actually does.
+                if reconnectSeconds >= 45 {
                     Button(action: {
                         userCancelledReconnect = true
                         stopReconnectTimer()
-                        appState.disconnect()
+                        // Intentionally NOT calling disconnect() — that would
+                        // clear in-memory state but the saved broker token
+                        // remains in Keychain. ConnectView will appear; if
+                        // the user backs out the timer resumes.
                     }) {
-                        Text("Sign in manually")
+                        Text("Sign in with a different account")
                             .font(.system(size: 14, weight: .medium))
                             .foregroundColor(Theme.accent)
                     }
                     .transition(.opacity)
                 }
             }
-            .animation(.easeInOut, value: reconnectSeconds >= 15)
+            .animation(.easeInOut, value: reconnectSeconds >= 45)
+        }
+        // Reset the timer on every fresh reconnect attempt so a slow broker
+        // doesn't trip the cliff before the second retry has even started.
+        .onChange(of: appState.reconnectAttempt) { _, _ in
+            startReconnectTimer()
         }
     }
 }

@@ -15,11 +15,19 @@ class AvatarCache: ObservableObject {
     }
 
     /// Request avatar fetch for a nick (if not already cached/pending).
+    /// Passing a non-empty `did` retries even if a previous DID-less
+    /// attempt failed — DID is the most reliable lookup and may succeed
+    /// where the nick-as-handle fallback didn't (e.g. custom-domain handles).
     func prefetch(_ nick: String, did: String? = nil) {
         let key = nick.lowercased()
         // Skip guest nicks - they're not Bluesky accounts (avoid false positives like guest111.bsky.social)
         guard !key.hasPrefix("guest"), !key.hasPrefix("web") else { return }
-        guard cache[key] == nil, !pending.contains(key), !failed.contains(key) else { return }
+        if cache[key] != nil || pending.contains(key) { return }
+        let hasDid = did.map { !$0.isEmpty } ?? false
+        if failed.contains(key) && !hasDid { return }
+        // A new DID is a fresh signal — clear the failed marker so this attempt
+        // is allowed to run.
+        failed.remove(key)
         pending.insert(key)
 
         Task {

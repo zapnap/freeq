@@ -1,7 +1,15 @@
 import SwiftUI
 
-/// Full-screen chat list — channels and DMs with last message preview.
+/// Top-level chat list. Renders either channels (`.channels`) or direct
+/// messages (`.dms`); MainTabView shows one of each as a peer tab.
 struct ChatsTab: View {
+    enum Mode {
+        case channels
+        case dms
+    }
+
+    let mode: Mode
+
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var networkMonitor: NetworkMonitor
     @State private var showingJoinSheet = false
@@ -13,7 +21,7 @@ struct ChatsTab: View {
             ZStack {
                 Theme.bgPrimary.ignoresSafeArea()
 
-                if allConversations.isEmpty {
+                if conversations.isEmpty {
                     emptyState
                 } else {
                     List {
@@ -70,19 +78,21 @@ struct ChatsTab: View {
                     }
                     .listStyle(.plain)
                     .scrollContentBackground(.hidden)
-                    .searchable(text: $searchText, prompt: "Search chats")
+                    .searchable(text: $searchText, prompt: searchPrompt)
                 }
             }
-            .navigationTitle("Chats")
+            .navigationTitle(navTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(Theme.bgSecondary, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button(action: { showingJoinSheet = true }) {
-                        Image(systemName: "square.and.pencil")
-                            .font(.system(size: 16))
-                            .foregroundColor(Theme.accent)
+                if mode == .channels {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button(action: { showingJoinSheet = true }) {
+                            Image(systemName: "square.and.pencil")
+                                .font(.system(size: 16))
+                                .foregroundColor(Theme.accent)
+                        }
                     }
                 }
             }
@@ -95,49 +105,87 @@ struct ChatsTab: View {
                     .presentationDragIndicator(.visible)
             }
             .onChange(of: appState.pendingDMNick) {
-                if let nick = appState.pendingDMNick {
-                    appState.pendingDMNick = nil
-                    // Pop to root then push the DM
-                    navigationPath = NavigationPath()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                        appState.activeChannel = nick
-                        navigationPath.append(nick)
-                    }
+                // Only the DMs pane consumes pending-DM navigations; the
+                // channels pane ignores them so we don't push a DM into
+                // the channels nav stack.
+                guard mode == .dms, let nick = appState.pendingDMNick else { return }
+                appState.pendingDMNick = nil
+                navigationPath = NavigationPath()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    appState.activeChannel = nick
+                    navigationPath.append(nick)
                 }
             }
         }
     }
 
-    private var allConversations: [ChannelState] {
-        (appState.channels + appState.dmBuffers)
+    private var conversations: [ChannelState] {
+        let source: [ChannelState]
+        switch mode {
+        case .channels: source = appState.channels
+        case .dms:      source = appState.dmBuffers
+        }
+        return source
             .filter { !$0.name.trimmingCharacters(in: .whitespaces).isEmpty }
             .sorted { a, b in a.lastActivity > b.lastActivity }
     }
 
     private var filteredConversations: [ChannelState] {
-        let convos = allConversations
+        let convos = conversations
         if searchText.isEmpty { return convos }
         return convos.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
     }
 
+    private var navTitle: String {
+        switch mode {
+        case .channels: return "Channels"
+        case .dms:      return "Direct Messages"
+        }
+    }
+
+    private var searchPrompt: String {
+        switch mode {
+        case .channels: return "Search channels"
+        case .dms:      return "Search messages"
+        }
+    }
+
+    @ViewBuilder
     private var emptyState: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "bubble.left.and.bubble.right")
-                .font(.system(size: 48))
-                .foregroundColor(Theme.textMuted)
-            Text("No conversations yet")
-                .font(.system(size: 18, weight: .medium))
-                .foregroundColor(Theme.textSecondary)
-            Text("Join a channel to get started")
-                .font(.system(size: 14))
-                .foregroundColor(Theme.textMuted)
-            Button(action: { showingJoinSheet = true }) {
-                HStack(spacing: 6) {
-                    Image(systemName: "plus.circle.fill")
-                    Text("Join Channel")
+        switch mode {
+        case .channels:
+            VStack(spacing: 16) {
+                Image(systemName: "number.circle")
+                    .font(.system(size: 48))
+                    .foregroundColor(Theme.textMuted)
+                Text("No channels yet")
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundColor(Theme.textSecondary)
+                Text("Join a channel to get started")
+                    .font(.system(size: 14))
+                    .foregroundColor(Theme.textMuted)
+                Button(action: { showingJoinSheet = true }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "plus.circle.fill")
+                        Text("Join Channel")
+                    }
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundColor(Theme.accent)
                 }
-                .font(.system(size: 15, weight: .medium))
-                .foregroundColor(Theme.accent)
+            }
+        case .dms:
+            VStack(spacing: 16) {
+                Image(systemName: "bubble.left.and.bubble.right")
+                    .font(.system(size: 48))
+                    .foregroundColor(Theme.textMuted)
+                Text("No direct messages yet")
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundColor(Theme.textSecondary)
+                Text("Tap a member's avatar in any channel to start a private chat.")
+                    .font(.system(size: 14))
+                    .foregroundColor(Theme.textMuted)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 32)
             }
         }
     }

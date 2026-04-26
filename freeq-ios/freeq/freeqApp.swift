@@ -1,3 +1,4 @@
+import CoreSpotlight
 import SwiftUI
 
 /// Delegate to handle notification taps and navigate to the right channel.
@@ -49,9 +50,22 @@ struct FreeqApp: App {
                     networkMonitor.bind(to: appState)
                     notificationDelegate.appState = appState
                     UNUserNotificationCenter.current().delegate = notificationDelegate
+                    PhoneWatchBridge.shared.attach(appState)
                 }
+                .onChange(of: appState.channels.count) { PhoneWatchBridge.shared.push() }
+                .onChange(of: appState.dmBuffers.count) { PhoneWatchBridge.shared.push() }
+                .onChange(of: appState.connectionState) { PhoneWatchBridge.shared.push() }
                 .onOpenURL { url in
                     handleAuthCallback(url)
+                }
+                .onContinueUserActivity(CSSearchableItemActionType) { activity in
+                    // User tapped a freeq channel/DM in iOS Spotlight.
+                    guard let id = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String else { return }
+                    if id.hasPrefix("#") || id.hasPrefix("&") {
+                        appState.activeChannel = id
+                    } else {
+                        appState.pendingDMNick = id
+                    }
                 }
         }
         .onChange(of: scenePhase) { _, newPhase in

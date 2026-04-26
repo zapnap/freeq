@@ -91,6 +91,12 @@ struct ThreadView: View {
                                             Text(formatTime(msg.timestamp))
                                                 .font(.system(size: 11))
                                                 .foregroundColor(Theme.textMuted)
+
+                                            if msg.isSigned {
+                                                Image(systemName: "lock.fill")
+                                                    .font(.system(size: 9, weight: .semibold))
+                                                    .foregroundColor(Theme.success)
+                                            }
                                         }
 
                                         Text(msg.text)
