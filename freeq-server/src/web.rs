@@ -2886,13 +2886,7 @@ async fn api_upload(
     .map_err(|e| {
         let msg = format!("{e:#}"); // include full error chain
         tracing::warn!(did = %did, error = %msg, "Media upload failed");
-        // Surface auth expiry to client so it can prompt re-login
-        let status = if msg.contains("expired") || msg.contains("401") {
-            StatusCode::UNAUTHORIZED
-        } else {
-            StatusCode::BAD_GATEWAY
-        };
-        (status, format!("PDS upload failed: {msg}"))
+        handle_pds_upload_failure(&state.web_sessions, &did, &msg)
     })?;
 
     // Update stored DPoP nonce so subsequent uploads don't start stale.
@@ -2928,6 +2922,55 @@ async fn api_upload(
         "content_type": result.mime_type,
         "size": result.size,
     })))
+}
+
+/// Decide what to return when the PDS rejects a blob upload, and evict
+/// stale `web_sessions` entries when the failure is auth-shaped (so the
+/// client can drive recovery instead of looping on a dead access token).
+///
+/// `WebSession` does not store refresh_tokens; once the PDS access token
+/// dies we cannot recover server-side, only force the client through a
+/// fresh OAuth grant.
+///
+/// Returns `(status, body)` to surface to the caller. On the auth path,
+/// body is the structured `session_expired` JSON that clients can detect
+/// to drive a fresh-OAuth recovery flow.
+///
+/// Takes the bare `web_sessions` map (rather than a full `SharedState`) so
+/// tests in `tests/upload.rs` can call it directly.
+pub fn handle_pds_upload_failure(
+    web_sessions: &parking_lot::Mutex<
+        std::collections::HashMap<
+            (String, crate::server::OauthPurpose),
+            crate::server::WebSession,
+        >,
+    >,
+    did: &str,
+    msg: &str,
+) -> (StatusCode, String) {
+    let is_auth_error = msg.contains("expired") || msg.contains("401");
+    if !is_auth_error {
+        return (StatusCode::BAD_GATEWAY, format!("PDS upload failed: {msg}"));
+    }
+    let mut sessions = web_sessions.lock();
+    let removed_blob = sessions
+        .remove(&(did.to_string(), crate::server::OauthPurpose::BlobUpload))
+        .is_some();
+    let removed_login = sessions
+        .remove(&(did.to_string(), crate::server::OauthPurpose::Login))
+        .is_some();
+    drop(sessions);
+    tracing::info!(
+        did = %did, removed_blob, removed_login,
+        "Evicted PDS-rejected web sessions; client must re-OAuth"
+    );
+    let body = serde_json::json!({
+        "error": "session_expired",
+        "action": "reauth_required",
+        "message": "Your PDS session has expired. Sign in again to continue.",
+        "detail": msg,
+    });
+    (StatusCode::UNAUTHORIZED, body.to_string())
 }
 
 // ── Channel invite page ────────────────────────────────────────────────
