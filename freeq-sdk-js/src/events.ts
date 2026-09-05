@@ -35,8 +35,11 @@ export interface FreeqEvents {
   /** Fired when a new message arrives in a channel or DM. */
   message: (channel: string, message: Message) => void;
 
-  /** Fired when a message is edited. */
-  messageEdited: (channel: string, originalMsgId: string, newText: string, newMsgId?: string, isStreaming?: boolean, editorNick?: string, editorAccount?: string) => void;
+  /** Fired when a message is edited. `editTags` is the tag map the edit
+   *  itself carried (the PRIVMSG's tags, or the BATCH opener's for a
+   *  multiline edit), so receivers can pick up content tags such as
+   *  `+freeq.at/mime` that the revision restates. */
+  messageEdited: (channel: string, originalMsgId: string, newText: string, newMsgId?: string, isStreaming?: boolean, editorNick?: string, editorAccount?: string, editTags?: Record<string, string>) => void;
 
   /** Fired when a message is deleted. Deleter identity lets receivers
    *  enforce authorship in unpersisted (guest) threads, where the server

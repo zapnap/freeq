@@ -673,10 +673,21 @@ export class FreeqClient extends EventEmitter {
   }
 
   /** Edit a message. Multi-line edits use the same wire shape as
-   *  `sendMessage`. */
-  sendEdit(target: string, originalMsgId: string, newText: string, multiline = false): void {
-    void multiline;
-    this.sendMessageInternal(target, newText, { '+draft/edit': originalMsgId });
+   *  `sendMessage`. `options.tags` ride the single PRIVMSG or the BATCH
+   *  opener next to `+draft/edit`, so an edit can restate the original's
+   *  content tags (e.g. `+freeq.at/mime`). The legacy positional
+   *  `multiline` boolean is still accepted and ignored. */
+  sendEdit(
+    target: string,
+    originalMsgId: string,
+    newText: string,
+    options: boolean | { tags?: Record<string, string> } = false,
+  ): void {
+    const extraTags = typeof options === 'object' ? (options.tags ?? {}) : {};
+    this.sendMessageInternal(target, newText, {
+      ...extraTags,
+      '+draft/edit': originalMsgId,
+    });
   }
 
   /** Send a message with Markdown formatting. */
@@ -1768,6 +1779,7 @@ export class FreeqClient extends EventEmitter {
         isStreaming,
         from,
         openerTags['account'],
+        openerTags,
       );
       return;
     }
@@ -2334,7 +2346,7 @@ export class FreeqClient extends EventEmitter {
             break;
           }
           const isStreaming = msg.tags['+freeq.at/streaming'] === '1';
-          this.emit('messageEdited', bufName, editOf, displayText, msg.tags['msgid'], isStreaming, from, msg.tags['account']);
+          this.emit('messageEdited', bufName, editOf, displayText, msg.tags['msgid'], isStreaming, from, msg.tags['account'], msg.tags);
           break;
         }
 

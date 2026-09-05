@@ -104,6 +104,34 @@ async function makeRegistered(nick = 'alice'): Promise<{
   return { client, ws };
 }
 
+/** Same, but with `batch` + `draft/multiline` negotiated, so text with
+ *  newlines takes the BATCH path instead of the escaped legacy line. */
+async function makeMultilineRegistered(nick = 'alice'): Promise<{
+  client: import('./client.js').FreeqClient;
+  ws: MockWebSocket;
+}> {
+  const { FreeqClient } = await import('./client.js');
+  const client = new FreeqClient({
+    url: 'wss://test/irc',
+    nick,
+    skipInitialBrokerRefresh: true,
+  });
+  client.connect();
+  await flushAsync();
+  const ws = MockWebSocket.instances[MockWebSocket.instances.length - 1]!;
+  ws.recv(
+    ':srv CAP * LS :message-tags server-time batch ' +
+      'draft/multiline=max-bytes=40000,max-lines=100',
+  );
+  await flushAsync();
+  ws.recv(':srv CAP * ACK :message-tags server-time batch draft/multiline');
+  await flushAsync();
+  ws.recv(`:srv 001 ${nick} :Welcome`);
+  await flushAsync();
+  ws.sent.length = 0;
+  return { client, ws };
+}
+
 // ────────────────────────────────────────────────────────────────────
 // Outbound methods
 // ────────────────────────────────────────────────────────────────────
@@ -463,6 +491,28 @@ describe('messaging methods', () => {
     await flushAsync();
     const line = ws.sent.find((l) => l.includes('PRIVMSG #foo'));
     expect(line).toContain('+draft/edit=msg123');
+  });
+
+  it('sendEdit() carries caller tags alongside +draft/edit', async () => {
+    const { client, ws } = await makeRegistered();
+    client.sendEdit('#foo', 'msg123', 'corrected', {
+      tags: { '+freeq.at/mime': 'text/markdown' },
+    });
+    await flushAsync();
+    const line = ws.sent.find((l) => l.includes('PRIVMSG #foo'));
+    expect(line).toContain('+draft/edit=msg123');
+    expect(line).toContain('+freeq.at/mime=text/markdown');
+  });
+
+  it('sendEdit() carries caller tags on the multiline BATCH opener', async () => {
+    const { client, ws } = await makeMultilineRegistered();
+    client.sendEdit('#foo', 'msg123', 'line one\nline two', {
+      tags: { '+freeq.at/mime': 'text/markdown' },
+    });
+    for (let i = 0; i < 4; i++) await flushAsync();
+    const opener = ws.sent.find((l) => l.includes('BATCH +') && l.includes('draft/multiline'));
+    expect(opener).toContain('+draft/edit=msg123');
+    expect(opener).toContain('+freeq.at/mime=text/markdown');
   });
 
   it('sendDelete() sends TAGMSG with +draft/delete', async () => {
@@ -1338,6 +1388,39 @@ describe('inbound: messages and reactions', () => {
     ws.recv('@+react=🔥;+reply=msg-abc :bob TAGMSG #foo');
     await flushAsync();
     expect(seen).toContainEqual({ ch: '#foo', msgid: 'msg-abc', emoji: '🔥', by: 'bob' });
+  });
+});
+
+describe('inbound: edits carry their tags', () => {
+  it('single PRIVMSG edit hands the edit\'s tag map to messageEdited', async () => {
+    const { client, ws } = await makeRegistered();
+    const edits: unknown[][] = [];
+    client.on('messageEdited', (...args) => edits.push(args));
+    ws.recv(
+      '@msgid=01NEW;+draft/edit=01OLD;+freeq.at/mime=text/markdown ' +
+        ':bob!u@h PRIVMSG #room :**bold**',
+    );
+    await flushAsync();
+    expect(edits).toHaveLength(1);
+    expect(edits[0]![7]).toMatchObject({ '+freeq.at/mime': 'text/markdown' });
+  });
+
+  it('multiline batch edit hands the opener\'s tag map to messageEdited', async () => {
+    const { client, ws } = await makeMultilineRegistered();
+    const edits: unknown[][] = [];
+    client.on('messageEdited', (...args) => edits.push(args));
+    ws.recv(
+      '@msgid=01NEW;+draft/edit=01OLD;+freeq.at/mime=text/markdown ' +
+        ':bob!u@h BATCH +e1 draft/multiline #room',
+    );
+    ws.recv('@batch=e1 :bob!u@h PRIVMSG #room :**bold**');
+    ws.recv('@batch=e1 :bob!u@h PRIVMSG #room :second line');
+    ws.recv(':srv BATCH -e1');
+    // Each recv() chains onto the serialized line queue; a 4-line batch
+    // needs several drains before the close dispatches.
+    for (let i = 0; i < 8; i++) await flushAsync();
+    expect(edits).toHaveLength(1);
+    expect(edits[0]![7]).toMatchObject({ '+freeq.at/mime': 'text/markdown' });
   });
 });
 
