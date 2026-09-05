@@ -174,6 +174,27 @@ describe('message handling', () => {
     expect(deleted?.deleted).toBe(true);
   });
 
+  it('edit carrying a markdown mime tag changes the message mime', () => {
+    const m = msg({ id: 'edit-mime', text: 'before' });
+    useStore.getState().addMessage('#msgs', m);
+    useStore.getState().editMessage('#msgs', 'edit-mime', '**after**', undefined, false, undefined, undefined, {
+      '+freeq.at/mime': 'text/markdown',
+    });
+    const ch = useStore.getState().channels.get('#msgs')!;
+    const edited = ch.messages.find(m => m.id === 'edit-mime');
+    expect(edited?.tags?.['+freeq.at/mime']).toBe('text/markdown');
+  });
+
+  it('edit carrying no tags leaves the message tags alone', () => {
+    const m = msg({ id: 'edit-notags', text: 'before' });
+    m.tags = { '+freeq.at/mime': 'text/markdown' };
+    useStore.getState().addMessage('#msgs', m);
+    useStore.getState().editMessage('#msgs', 'edit-notags', 'after');
+    const ch = useStore.getState().channels.get('#msgs')!;
+    const edited = ch.messages.find(m => m.id === 'edit-notags');
+    expect(edited?.tags).toEqual({ '+freeq.at/mime': 'text/markdown' });
+  });
+
   it('edit nonexistent message is a no-op', () => {
     useStore.getState().editMessage('#msgs', 'nope', 'text');
     // Should not crash — only the init message from createChannel exists

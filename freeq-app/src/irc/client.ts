@@ -273,8 +273,13 @@ export function sendReply(target: string, replyToMsgId: string, text: string, mu
   });
 }
 
-export function sendEdit(target: string, originalMsgId: string, newText: string, multiline = false) {
-  sendToPeer(target, () => client?.sendEdit(target, originalMsgId, newText, multiline));
+export function sendEdit(
+  target: string,
+  originalMsgId: string,
+  newText: string,
+  options?: { tags?: Record<string, string> },
+) {
+  sendToPeer(target, () => client?.sendEdit(target, originalMsgId, newText, options));
 }
 
 export function sendMarkdown(target: string, text: string) {
@@ -950,13 +955,13 @@ function wireEvents(c: FreeqClient) {
     s().addActEvent(buffer, ev);
   });
 
-  c.on('messageEdited', (channel, originalMsgId, newText, newMsgId, isStreaming, editorNick, editorAccount) => {
+  c.on('messageEdited', (channel, originalMsgId, newText, newMsgId, isStreaming, editorNick, editorAccount, editTags) => {
     // Ensure DM buffer exists
     const isChannel = channel.startsWith('#') || channel.startsWith('&');
     if (!isChannel && !useStore.getState().channels.has(channel.toLowerCase())) {
       s().addChannel(channel);
     }
-    s().editMessage(channel, originalMsgId, newText, newMsgId, isStreaming, editorNick, editorAccount);
+    s().editMessage(channel, originalMsgId, newText, newMsgId, isStreaming, editorNick, editorAccount, editTags);
   });
 
   c.on('messageDeleted', (channel, msgId, deleterNick, deleterAccount) => {

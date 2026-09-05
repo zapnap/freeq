@@ -412,7 +412,7 @@ export interface Store {
    *  page the app asked for has already established. */
   historyOpeningPage: (channel: string, received: number, limit: number) => void;
   addSystemMessage: (channel: string, text: string) => void;
-  editMessage: (channel: string, originalMsgId: string, newText: string, newMsgId?: string, isStreaming?: boolean, editorNick?: string, editorAccount?: string) => void;
+  editMessage: (channel: string, originalMsgId: string, newText: string, newMsgId?: string, isStreaming?: boolean, editorNick?: string, editorAccount?: string, editTags?: Record<string, string>) => void;
   deleteMessage: (channel: string, msgId: string, deleterNick?: string, deleterAccount?: string) => void;
   addReaction: (channel: string, msgId: string, emoji: string, fromNick: string) => void;
   removeReaction: (channel: string, msgId: string, emoji: string, fromNick: string) => void;
@@ -1491,7 +1491,7 @@ export const useStore = create<Store>((set, get) => ({
   // `_newMsgId` — the revision's own wire id — is deliberately unused: the
   // message keeps the id it was born with. Still accepted because the wire
   // and the SDK event carry it; droppable once no caller passes it.
-  editMessage: (channel, originalMsgId, newText, _newMsgId, isStreaming, editorNick, editorAccount) => set((s) => {
+  editMessage: (channel, originalMsgId, newText, _newMsgId, isStreaming, editorNick, editorAccount, editTags) => set((s) => {
     // Authorship gate: only the original sender may edit. The server
     // enforces this when the thread is persisted; for unpersisted (guest)
     // threads it relays without a check, so the client is the authority.
@@ -1506,6 +1506,11 @@ export const useStore = create<Store>((set, get) => ({
     };
     // Treat empty edit as a "cleared" message to prevent invisible messages
     const displayText = newText || (isStreaming ? '' : '[message cleared]');
+    // A revision restates its own content type. Only the mime tag is adopted
+    // — the rest of the edit's tags describe the revision, not the message.
+    const editMime = editTags?.['+freeq.at/mime'];
+    const withMime = (m: Message): Partial<Message> =>
+      editMime ? { tags: { ...(m.tags ?? {}), '+freeq.at/mime': editMime } } : {};
     const channels = new Map(s.channels);
     const ch = channels.get(channel.toLowerCase());
     if (ch) {
@@ -1516,7 +1521,7 @@ export const useStore = create<Store>((set, get) => ({
       // the transition, still matches events that name a superseded id.
       ch.messages = ch.messages.map((m) =>
         (m.id === originalMsgId || m.editOf === originalMsgId) && authorOk(m)
-          ? { ...m, text: displayText, editOf: m.editOf ?? originalMsgId, isStreaming: !!isStreaming }
+          ? { ...m, text: displayText, editOf: m.editOf ?? originalMsgId, isStreaming: !!isStreaming, ...withMime(m) }
           : m
       );
       channels.set(channel.toLowerCase(), { ...ch });
@@ -1528,7 +1533,7 @@ export const useStore = create<Store>((set, get) => ({
       if (batch.target.toLowerCase() !== channel.toLowerCase()) continue;
       batch.messages = batch.messages.map((m) =>
         (m.id === originalMsgId || m.editOf === originalMsgId) && authorOk(m)
-          ? { ...m, text: displayText, editOf: m.editOf ?? originalMsgId, isStreaming: !!isStreaming }
+          ? { ...m, text: displayText, editOf: m.editOf ?? originalMsgId, isStreaming: !!isStreaming, ...withMime(m) }
           : m
       );
       batches.set(id, batch);

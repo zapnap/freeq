@@ -386,11 +386,19 @@ export function ComposeBox() {
       // the next keystroke re-announce without waiting out the interval.
       stopTyping(target);
       lastTypingSent.current = -Infinity;
-      if (markdownMode) {
-        sendMarkdown(target, trimmed);
-      } else if (editingMsg && editingMsg.channel.toLowerCase() === activeChannel.toLowerCase()) {
-        sendEdit(target, editingMsg.msgId, trimmed);
+      // Editing is checked before markdown mode: with both on, the send is
+      // still an edit, and the mime tag rides it so the revision keeps
+      // rendering as markdown.
+      if (editingMsg && editingMsg.channel.toLowerCase() === activeChannel.toLowerCase()) {
+        sendEdit(
+          target,
+          editingMsg.msgId,
+          trimmed,
+          markdownMode ? { tags: { '+freeq.at/mime': 'text/markdown' } } : undefined,
+        );
         useStore.getState().setEditingMsg(null);
+      } else if (markdownMode) {
+        sendMarkdown(target, trimmed);
       } else if (replyTo && replyTo.channel.toLowerCase() === activeChannel.toLowerCase()) {
         sendReply(target, replyTo.msgId, trimmed);
         useStore.getState().setReplyTo(null);
