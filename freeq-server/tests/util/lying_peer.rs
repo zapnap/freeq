@@ -528,6 +528,9 @@ impl LyingPeer {
             nick: nick.to_string(),
             channel: channel.to_string(),
             by: by.to_string(),
+            // A lying peer asserts a nick, not a DID it can prove. The DID
+            // path is covered separately; this harness tests the nick path.
+            by_did: None,
             reason: "forged".to_string(),
             origin: self.id.clone(),
         }
@@ -559,6 +562,8 @@ impl LyingPeer {
             channel: channel.to_string(),
             topic: topic.to_string(),
             set_by: set_by.to_string(),
+            // See `mode`: this harness tests the nick path.
+            set_by_did: None,
             origin: self.id.clone(),
         }
     }
