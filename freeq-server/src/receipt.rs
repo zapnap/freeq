@@ -55,7 +55,14 @@ fn short_did(did: &str) -> String {
     if did.len() <= 30 {
         return did.to_string();
     }
-    let tail: String = did.chars().rev().take(8).collect::<Vec<_>>().into_iter().rev().collect();
+    let tail: String = did
+        .chars()
+        .rev()
+        .take(8)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
     let head: String = did.chars().take(14).collect();
     format!("{head}…{tail}")
 }
@@ -149,7 +156,14 @@ pub async fn act_receipt(
                 t.offeree.clone().unwrap_or_default(),
             )
         })
-        .unwrap_or_else(|| ("task".into(), "completed".into(), String::new(), String::new()));
+        .unwrap_or_else(|| {
+            (
+                "task".into(),
+                "completed".into(),
+                String::new(),
+                String::new(),
+            )
+        });
 
     // The headline claim, stated only when the evidence supports it. Two
     // distinct DIDs and more than one origin means the work genuinely crossed
@@ -174,7 +188,15 @@ pub async fn act_receipt(
     };
 
     Html(page(
-        &act_id, &venue, &kind, &tstate, &offerer, &offeree, &banner, &rows, events.len(),
+        &act_id,
+        &venue,
+        &kind,
+        &tstate,
+        &offerer,
+        &offeree,
+        &banner,
+        &rows,
+        events.len(),
     ))
     .into_response()
 }

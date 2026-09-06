@@ -10381,7 +10381,13 @@ mod s2s_adversarial_tests {
         )
         .await;
 
-        let topic = state.channels.lock().get("#departed").unwrap().topic.clone();
+        let topic = state
+            .channels
+            .lock()
+            .get("#departed")
+            .unwrap()
+            .topic
+            .clone();
         assert_eq!(
             topic.map(|t| t.text),
             Some("set after quitting".to_string()),
@@ -10424,7 +10430,13 @@ mod s2s_adversarial_tests {
         )
         .await;
 
-        let topic = state.channels.lock().get("#departed2").unwrap().topic.clone();
+        let topic = state
+            .channels
+            .lock()
+            .get("#departed2")
+            .unwrap()
+            .topic
+            .clone();
         assert_eq!(
             topic.map(|t| t.text),
             Some("original".to_string()),

@@ -978,7 +978,11 @@ async fn api_channel_events(
 /// conversation is readable only by its two participants — channel
 /// authorization says nothing about DMs, and without this the listing would
 /// publish who is tasking whom.
-pub(crate) fn authorize_venue_read(state: &SharedState, venue: &str, headers: &axum::http::HeaderMap) -> bool {
+pub(crate) fn authorize_venue_read(
+    state: &SharedState,
+    venue: &str,
+    headers: &axum::http::HeaderMap,
+) -> bool {
     match venue.strip_prefix("dm:") {
         Some(pair) => caller_did_from_bearer(state, headers)
             .is_some_and(|did| pair.split(',').any(|p| p == did)),
