@@ -65,6 +65,8 @@ across the Rust and TypeScript SDKs with shared test vectors
 | `+freeq.at/act-ctx-h` | A hash of what `act-ctx` points at, so what is fetched later is checkable against what was signed. |
 | `+freeq.at/act-replaces` | The finished action this one revives — a failed handoff re-offered, a forfeited bounty re-listed. Openers only. |
 | `+freeq.at/act-subject` | The event a receipt confirms. Written by the action's home server, never by a participant. |
+| `+freeq.at/act-home` | The server that referees the task, by its `did:web:` name. Openers only. The SDKs fill it with the name the connected server gave in its welcome, and a server refuses an opener naming any other. A ruling on the task (a receipt, an expiry, a closed review window) counts, however it arrives, when signed by that name with a key the named server's own host lists. |
+| `+freeq.at/act-seq` | The number the task's home gives each of its rulings on that task: 1, 2, 3, receipts, expiries and closed review windows in one sequence. Written by the home, never by a participant. Two rulings from the home under one number that say different things are a conflict: logged, and not applied. |
 | `+freeq.at/from` | The signer/actor (envelope tag; the document key is `from`). |
 | `+freeq.at/eventid` | The event id the signer minted; the server adopts it (shared with chat). |
 | `+freeq.at/act-accepts` | The bid an award takes — that bid's own event id. The assignee is its author. |
