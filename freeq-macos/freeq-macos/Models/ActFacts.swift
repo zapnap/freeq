@@ -100,6 +100,7 @@ enum ActFacts {
         "act", "act-verb", "act-id", "act-title", "act-to", "act-note", "act-ctx", "act-ctx-h",
         "act-deadline", "act-bid-deadline", "act-caps", "act-price", "act-bid",
         "act-accepts", "act-subject", "act-pay-to", "act-tx", "act-replaces", "act-scope",
+        "act-home", "act-seq",
     ]
 
     /// Fields the card has no label for, under their raw keys — the
