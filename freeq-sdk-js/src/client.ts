@@ -169,6 +169,10 @@ export class FreeqClient extends EventEmitter {
   private _apiBearer: string | null = null;
   private _connectionState: TransportState = 'disconnected';
   private _registered = false;
+  /** The name the server put in the source of this connection's welcome
+   *  (001): the name it signs under as `did:web:<name>`. Null until the
+   *  welcome, and again once the connection ends. */
+  private _serverName: string | null = null;
   private opts: FreeqClientOptions;
 
   private ackedCaps = new Set<string>();
@@ -310,6 +314,8 @@ export class FreeqClient extends EventEmitter {
 
   /** Whether IRC registration is complete (001 received). */
   get registered(): boolean { return this._registered; }
+  /** The server's own name, from this connection's welcome; null before it. */
+  get serverName(): string | null { return this._serverName; }
 
   /** Set of channels we're currently in (lowercase). */
   get joinedChannels(): ReadonlySet<string> { return this._joinedChannels; }
@@ -384,6 +390,7 @@ export class FreeqClient extends EventEmitter {
     this._authDid = null;
     this._apiBearer = null;
     this._registered = false;
+    this._serverName = null;
     this._saslFailed = false;
     this.ackedCaps.clear();
     this.sasl = null;
@@ -1136,6 +1143,8 @@ export class FreeqClient extends EventEmitter {
     // A batch left open when the socket drops never gets its `BATCH -id`.
     // Every report, the second and late ones too; the second finds nothing.
     if (state === 'disconnected') this.endOpenBatches();
+    // A new socket has not been welcomed yet; a dropped one never will be.
+    if (state !== 'connected' || prev !== 'connected') this._serverName = null;
 
     if (state === 'connected') {
       this.ackedCaps.clear();
@@ -2488,6 +2497,7 @@ export class FreeqClient extends EventEmitter {
         this.guestFallbackCount = 0;
         this._nick = serverNick;
         this._registered = true;
+        this._serverName = msg.prefix || null;
         this._hadSession = true;
         this._awaitingWelcome = false;
         this.clearNickResume();
@@ -4149,6 +4159,14 @@ export class FreeqClient extends EventEmitter {
     opts: { humanText?: string; taskId?: string } = {},
   ): Promise<string> {
     const eventId = signing.newEventId();
+    // An event naming no task opens one, and names the server it is opened
+    // on as the task's referee: the name this connection was welcomed under,
+    // signed with the rest. A caller's own `act-home` stands.
+    const opens = actTags['+freeq.at/act-id'] === undefined && actTags['act-id'] === undefined;
+    const named = actTags['+freeq.at/act-home'] !== undefined || actTags['act-home'] !== undefined;
+    if (opens && !named && this._serverName) {
+      actTags = { ...actTags, '+freeq.at/act-home': `did:web:${this._serverName}` };
+    }
     // Signed in call order: a signature takes as long as the platform takes,
     // and an event signed sooner must not go out ahead of one sent before it.
     const signing_ = this.actSignChain.then(() => this.signing.signAct(target, actTags, eventId));

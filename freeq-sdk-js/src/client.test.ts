@@ -1897,6 +1897,105 @@ describe('inbound: coordinationEvent payload shapes', () => {
   });
 });
 
+describe('outbound: sendAct names the server a task is opened on', () => {
+  const TASK = '01JABCDEF000000000000000EF';
+
+  /** A signing client, welcomed by `server` when one is given. */
+  async function client(server?: string) {
+    const { FreeqClient } = await import('./client.js');
+    const c = new FreeqClient({ url: 'wss://test/irc', nick: 'eliza', skipInitialBrokerRefresh: true });
+    c.signing.setSigningDid('did:plc:eliza');
+    const pub = (await c.signing.generateSigningKey())!;
+    c.connect();
+    await flushAsync();
+    const ws = MockWebSocket.instances[MockWebSocket.instances.length - 1]!;
+    ws.recv(':srv CAP * LS :message-tags');
+    await flushAsync();
+    ws.recv(':srv CAP * ACK :message-tags');
+    await flushAsync();
+    if (server) {
+      ws.recv(`:${server} 001 eliza :Welcome`);
+      await flushAsync();
+    }
+    ws.sent.length = 0;
+    return { client: c, ws, pub };
+  }
+
+  /** The tags of the last task event sent, waiting for it to go out. */
+  async function sent(ws: MockWebSocket): Promise<Record<string, string>> {
+    for (let i = 0; i < 100 && !ws.sent.some((l) => l.includes('TAGMSG')); i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    const { parse } = await import('./parser.js');
+    return parse(ws.sent.filter((l) => l.includes('TAGMSG')).pop()!).tags;
+  }
+
+  it('an opener carries act-home for the server that welcomed it, inside the signature', async () => {
+    const { client: c, ws, pub } = await client('irc.example');
+    expect(c.serverName).toBe('irc.example');
+    const id = await c.sendAct('#ops', actTags('handoff', 'offer', undefined, 'did:plc:eliza', { title: 'x' }), {
+      humanText: '',
+    });
+    const tags = await sent(ws);
+    expect(tags['+freeq.at/act-home']).toBe('did:web:irc.example');
+    const signing = await import('./signing.js');
+    const { verifyEd25519 } = await import('./did-key.js');
+    const canonical = signing.actCanonical(tags, '#ops', id)!;
+    expect(JSON.parse(canonical)['act-home']).toBe('did:web:irc.example');
+    const ok = await verifyEd25519(
+      new Uint8Array(Buffer.from(pub, 'base64url')),
+      new TextEncoder().encode(canonical),
+      tags['+freeq.at/sig']!.split(':')[2]!,
+    );
+    expect(ok).toBe(true);
+  });
+
+  it('a follow-up carries none', async () => {
+    const { client: c, ws } = await client('irc.example');
+    await c.sendAct('#ops', actTags('handoff', 'claim', TASK, 'did:plc:eliza', {}), { humanText: '' });
+    const tags = await sent(ws);
+    expect(tags['+freeq.at/act-home']).toBeUndefined();
+    expect(tags['act-home']).toBeUndefined();
+  });
+
+  it("keeps the caller's own act-home, under either spelling", async () => {
+    const { client: c, ws } = await client('irc.example');
+    await c.sendAct(
+      '#ops',
+      actTags('handoff', 'offer', undefined, 'did:plc:eliza', { title: 'x', home: 'did:web:mine.example' }),
+      { humanText: '' },
+    );
+    expect((await sent(ws))['+freeq.at/act-home']).toBe('did:web:mine.example');
+    ws.sent.length = 0;
+    await c.sendAct(
+      '#ops',
+      { ...actTags('handoff', 'offer', undefined, 'did:plc:eliza', { title: 'y' }), 'act-home': 'did:web:bare.example' },
+      { humanText: '' },
+    );
+    const bare = await sent(ws);
+    expect(bare['act-home']).toBe('did:web:bare.example');
+    expect(bare['+freeq.at/act-home']).toBeUndefined();
+  });
+
+  it('sends none before a welcome, and forgets the name when the connection ends', async () => {
+    const before = await client();
+    expect(before.client.serverName).toBeNull();
+    await before.client.sendAct('#ops', actTags('handoff', 'offer', undefined, 'did:plc:eliza', { title: 'x' }), {
+      humanText: '',
+    });
+    expect((await sent(before.ws))['+freeq.at/act-home']).toBeUndefined();
+
+    const dropped = await client('irc.example');
+    dropped.ws.close();
+    await flushAsync();
+    expect(dropped.client.serverName).toBeNull();
+
+    const ended = await client('irc.example');
+    ended.client.disconnect();
+    expect(ended.client.serverName).toBeNull();
+  });
+});
+
 describe('outbound: sendAct', () => {
   /** A registered client with a real session key, so a task event can be
    *  signed and put on the wire. */
