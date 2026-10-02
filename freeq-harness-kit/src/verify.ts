@@ -130,6 +130,58 @@ export async function verifyActEvent(
 }
 
 /**
+ * What a task's referee's own host says about one key: the key when it lists
+ * it, else whether it answered. The SDK's `KeyLookup.atOwnHost` answers this
+ * the way the server's referee check does.
+ */
+export type RefereeLookup = (
+  did: string,
+  kid: string,
+) => Promise<{ key: Uint8Array; retiredAt: number | null } | "not-listed" | "cannot-answer">;
+
+/**
+ * A ruling on a task whose opener named `home` as its referee, checked only
+ * against a key that referee's own host lists. `listed` carries the check;
+ * `not-listed`, `retired` (signed at or after the key stopped counting, plan
+ * ruling 24) and `cannot-answer` carry none, and the caller decides.
+ */
+export async function verifyByReferee(
+  ev: VerifiableEvent,
+  home: string,
+  lookup: RefereeLookup,
+  selfDid: string,
+): Promise<{ referee: "listed" | "not-listed" | "retired" | "cannot-answer"; result?: VerifyResult }> {
+  const sigTag = sigTagOf(ev);
+  const kid = sigTag ? kidOf(sigTag) : undefined;
+  if (!kid) return { referee: "cannot-answer" };
+  let answer: Awaited<ReturnType<RefereeLookup>>;
+  try {
+    answer = await lookup(home, kid);
+  } catch {
+    return { referee: "cannot-answer" };
+  }
+  if (answer === "not-listed" || answer === "cannot-answer") return { referee: answer };
+  const signedAt = ulidTimeMs(ev.eventId) ?? Date.now();
+  if (answer.retiredAt !== null && answer.retiredAt * 1000 <= signedAt) return { referee: "retired" };
+  const key = answer.key;
+  return { referee: "listed", result: await verifyActEvent(ev, { fetchKey: async () => key, selfDid }) };
+}
+
+/** The millisecond time a ULID event id carries in its first ten
+ *  characters, or null for one that is not a ULID. */
+export function ulidTimeMs(id: string): number | null {
+  const alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+  if (id.length !== 26) return null;
+  let ms = 0;
+  for (const c of id.slice(0, 10).toUpperCase()) {
+    const v = alphabet.indexOf(c);
+    if (v < 0) return null;
+    ms = ms * 32 + v;
+  }
+  return ms;
+}
+
+/**
  * A key fetcher backed by the server's key store, with a small cache.
  *
  * `(did, kid)` is immutable — the kid is a hash of the key — so a hit can be

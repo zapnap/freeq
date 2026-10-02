@@ -9,6 +9,8 @@ import {
   base64urlToBytes,
   fetchServerDid,
   type KeyFetcher,
+  type RefereeLookup,
+  verifyByReferee,
 } from "./verify.js";
 
 const SELF = "did:key:zSelf";
@@ -245,5 +247,44 @@ describe("fetchServerDid", () => {
       close();
     }
     expect(await fetchServerDid("http://127.0.0.1:1")).toBeUndefined();
+  });
+});
+
+describe("a ruling checked against its referee's own host", () => {
+  const HOME = "did:web:referee.example";
+
+  async function ruling() {
+    const signed = await signedEvent({ tags: { "+freeq.at/act-verb": "expire", "+freeq.at/from": HOME } });
+    return { ...signed, ev: { ...signed.ev, did: HOME } };
+  }
+
+  it("is valid against a key the referee's host lists, asked by the kid it names", async () => {
+    const { ev, raw } = await ruling();
+    const asked: Array<[string, string]> = [];
+    const lookup: RefereeLookup = async (did, kid) => {
+      asked.push([did, kid]);
+      return { key: raw, retiredAt: null };
+    };
+    const r = await verifyByReferee(ev, HOME, lookup, SELF);
+    expect(r.referee).toBe("listed");
+    expect(r.result?.outcome).toBe("valid");
+    expect(asked).toEqual([[HOME, kidOf(ev.sigTag!)]]);
+  });
+
+  it("does not count a ruling signed at or after its key's retirement", async () => {
+    const { ev, raw } = await ruling();
+    // Retired at the epoch's first second: every event id here is later.
+    const r = await verifyByReferee(ev, HOME, async () => ({ key: raw, retiredAt: 1 }), SELF);
+    expect(r).toEqual({ referee: "retired" });
+    const live = await verifyByReferee(ev, HOME, async () => ({ key: raw, retiredAt: null }), SELF);
+    expect(live.referee).toBe("listed");
+  });
+
+  it("passes on a host that does not list the key, or cannot answer, unjudged", async () => {
+    const { ev } = await ruling();
+    for (const answer of ["not-listed", "cannot-answer"] as const) {
+      const r = await verifyByReferee(ev, HOME, async () => answer, SELF);
+      expect(r).toEqual({ referee: answer });
+    }
   });
 });

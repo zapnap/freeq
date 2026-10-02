@@ -215,6 +215,70 @@ describe("the connected server's rulings", () => {
   });
 });
 
+describe("a task that names its referee", () => {
+  const SERVER = "did:web:irc.example";
+  const HOME = "did:web:referee.example";
+
+  function named(home = HOME): string {
+    return offer(store, { fields: { act: "handoff", "act-to": BOB, "act-title": "t", "act-home": home } });
+  }
+
+  function ruling(taskId: string, did: string, server: Parameters<HandoffStore["apply"]>[1]) {
+    return store.apply(
+      ev({
+        verb: "expire",
+        did,
+        from: "referee.example",
+        eventId: "01EXPIRE000000000000000000",
+        taskId,
+        fields: { act: "handoff", "act-id": taskId },
+      }),
+      server,
+    );
+  }
+
+  it("keeps the referee the opener named, across a save and a reload", async () => {
+    const path = join(await mkdtemp(join(tmpdir(), "handoff-home-")), "h.json");
+    const a = new HandoffStore(path);
+    const id = offer(a, { fields: { act: "handoff", "act-to": BOB, "act-title": "t", "act-home": HOME } });
+    expect(a.get(id)!.home).toBe(HOME);
+    await a.save();
+    const b = new HandoffStore(path);
+    await b.load();
+    expect(b.get(id)!.home).toBe(HOME);
+  });
+
+  it("applies the referee's ruling checked against a key its own host lists", () => {
+    const id = named();
+    move(store, "accept", id, BOB);
+    const r = ruling(id, HOME, { serverDid: SERVER, signatureValid: true, referee: "listed" });
+    expect(r.ok, r.ok ? "" : r.reason).toBe(true);
+    expect(store.get(id)!.state).toBe("expired");
+  });
+
+  it("refuses the connected server's ruling when it is not the named referee", () => {
+    const id = named();
+    move(store, "accept", id, BOB);
+    expect(ruling(id, SERVER, { serverDid: SERVER, signatureValid: true, referee: "listed" }).ok).toBe(false);
+    expect(store.get(id)!.state).toBe("assigned");
+  });
+
+  it("refuses the referee's ruling when its host does not list the key", () => {
+    const id = named();
+    move(store, "accept", id, BOB);
+    expect(ruling(id, HOME, { serverDid: HOME, signatureValid: true, referee: "not-listed" }).ok).toBe(false);
+    expect(store.get(id)!.state).toBe("assigned");
+  });
+
+  it("when the referee cannot answer, takes the connected server's verified ruling as before", () => {
+    const id = named(SERVER);
+    move(store, "accept", id, BOB);
+    const r = ruling(id, SERVER, { serverDid: SERVER, signatureValid: true, referee: "cannot-answer" });
+    expect(r.ok, r.ok ? "" : r.reason).toBe(true);
+    expect(store.get(id)!.state).toBe("expired");
+  });
+});
+
 describe("malformed and hostile input", () => {
   it("refuses an unknown kind, as routine", () => {
     const r = store.apply(ev({ kind: "bounty" }));

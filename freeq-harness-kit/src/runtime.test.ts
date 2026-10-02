@@ -33,6 +33,7 @@ class FakeBot implements BotLike {
       return "01JTASK0000000000000000000";
     },
     signing: { getPublicKey: () => "pk" },
+    serverName: "irc.example" as string | null,
   }))(this);
   on(event: string, handler: (...a: never[]) => void): unknown {
     this.handlers.set(event, [...(this.handlers.get(event) ?? []), handler]);
@@ -363,6 +364,14 @@ describe("AgentRuntime: the freeq tool", () => {
     expect(out.split("\n")[0]).toBe("Handoff offered: 01JTASK0000000000000000000");
     expect(rt.handoffs?.get("01JTASK0000000000000000000")).toMatchObject({ state: "offered", offeree: "did:plc:chad", note: "details" });
     expect(await rt.runTool({ action: "handoffs" })).toContain("You offered:");
+  });
+
+  it("names the server it posted on as the referee of a task it opened", async () => {
+    const { rt } = await started();
+    await rt.runTool({ action: "handoff", to: "did:plc:chad", title: "fix it" });
+    expect(rt.handoffs?.get("01JTASK0000000000000000000")?.home).toBe("did:web:irc.example");
+    await rt.runTool({ action: "post", title: "anyone", channel: "#work" });
+    expect(rt.handoffs?.get("01JTASK0000000000000000000")?.home).toBe("did:web:irc.example");
   });
 });
 

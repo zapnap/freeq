@@ -63,6 +63,8 @@ export interface BotLike {
   readonly identity: { did: string };
   readonly client: {
     readonly nick: string | null;
+    /** The name the server welcomed this connection under; null before. */
+    readonly serverName?: string | null;
     join(channel: string): void;
     raw(line: string): void;
     sendMessage(target: string, text: string): void;
@@ -246,6 +248,10 @@ export class FreeqConnection {
   }
   get did(): string | undefined {
     return this.#bot?.identity.did;
+  }
+  /** The server's own name, from this connection's welcome. */
+  get serverName(): string | undefined {
+    return this.#bot?.client.serverName ?? undefined;
   }
   /** The server's latest answer to our PROVENANCE ("Provenance verified:
    *  …", "Provenance stored (unverified): …", …), as bot-kit read it from

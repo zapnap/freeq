@@ -35,6 +35,7 @@ import {
 } from "./config.js";
 import { defaultNick, deriveInstallSlug, isDid, resolveBotName } from "./identity.js";
 import { isTerminal } from "@freeq/bot-kit";
+import { KeyLookup, RULING_VERBS, makeDidResolver } from "@freeq/sdk";
 import {
   agentInstructions,
   authorizeInstructions,
@@ -70,8 +71,17 @@ import {
   formatAge,
   formatDuration,
   type HandoffRecord,
+  type ServerRuling,
 } from "./handoff.js";
-import { fetchServerDid, serverKeyFetcher, verifyActEvent, type KeyFetcher } from "./verify.js";
+import {
+  fetchServerDid,
+  serverKeyFetcher,
+  verifyActEvent,
+  verifyByReferee,
+  type KeyFetcher,
+  type RefereeLookup,
+  type VerifyResult,
+} from "./verify.js";
 import {
   TurnRecorder,
   buildProvenance,
@@ -243,6 +253,8 @@ export class AgentRuntime {
   handoffs: HandoffStore | undefined;
   /** Resolves the exact key a signature names, from the server's key store. */
   keyFetcher: KeyFetcher | undefined;
+  /** Asks a task's referee's own host about the key a ruling names. */
+  refereeLookup: RefereeLookup | undefined;
   /** The connected server's own DID, read once; a move only the server may
    *  make counts only under this name. */
   serverDid: string | undefined;
@@ -930,6 +942,8 @@ export class AgentRuntime {
           channel,
           fromReplay: false,
           signed: true,
+          // The SDK named the server it was sent on as the task's referee.
+          home: conn.serverName ? `did:web:${conn.serverName}` : undefined,
           createdAt: Date.now(),
           updatedAt: Date.now(),
           log: [{ verb: "offer", by: conn.did ?? "", at: Date.now() }],
@@ -982,6 +996,8 @@ export class AgentRuntime {
           channel,
           fromReplay: false,
           signed: true,
+          // The SDK named the server it was sent on as the task's referee.
+          home: conn.serverName ? `did:web:${conn.serverName}` : undefined,
           createdAt: Date.now(),
           updatedAt: Date.now(),
           log: [{ verb: "offer", by: conn.did ?? "", at: Date.now() }],
@@ -2282,21 +2298,37 @@ export class AgentRuntime {
       onActEvent: (ev) => {
         void (async () => {
           const store = await this.ensureHandoffs();
+          const verifiable = {
+            channel: ev.channel,
+            did: ev.did,
+            eventId: ev.eventId,
+            tags: ev.tags,
+            sigTag: ev.sigTag,
+          };
+
+          // A ruling on a task whose opener named its referee is checked
+          // against a key that referee's own host lists, never the connected
+          // server's copy. A key the host does not list fails it, and it is
+          // not applied; a host that cannot answer leaves the check below.
+          const home = store.get(ev.taskId)?.home;
+          let referee: ServerRuling["referee"];
+          let verdict: VerifyResult | undefined;
+          if (home && ev.did === home && RULING_VERBS.has(ev.verb)) {
+            this.refereeLookup ??= ownHostLookup();
+            const judged = await verifyByReferee(verifiable, home, this.refereeLookup, this.conn?.did ?? "");
+            if (judged.referee === "not-listed" || judged.referee === "retired") return;
+            referee = judged.referee;
+            verdict = judged.result;
+          }
 
           // Check the signature BEFORE applying. Three-way outcome per the
           // RFC: a forgery is rejected, but an unreachable key store is an
           // outage — deferring beats destroying someone's completed work.
           this.keyFetcher ??= serverKeyFetcher(httpOriginFor(cfg.server));
-          const verdict = await verifyActEvent(
-            {
-              channel: ev.channel,
-              did: ev.did,
-              eventId: ev.eventId,
-              tags: ev.tags,
-              sigTag: ev.sigTag,
-            },
-            { fetchKey: this.keyFetcher, selfDid: this.conn?.did ?? "" },
-          );
+          verdict ??= await verifyActEvent(verifiable, {
+            fetchKey: this.keyFetcher,
+            selfDid: this.conn?.did ?? "",
+          });
 
           if (verdict.outcome === "invalid") {
             // Do not apply, and say so loudly: this is tampering or forgery,
@@ -2313,6 +2345,7 @@ export class AgentRuntime {
           const result = store.apply(ev, {
             serverDid: this.serverDid,
             signatureValid: verdict.outcome === "valid",
+            referee,
           });
           if (!result.ok) {
             // Illegal or unattributable moves are logged, never applied.
@@ -2723,4 +2756,21 @@ export class AgentRuntime {
       /* side effect */
     }
   }
+}
+
+/** A referee's own host, asked through the SDK's lookup: its document's
+ *  `#freeq` key, then its key route, by key id. */
+function ownHostLookup(): RefereeLookup {
+  const keys = new KeyLookup(
+    {
+      fetch: (url) => fetch(url, { signal: AbortSignal.timeout(5000) }),
+      resolveDid: makeDidResolver({ fetch: (...args) => fetch(...args) }),
+    },
+    null,
+    3_600_000,
+  );
+  return async (did, kid) => {
+    const answer = await keys.atOwnHost(did, kid);
+    return typeof answer === "string" ? answer : { key: answer.key, retiredAt: answer.retiredAt };
+  };
 }

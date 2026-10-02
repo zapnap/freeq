@@ -94,6 +94,11 @@ export interface HandoffRecord {
    * INVALID are never applied, so they never appear here.
    */
   verification?: "valid" | "unverifiable";
+  /**
+   * The server the opener named as the task's referee (`act-home`), signed by
+   * whoever posted it. Its rulings are the only ones that count here.
+   */
+  home?: string;
   createdAt: number;
   updatedAt: number;
   /** Append-only local log of applied events, for `/freeq handoffs <id>`. */
@@ -128,6 +133,13 @@ export interface ServerRuling {
   serverDid?: string;
   /** True only when the event's signature verified `valid`. */
   signatureValid: boolean;
+  /**
+   * For a task that names its referee: what the referee's own host said of
+   * the key that signed this event. `listed` means `signatureValid` was
+   * checked against that key; `cannot-answer` (or absent) leaves the
+   * connected server's ruling as it was before.
+   */
+  referee?: "listed" | "not-listed" | "cannot-answer";
 }
 
 export function hashBrief(text: string): string {
@@ -252,6 +264,7 @@ export class HandoffStore {
         ctxHash: ev.fields["act-ctx-h"] || undefined,
         caps: ev.fields["act-caps"] || undefined,
         deadline: numeric(ev.fields["act-deadline"]),
+        home: ev.fields["act-home"] || undefined,
         channel: ev.channel,
         lastActor: ev.from,
         fromReplay: ev.replayed,
@@ -285,8 +298,18 @@ export class HandoffStore {
     // signed by the server this connection is on, and the signature verified.
     // That server rules only on its own tasks, and no other signer can use its
     // name. A linked server's ruling on its own task is not accepted here.
-    const isSystem =
-      !!server?.serverDid && server.signatureValid && actor === server.serverDid;
+    //
+    // A task whose opener named its referee takes only that referee's word:
+    // signed under its name, and checked against a key its own host lists.
+    // When that host cannot answer, the rule above stands, for the referee's
+    // signature only.
+    const home = existing.home;
+    const isSystem = !home
+      ? !!server?.serverDid && server.signatureValid && actor === server.serverDid
+      : actor === home &&
+        !!server?.signatureValid &&
+        (server.referee === "listed" ||
+          ((server.referee ?? "cannot-answer") === "cannot-answer" && actor === server.serverDid));
     const verdict = checkTransition(
       task,
       { verb: ev.verb, msgid: ev.eventId, fields: Object.keys(ev.fields) },
@@ -353,6 +376,7 @@ function normalizeRecord(raw: unknown): HandoffRecord | undefined {
     ownerAccepted: o.ownerAccepted === true ? true : undefined,
     verification:
       o.verification === "valid" || o.verification === "unverifiable" ? o.verification : undefined,
+    home: typeof o.home === "string" ? o.home : undefined,
     createdAt: typeof o.createdAt === "number" ? o.createdAt : Date.now(),
     updatedAt: typeof o.updatedAt === "number" ? o.updatedAt : Date.now(),
     log: Array.isArray(o.log)
