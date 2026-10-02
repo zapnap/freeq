@@ -53,6 +53,7 @@ let package = Package(
                 "ActVerbs.swift",
                 "ActFacts.swift",
                 "ActTasks.swift",
+                "ActReferee.swift",
                 "DmHistoryOnOpen.swift",
                 "Jumbomoji.swift",
                 "CallLayoutPolicies.swift",

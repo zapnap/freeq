@@ -516,6 +516,43 @@ class AppState {
         allBuffers.first { $0.actTasks.task(taskId) != nil }?.name
     }
 
+    /// The referee a held task's opener named (`act-home`).
+    func actRefereeOf(_ taskId: String) -> RefereeOf {
+        guard let opener = allBuffers
+            .lazy.compactMap({ $0.actTasks.task(taskId) }).first?
+            .events.first(where: { $0.eventId == taskId })
+        else { return .noOpener }
+        return .named(opener.fields["act-home"])
+    }
+
+    @ObservationIgnored private var rulingGate: RulingGate<ActEvent>?
+
+    /// A ruling on a task that names its referee waits for its verdict and
+    /// counts only when that referee signed it; everything else is filed as
+    /// it arrives (ActReferee.swift).
+    private var rulings: RulingGate<ActEvent> {
+        if let rulingGate { return rulingGate }
+        let gate = RulingGate<ActEvent>(
+            refereeOf: { [weak self] taskId in self?.actRefereeOf(taskId) ?? .noOpener },
+            apply: { [weak self] ev in self?.fileAct(ev.payload) },
+            schedule: { run in DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: run) })
+        rulingGate = gate
+        return gate
+    }
+
+    /// The SDK's verdict state, as the gate reads it.
+    private static func verdictName(_ state: VerdictState) -> String {
+        switch state {
+        case .device: return "device"
+        case .server: return "server"
+        case .unsigned: return "unsigned"
+        case .unverifiable: return "unverifiable"
+        case .invalid: return "invalid"
+        case .retired: return "retired"
+        case .pending: return "pending"
+        }
+    }
+
     var totalUnread: Int {
         unreadCounts.values.reduce(0, +)
     }
@@ -1843,50 +1880,59 @@ extension AppState {
         return sender.lowercased() == self.nick.lowercased()
     }
 
+    /// File one task event where its task lives. A task event rides as a
+    /// TAGMSG, so it names its venue the way every other TAGMSG does. The SDK
+    /// has already read the tags and dropped the repeats a joiner is handed.
+    private func fileAct(_ act: ActEvent) {
+        let actSelf = isSelfSender(nick: act.from, account: act.did)
+        let venue = act.target.hasPrefix("#")
+            ? act.target
+            : (act.dmKey ?? (actSelf ? act.target : act.from))
+        guard let bufferName = ActEventRouting.buffer(
+            venue: venue, taskId: act.taskId, eventId: act.eventId,
+            bufferHoldingTask: bufferHoldingTask(act.taskId),
+            hasBuffer: { self.buffer(named: $0) != nil })
+        else { return }
+
+        let buf = bufferName.hasPrefix("#")
+            ? getOrCreateChannel(bufferName)
+            : getOrCreateDM(bufferName)
+        let line = buf.recordActEvent(ActEventInput(
+            from: act.from, did: act.did, kind: act.kind, verb: act.verb,
+            eventId: act.eventId, taskId: act.taskId,
+            fields: Dictionary(act.fields.map { ($0.key, $0.value) },
+                               uniquingKeysWith: { _, last in last })))
+        buf.pairActCompanions()
+        // The home signs confirm and expire itself and sends no line
+        // beside them, so the room hears about those two here. Dated by
+        // the id the home minted the event under — a receipt handed back
+        // on join is old news, and saying "now" would date it wrong and
+        // file it under the newest thing said. Keyed by that id too, so a
+        // replayed receipt lands on the dedup rather than printing twice.
+        if let line {
+            buf.appendIfNew(ChatMessage(
+                id: act.eventId,
+                from: "",
+                text: line,
+                isAction: false,
+                timestamp: actEventTimeMs(act.eventId)
+                    .map { Date(timeIntervalSince1970: Double($0) / 1000.0) } ?? Date(),
+                replyTo: nil))
+        }
+    }
+
     func handleEvent(_ event: FreeqEvent) {
         switch event {
         case .act(let act):
-            // A task event rides as a TAGMSG, so it names its venue the way
-            // every other TAGMSG does. The SDK has already read the tags and
-            // dropped the repeats a joiner is handed.
             recordVerdict(
                 msgId: act.eventId, verdict: act.verdict.map(AppState.verdictInfo(from:))
             )
-            let actSelf = isSelfSender(nick: act.from, account: act.did)
-            let venue = act.target.hasPrefix("#")
-                ? act.target
-                : (act.dmKey ?? (actSelf ? act.target : act.from))
-            guard let bufferName = ActEventRouting.buffer(
-                venue: venue, taskId: act.taskId, eventId: act.eventId,
-                bufferHoldingTask: bufferHoldingTask(act.taskId),
-                hasBuffer: { self.buffer(named: $0) != nil })
-            else { return }
-
-            let buf = bufferName.hasPrefix("#")
-                ? getOrCreateChannel(bufferName)
-                : getOrCreateDM(bufferName)
-            let line = buf.recordActEvent(ActEventInput(
-                from: act.from, did: act.did, kind: act.kind, verb: act.verb,
-                eventId: act.eventId, taskId: act.taskId,
+            rulings.offer(GatedAct(
+                taskId: act.taskId, eventId: act.eventId, verb: act.verb, did: act.did,
                 fields: Dictionary(act.fields.map { ($0.key, $0.value) },
-                                   uniquingKeysWith: { _, last in last })))
-            buf.pairActCompanions()
-            // The home signs confirm and expire itself and sends no line
-            // beside them, so the room hears about those two here. Dated by
-            // the id the home minted the event under — a receipt handed back
-            // on join is old news, and saying "now" would date it wrong and
-            // file it under the newest thing said. Keyed by that id too, so a
-            // replayed receipt lands on the dedup rather than printing twice.
-            if let line {
-                buf.appendIfNew(ChatMessage(
-                    id: act.eventId,
-                    from: "",
-                    text: line,
-                    isAction: false,
-                    timestamp: actEventTimeMs(act.eventId)
-                        .map { Date(timeIntervalSince1970: Double($0) / 1000.0) } ?? Date(),
-                    replyTo: nil))
-            }
+                                   uniquingKeysWith: { _, last in last }),
+                verdict: act.verdict.map { Self.verdictName($0.state) },
+                payload: act))
 
         case .readMarker(let target, let timestamp):
             // draft/read-marker (S1) — cross-device read state. The unread
@@ -1905,6 +1951,7 @@ extension AppState {
         // already; this settles what it says.
         case .verdict(let msgid, let verdict):
             recordVerdict(msgId: msgid, verdict: AppState.verdictInfo(from: verdict))
+            rulings.settle(eventId: msgid, verdict: Self.verdictName(verdict.state))
 
         case .connected:
             connectionState = .connected

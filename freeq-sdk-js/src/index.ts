@@ -154,7 +154,7 @@ export {
 export type { DeviceKeyStore, StoredDeviceKey } from './device-key.js';
 
 // What a client shows for a message's signature; words from spec/verdict-model.json
-export { mark, sentence, VERDICT_STATES, KEY_LAYERS } from './verdict.js';
+export { mark, sentence, VERDICT_STATES, KEY_LAYERS, RULING_VERBS } from './verdict.js';
 export type { Verdict, VerdictState, KeyLayer } from './verdict.js';
 
 // VC-bootstrapped E2E group channels (EG1/EGK1) — passphrase-free, server-blind

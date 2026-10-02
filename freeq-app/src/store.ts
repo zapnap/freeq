@@ -462,6 +462,9 @@ export interface Store {
   removePin: (channel: string, msgid: string) => void;
   addActEvent: (channel: string, ev: ActEventInput) => void;
   bufferHoldingTask: (taskId: string) => string | undefined;
+  /** The referee a held task's opener named (`act-home`): its DID,
+   *  `undefined` when the opener named none, `null` when no opener is held. */
+  actRefereeOf: (taskId: string) => string | undefined | null;
   setSearchQuery: (query: string) => void;
   setChannelListOpen: (open: boolean) => void;
   setChannelList: (list: ChannelListEntry[]) => void;
@@ -1792,6 +1795,13 @@ export const useStore = create<Store>((set, get) => ({
       if (ch.actTasks.has(taskId)) return ch.name;
     }
     return undefined;
+  },
+  actRefereeOf: (taskId) => {
+    for (const ch of get().channels.values()) {
+      const opener = ch.actTasks.get(taskId)?.events.find((e) => e.eventId === taskId);
+      if (opener) return opener.fields['act-home'];
+    }
+    return null;
   },
   isFavorite: (channel) => get().favorites.has(channel.toLowerCase()),
   isMuted: (channel) => get().mutedChannels.has(channel.toLowerCase()),

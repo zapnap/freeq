@@ -46,6 +46,13 @@ export interface FoundKey {
   expiresAt: number | null;
 }
 
+/** What a `did:web:` name's own host says about one key: see
+ *  {@link KeyLookup.atOwnHost}. */
+export type OwnHostAnswer =
+  | { key: Uint8Array; retiredAt: number | null }
+  | 'not-listed'
+  | 'cannot-answer';
+
 /** What the identity-record reader needs: an HTTP GET and a DID resolver. */
 export interface RecordReader {
   fetch: Fetch;
@@ -190,6 +197,8 @@ export class KeyLookup {
   /** The origin answered its batch key route with a 404: a server from
    *  before it, asked key by key for the rest of this lookup's life. */
   private batchRouteMissing = false;
+  /** Keys a `did:web:` name's own host listed, by `did kid`. */
+  private readonly listedByOwnHost = new Map<string, { key: Uint8Array; retiredAt: number | null }>();
 
   /** `originBase` is the origin server's base URL; the reader's `fetch` serves its requests. */
   constructor(
@@ -928,6 +937,59 @@ export class KeyLookup {
 
   private remember(slot: string, records: unknown[], other: FoundKey | null | undefined): void {
     this.cache.set(slot, { records, other, at: Date.now() });
+  }
+
+  /**
+   * What a `did:web:` name's own host lists for `kid`, asked only there:
+   * the key, when the document's `#freeq` key is it or the host's own key
+   * route (`/api/v1/signing-keys/<did>/<kid>`, the set the document names)
+   * answers it, with when it stopped counting; `'not-listed'` when the host
+   * answered and holds no such key; `'cannot-answer'` when the document
+   * cannot be read or names no `#freeq` key, the key route fails, or the
+   * name is not a plain host. A key it listed is kept; a miss is asked again.
+   * Twin of the server's referee check (`freeq-server/src/referee.rs`).
+   */
+  async atOwnHost(did: string, kid: string): Promise<OwnHostAnswer> {
+    const listed = this.listedByOwnHost.get(`${did} ${kid}`);
+    if (listed !== undefined) return listed;
+    const host = did.startsWith('did:web:') ? did.slice('did:web:'.length) : '';
+    if (!/^[A-Za-z0-9.-]+$/.test(host)) return 'cannot-answer';
+    let current: Uint8Array | null = null;
+    try {
+      const doc = await this.reader.resolveDid(did);
+      const method = (doc.verificationMethod ?? []).find(
+        (m) => m.id === `${did}#freeq` || m.id === '#freeq',
+      );
+      current = method?.publicKeyMultibase === undefined ? null : ed25519Raw(method.publicKeyMultibase);
+    } catch {
+      return 'cannot-answer';
+    }
+    if (current === null) return 'cannot-answer';
+    let answer: OwnHostAnswer;
+    if ((await deriveKid(current)) === kid) {
+      answer = { key: current, retiredAt: null };
+    } else {
+      const path = `/api/v1/signing-keys/${encodeURIComponent(did)}/${encodeURIComponent(kid)}`;
+      let res: Response;
+      try {
+        res = await this.reader.fetch(`https://${host}${path}`);
+      } catch {
+        return 'cannot-answer';
+      }
+      if (res.status === 404) return 'not-listed';
+      if (!res.ok) return 'cannot-answer';
+      let found: OriginAnswer | null;
+      try {
+        found = originAnswer((await res.json()) as Record<string, unknown>);
+      } catch {
+        return 'cannot-answer';
+      }
+      // An answer that is not the key asked for lists nothing.
+      if (found?.key == null || (await deriveKid(found.key)) !== kid) return 'not-listed';
+      answer = { key: found.key, retiredAt: found.retiredAt };
+    }
+    this.listedByOwnHost.set(`${did} ${kid}`, answer);
+    return answer;
   }
 
   private async fromDocument(did: string, kid: string): Promise<Uint8Array | null> {

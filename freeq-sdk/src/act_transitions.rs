@@ -221,6 +221,18 @@ pub fn is_confirmation(verb: &str) -> bool {
     verb == confirmation_verb()
 }
 
+/// Whether this verb is a ruling: the home's receipt, or a move only the
+/// system makes in some kind (an expiry, a closed review window). The words
+/// only a task's home signs.
+pub fn is_ruling(verb: &str) -> bool {
+    is_confirmation(verb)
+        || spec().kinds.values().any(|k| {
+            k.transitions
+                .iter()
+                .any(|t| t.verb == verb && t.who == "system")
+        })
+}
+
 /// The tag a new action names the finished one it revives in.
 pub fn revival_tag() -> &'static str {
     spec().revival.tag.as_str()
@@ -2039,5 +2051,22 @@ mod tests {
         for reason in spec().refusals.keys() {
             assert!(seen.contains(reason), "no sequence refuses with {reason}");
         }
+    }
+
+    /// The rulings are exactly the receipt, the expiry and the review window
+    /// closing; the JS SDK (`RULING_VERBS`) and the server's referee check
+    /// name the same three.
+    #[test]
+    fn the_rulings_are_the_receipt_the_expiry_and_the_review_timeout() {
+        let mut verbs: Vec<&str> = spec()
+            .kinds
+            .values()
+            .flat_map(|k| k.transitions.iter().map(|t| t.verb.as_str()))
+            .chain([confirmation_verb()])
+            .filter(|v| is_ruling(v))
+            .collect();
+        verbs.sort_unstable();
+        verbs.dedup();
+        assert_eq!(verbs, ["auto-accept", "confirm", "expire"]);
     }
 }

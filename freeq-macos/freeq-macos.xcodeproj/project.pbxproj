@@ -105,6 +105,7 @@
 		D520A6580822EF5314066E14 /* LinkPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1561609D65E3676C79D46E2 /* LinkPreview.swift */; };
 		D78576DC05AD84FE32E408D2 /* QuickSendPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B5CC4E0945A336F1B9303AF /* QuickSendPanel.swift */; };
 		D8710A03D5096C7FDD800769 /* ActFacts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75222B6AD422CC6E2435F600 /* ActFacts.swift */; };
+		826CA7FDF0530850DCE27CAC /* ActReferee.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB10583D3A501F6873A73023 /* ActReferee.swift */; };
 		D96E350E7A49137316852CC7 /* CallController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA939865F12BCD7A51A4E5D0 /* CallController.swift */; };
 		DE8F1528542FEB83C2A987CE /* ChannelListBrowser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B238AA9ACDF3723BB74BB45 /* ChannelListBrowser.swift */; };
 		E04A550CE7A7BD40DA6CFD36 /* GlobalHotKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9194BD66D242EE2DD6C3BA20 /* GlobalHotKey.swift */; };
@@ -219,6 +220,7 @@
 		7340BE5C80B24DD16B066ABC /* ChannelSettingsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChannelSettingsSheet.swift; sourceTree = "<group>"; };
 		746E6E96E986EB369B491948 /* CameraEffects.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraEffects.swift; sourceTree = "<group>"; };
 		75222B6AD422CC6E2435F600 /* ActFacts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActFacts.swift; sourceTree = "<group>"; };
+		BB10583D3A501F6873A73023 /* ActReferee.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActReferee.swift; sourceTree = "<group>"; };
 		7B5CC4E0945A336F1B9303AF /* QuickSendPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickSendPanel.swift; sourceTree = "<group>"; };
 		7BD3C7CC942BA721E1572347 /* JoinChannelSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JoinChannelSheet.swift; sourceTree = "<group>"; };
 		7D0EC24463EE36CAB1182A07 /* StatusEditorSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusEditorSheet.swift; sourceTree = "<group>"; };
@@ -435,6 +437,7 @@
 			children = (
 				977E7A7356716C09988E9E8E /* act-card-copy.json */,
 				75222B6AD422CC6E2435F600 /* ActFacts.swift */,
+				BB10583D3A501F6873A73023 /* ActReferee.swift */,
 				AC100BDE977036018B6D8873 /* ActTasks.swift */,
 				E5A3CB043C6B1897ECD7E6EF /* ActVerbs.swift */,
 				69D7F8C4D262E9181F0888CF /* ApiAuth.swift */,
@@ -670,6 +673,7 @@
 			files = (
 				7C0C927C7229AD74D19BB835 /* ActEventCardView.swift in Sources */,
 				D8710A03D5096C7FDD800769 /* ActFacts.swift in Sources */,
+				826CA7FDF0530850DCE27CAC /* ActReferee.swift in Sources */,
 				8318D6CBA44856BE605795E3 /* ActTasks.swift in Sources */,
 				E9D804C750ACFB7EDA49E40F /* ActVerbs.swift in Sources */,
 				F32E9C6E2C26DC15931F9430 /* ApiAuth.swift in Sources */,

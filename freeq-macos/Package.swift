@@ -70,6 +70,7 @@ let package = Package(
                 "ActVerbs.swift",
                 "ActFacts.swift",
                 "ActTasks.swift",
+                "ActReferee.swift",
                 "Jumbomoji.swift",
                 "FavoritesSync.swift",
                 "ApiAuth.swift",

@@ -238,6 +238,8 @@ export async function checkSigned(signed: Signed, key: Uint8Array): Promise<bool
  */
 export class SignatureChecker {
   private serverKeys = new Map<string, Uint8Array>();
+  /** The DID the connected server's key set is published under. */
+  private serverDid: string | null = null;
   private fetched: Promise<void> | null = null;
   private readonly refetched = new Set<string>();
 
@@ -246,6 +248,17 @@ export class SignatureChecker {
   /** The verdict once the key is found, or found nowhere. */
   async resolve(signed: Signed): Promise<Verdict> {
     await (this.fetched ??= this.fetchServerKeys());
+    // A ruling on a task — a receipt, an expiry, a closed review window — is
+    // its signer's word only with a key the signer's own host lists: the
+    // connected server's under the connected server's name, anyone else's
+    // asked of their own host. Only when that host cannot answer does it
+    // take the checks every other line takes.
+    if (isRuling(signed)) {
+      const own = this.serverKeys.get(signed.kid);
+      if (own !== undefined && signed.did === this.serverDid) return serverVerdict(signed, own);
+      const judged = await this.byOwnHost(signed);
+      if (judged !== null) return judged;
+    }
     const serverKey = this.serverKeys.get(signed.kid);
     if (serverKey !== undefined) return serverVerdict(signed, serverKey);
 
@@ -308,6 +321,23 @@ export class SignatureChecker {
     return { state: 'unverifiable', kid: signed.kid };
   }
 
+  /** A ruling checked against its signer's own host, or null when that host
+   *  cannot answer. A key the host does not list fails the check. */
+  private async byOwnHost(signed: Signed): Promise<Verdict | null> {
+    const answer = await this.lookup.atOwnHost(signed.did, signed.kid);
+    if (answer === 'cannot-answer') return null;
+    if (answer === 'not-listed') return { state: 'invalid', kid: signed.kid };
+    const keySource: KeySource = 'DidDocument';
+    const ok = await checkSigned(signed, answer.key);
+    if (ok === false) return { state: 'invalid', kid: signed.kid, keySource };
+    if (ok === null) return { state: 'unverifiable', kid: signed.kid, keySource };
+    const atMs = signing.msgidTimestampMs(signed.msgid) ?? Date.now();
+    if (answer.retiredAt !== null && answer.retiredAt * 1000 <= atMs) {
+      return { state: 'retired', kid: signed.kid, keySource };
+    }
+    return { state: 'device', layer: 'vouched', kid: signed.kid, keySource };
+  }
+
   /** Read the server's key set: `/api/v1/signing-key` names the DID it is
    *  published under, `/api/v1/signing-keys/{did}` lists every key. */
   private async fetchServerKeys(): Promise<void> {
@@ -323,6 +353,7 @@ export class SignatureChecker {
     };
     const did = (await get(`${origin}/api/v1/signing-key`))?.['did'];
     if (typeof did !== 'string' || !/^did:web:[A-Za-z0-9.\-_:%]+$/.test(did)) return;
+    this.serverDid = did;
     const set = await get(`${origin}/api/v1/signing-keys/${did}`);
     if (set === null) return;
     const publicKeys: unknown[] = [];
@@ -336,6 +367,17 @@ export class SignatureChecker {
       if (key?.length === 32) this.serverKeys.set(await signing.deriveKid(key), key);
     }
   }
+}
+
+/** The verbs only a task's home signs: its receipt, an expiry, and the
+ *  review window closing (`spec/act-transitions.json`). */
+export const RULING_VERBS: ReadonlySet<string> = new Set(['confirm', 'expire', 'auto-accept']);
+
+/** Whether `signed` is a ruling on a task signed under a `did:web:` name. */
+function isRuling(signed: Signed): boolean {
+  if (signed.doc.kind !== 'act' || !signed.did.startsWith('did:web:')) return false;
+  const verb = signed.doc.tags['+freeq.at/act-verb'] ?? signed.doc.tags['act-verb'];
+  return verb !== undefined && RULING_VERBS.has(verb);
 }
 
 /**

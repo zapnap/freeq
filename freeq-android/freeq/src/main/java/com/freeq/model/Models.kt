@@ -572,6 +572,15 @@ class AppState(application: Application) : AndroidViewModel(application) {
     fun bufferHoldingTask(taskId: String): String? =
         (channels + dmBuffers).firstOrNull { it.actTasks.task(taskId) != null }?.name
 
+    /** The referee a held task's opener named (`act-home`). */
+    fun actRefereeOf(taskId: String): RefereeOf {
+        val opener = (channels + dmBuffers)
+            .firstNotNullOfOrNull { it.actTasks.task(taskId) }
+            ?.events?.firstOrNull { it.eventId == taskId }
+            ?: return RefereeOf.NoOpener
+        return RefereeOf.Named(opener.fields["act-home"])
+    }
+
     init {
         // Migrate secrets from plain prefs to encrypted prefs (one-time)
         if (prefs.contains("brokerToken") || prefs.contains("did")) {
@@ -1501,10 +1510,81 @@ class AppState(application: Application) : AndroidViewModel(application) {
 
 // ── Event handler ──
 
+/** How long a ruling waits for a pending verdict before it is filed as one
+ *  with no verdict. */
+private const val RULING_VERDICT_WAIT_MS = 30_000L
+
 class AndroidEventHandler(private val state: AppState) : EventHandler {
+    /**
+     * A ruling on a task that names its referee waits for its verdict and
+     * counts only when that referee signed it; everything else is filed as
+     * it arrives (ActReferee.kt).
+     */
+    private val rulings = RulingGate<GatedAct>(
+        refereeOf = { taskId -> state.actRefereeOf(taskId) },
+        apply = { ev -> ev.event?.let { fileAct(it) } },
+        schedule = { run -> state.scope.launch { delay(RULING_VERDICT_WAIT_MS); run() } },
+    )
+
     override fun onEvent(event: FreeqEvent) {
         CoroutineScope(Dispatchers.Main).launch {
             handleEvent(event)
+        }
+    }
+
+    /**
+     * File one task event where its task lives. A task event rides as a
+     * TAGMSG, so it names its venue the way every other TAGMSG does. The SDK
+     * has already read the tags and dropped the repeats a joiner is handed.
+     */
+    private fun fileAct(act: com.freeq.ffi.ActEvent) {
+        // Where the event was said, and then where its task lives: a
+        // receipt the home signs for itself is keyed by the server, so
+        // the venue alone would file a DM's confirm in a thread named
+        // after the server rather than beside the moves it confirms.
+        val venue =
+            TagMsgRouter.routeTo(act.target, act.from, state.nick.value, act.dmKey)
+        val bufferName = ActEventRouting.buffer(
+            venue = venue,
+            taskId = act.taskId,
+            eventId = act.eventId,
+            bufferHoldingTask = state.bufferHoldingTask(act.taskId),
+            hasBuffer = { name -> state.buffer(name) != null },
+        ) ?: return
+        val buf = if (bufferName.startsWith("#")) {
+            state.getOrCreateChannel(bufferName)
+        } else {
+            state.getOrCreateDM(bufferName)
+        }
+        val line = buf.recordActEvent(
+            ActEventInput(
+                from = act.from,
+                did = act.did,
+                kind = act.kind,
+                verb = act.verb,
+                eventId = act.eventId,
+                taskId = act.taskId,
+                fields = act.fields.associate { it.key to it.value },
+            )
+        )
+        buf.pairActCompanions()
+        // The home signs confirm and expire itself and sends no line
+        // beside them, so the room hears about those two here. Dated
+        // by the id the home minted the event under — a receipt handed
+        // back on join is old news, and saying "now" would date it
+        // wrong and file it under the newest thing said. Keyed by that
+        // id too, so a replayed receipt lands on the dedup rather than
+        // printing twice.
+        if (line != null) {
+            buf.appendIfNew(
+                ChatMessage(
+                    id = act.eventId,
+                    from = "",
+                    text = line,
+                    isAction = false,
+                    timestamp = actEventTimeMs(act.eventId)?.let { Date(it) } ?: Date(),
+                )
+            )
         }
     }
 
@@ -1861,6 +1941,7 @@ class AndroidEventHandler(private val state: AppState) : EventHandler {
             // delivered already; this settles what it says.
             is FreeqEvent.Verdict -> {
                 SignatureVerdict.record(event.msgid, event.verdict)
+                rulings.settle(event.msgid, event.verdict.state.name.lowercase())
             }
 
             is FreeqEvent.Disconnected -> {
@@ -1947,59 +2028,19 @@ class AndroidEventHandler(private val state: AppState) : EventHandler {
             }
 
             is FreeqEvent.Act -> {
-                // A task event rides as a TAGMSG, so it names its venue the
-                // way every other TAGMSG does. The SDK has already read the
-                // tags and dropped the repeats a joiner is handed.
                 val act = event.event
                 SignatureVerdict.record(act.eventId, act.verdict)
-                // Where the event was said, and then where its task lives: a
-                // receipt the home signs for itself is keyed by the server, so
-                // the venue alone would file a DM's confirm in a thread named
-                // after the server rather than beside the moves it confirms.
-                val venue =
-                    TagMsgRouter.routeTo(act.target, act.from, state.nick.value, act.dmKey)
-                val bufferName = ActEventRouting.buffer(
-                    venue = venue,
-                    taskId = act.taskId,
-                    eventId = act.eventId,
-                    bufferHoldingTask = state.bufferHoldingTask(act.taskId),
-                    hasBuffer = { name -> state.buffer(name) != null },
-                ) ?: return
-                val buf = if (bufferName.startsWith("#")) {
-                    state.getOrCreateChannel(bufferName)
-                } else {
-                    state.getOrCreateDM(bufferName)
-                }
-                val line = buf.recordActEvent(
-                    ActEventInput(
-                        from = act.from,
-                        did = act.did,
-                        kind = act.kind,
-                        verb = act.verb,
-                        eventId = act.eventId,
+                rulings.offer(
+                    GatedAct(
                         taskId = act.taskId,
+                        eventId = act.eventId,
+                        verb = act.verb,
+                        did = act.did,
                         fields = act.fields.associate { it.key to it.value },
+                        verdict = act.verdict?.state?.name?.lowercase(),
+                        event = act,
                     )
                 )
-                buf.pairActCompanions()
-                // The home signs confirm and expire itself and sends no line
-                // beside them, so the room hears about those two here. Dated
-                // by the id the home minted the event under — a receipt handed
-                // back on join is old news, and saying "now" would date it
-                // wrong and file it under the newest thing said. Keyed by that
-                // id too, so a replayed receipt lands on the dedup rather than
-                // printing twice.
-                if (line != null) {
-                    buf.appendIfNew(
-                        ChatMessage(
-                            id = act.eventId,
-                            from = "",
-                            text = line,
-                            isAction = false,
-                            timestamp = actEventTimeMs(act.eventId)?.let { Date(it) } ?: Date(),
-                        )
-                    )
-                }
             }
 
             is FreeqEvent.NickChanged -> {

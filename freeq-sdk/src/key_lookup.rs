@@ -113,6 +113,41 @@ pub struct KeyLookup<P: ClientProvider> {
     writer: Arc<Writer>,
     loaded: tokio::sync::OnceCell<()>,
     after: Mutex<Option<Pin<Box<dyn Future<Output = ()> + Send>>>>,
+    /// Keys a `did:web:` name's own host listed, with when each stopped
+    /// counting. A key id is a hash of the key, so an answer never goes stale.
+    listed_by_own_host: Mutex<OwnHostListing>,
+}
+
+/// Keys `did:web:` names' own hosts listed, by `(did, kid)`, each with when
+/// it stopped counting.
+type OwnHostListing = HashMap<(String, String), ([u8; 32], Option<i64>)>;
+
+/// What a `did:web:` name's own host says about one of its keys: see
+/// [`KeyLookup::at_own_host`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum OwnHost {
+    /// It lists the key, which stopped counting at `retired_at` if ever.
+    Listed {
+        key: [u8; 32],
+        retired_at: Option<i64>,
+    },
+    /// It answered, and holds no such key.
+    NotListed,
+    /// It could not be asked.
+    CannotAnswer,
+}
+
+/// `did:web:` host names pointed at a local stub, for tests.
+#[cfg(test)]
+static OWN_HOST_BASES: std::sync::LazyLock<Mutex<HashMap<String, String>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Point `host`'s own-host requests at `base` (a loopback stub) in tests.
+#[cfg(test)]
+pub(crate) fn point_own_host_at(host: &str, base: &str) {
+    OWN_HOST_BASES
+        .lock()
+        .insert(host.to_string(), base.to_string());
 }
 
 /// The least time between two writes of a lookup's snapshot.
@@ -581,6 +616,7 @@ impl<P: ClientProvider> KeyLookup<P> {
             writer: Writer::new(Arc::new(MemoryKeyLookupStore::default())),
             loaded: tokio::sync::OnceCell::new(),
             after: Mutex::new(None),
+            listed_by_own_host: Mutex::new(HashMap::new()),
         }
     }
 
@@ -1839,6 +1875,93 @@ impl<P: ClientProvider> KeyLookup<P> {
             .await
             .context("the origin key store answer is not a key")?;
         Ok(decode_key(&answer.public_key).map(|key| (key, answer.retired_at())))
+    }
+}
+
+impl<P: ClientProvider> KeyLookup<P> {
+    /// What a `did:web:` name's own host lists for `kid`, asked only there:
+    /// the key, when the document's `#freeq` key is it or the host's own key
+    /// route (`/api/v1/signing-keys/<did>/<kid>`, the set the document
+    /// names) answers it; `NotListed` when the host answered and holds no
+    /// such key; `CannotAnswer` when the document cannot be read or names no
+    /// `#freeq` key, the key route fails, or the name is not a plain host. A
+    /// key it listed is kept; a miss is asked again. Twin of the JS
+    /// `KeyLookup.atOwnHost` and of the server's referee check.
+    pub(crate) async fn at_own_host(&self, did: &str, kid: &str) -> OwnHost {
+        let pair = (did.to_string(), kid.to_string());
+        if let Some((key, retired_at)) = self.listed_by_own_host.lock().get(&pair).copied() {
+            return OwnHost::Listed { key, retired_at };
+        }
+        let host = did.strip_prefix("did:web:").unwrap_or_default();
+        if host.is_empty()
+            || !host
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+        {
+            return OwnHost::CannotAnswer;
+        }
+        let Ok(doc) = self.reader.resolve_document(did).await else {
+            return OwnHost::CannotAnswer;
+        };
+        let key_id = format!("{did}#freeq");
+        let Some(current) = doc
+            .verification_method
+            .iter()
+            .find(|m| m.id == key_id || m.id == "#freeq")
+            .and_then(|m| m.public_key_multibase.as_deref())
+            .and_then(ed25519_raw)
+        else {
+            return OwnHost::CannotAnswer;
+        };
+        let answer = if derive_kid_bytes(&current) == kid {
+            (current, None)
+        } else {
+            #[cfg(test)]
+            let base = OWN_HOST_BASES
+                .lock()
+                .get(host)
+                .cloned()
+                .unwrap_or_else(|| format!("https://{host}"));
+            #[cfg(not(test))]
+            let base = format!("https://{host}");
+            let Ok(mut url) = url::Url::parse(&base) else {
+                return OwnHost::CannotAnswer;
+            };
+            if let Ok(mut path) = url.path_segments_mut() {
+                path.pop_if_empty()
+                    .extend(["api", "v1", "signing-keys", did, kid]);
+            }
+            let Ok(client) = self.reader.clients.client_for(url.as_str()).await else {
+                return OwnHost::CannotAnswer;
+            };
+            let Ok(response) = client
+                .get(url)
+                .timeout(Duration::from_secs(10))
+                .send()
+                .await
+            else {
+                return OwnHost::CannotAnswer;
+            };
+            if response.status() == reqwest::StatusCode::NOT_FOUND {
+                return OwnHost::NotListed;
+            }
+            if !response.status().is_success() {
+                return OwnHost::CannotAnswer;
+            }
+            let Ok(found) = response.json::<OriginKey>().await else {
+                return OwnHost::CannotAnswer;
+            };
+            // An answer that is not the key asked for lists nothing.
+            match decode_key(&found.public_key).filter(|key| derive_kid_bytes(key) == kid) {
+                Some(key) => (key, found.retired_at()),
+                None => return OwnHost::NotListed,
+            }
+        };
+        self.listed_by_own_host.lock().insert(pair, answer);
+        OwnHost::Listed {
+            key: answer.0,
+            retired_at: answer.1,
+        }
     }
 }
 

@@ -28,6 +28,7 @@
 		225C9CA8B4202A0AA15DD60C /* CallActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7278D584F74B58B9922F23BC /* CallActivityAttributes.swift */; };
 		2319759DBFF8EEDBBA34CD02 /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34D75D9768B423C15C80F711 /* SidebarView.swift */; };
 		24966DD9E147C1C19F6DCEAF /* ActFacts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19D92C71419A1910A54E824B /* ActFacts.swift */; };
+		9DAAAC0D1FADE3C49896DE58 /* ActReferee.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43F9E3EE30988AD4C668A960 /* ActReferee.swift */; };
 		2638BD02F7EB739F42DCB80B /* FreeqLogo.swift in Sources */ = {isa = PBXBuildFile; fileRef = B46D635B8FB436FDCECA93FE /* FreeqLogo.swift */; };
 		2750E2A554136E50881B2E2E /* UserProfileSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95D94CB373FB8CFD1EAD366F /* UserProfileSheet.swift */; };
 		29A01537002089A232C6A1CB /* MemberListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39851CF7C369A289DB8E3E93 /* MemberListView.swift */; };
@@ -194,6 +195,7 @@
 		1613B43E3F87D0A8567A57BB /* CallView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallView.swift; sourceTree = "<group>"; };
 		17EDADA552C222EC7D8D3F34 /* CallMicCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallMicCapture.swift; sourceTree = "<group>"; };
 		19D92C71419A1910A54E824B /* ActFacts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActFacts.swift; sourceTree = "<group>"; };
+		43F9E3EE30988AD4C668A960 /* ActReferee.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActReferee.swift; sourceTree = "<group>"; };
 		1D97CC3F5A8E1F52F2C940FF /* BufferListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BufferListView.swift; sourceTree = "<group>"; };
 		1DE07EAC6B16A20177585C57 /* ImageLightbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageLightbox.swift; sourceTree = "<group>"; };
 		22B90ADE5391CABDCBEF6FF3 /* NewDMSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewDMSheet.swift; sourceTree = "<group>"; };
@@ -467,6 +469,7 @@
 			children = (
 				7AE7D88F51435DA5171AA991 /* act-card-copy.json */,
 				19D92C71419A1910A54E824B /* ActFacts.swift */,
+				43F9E3EE30988AD4C668A960 /* ActReferee.swift */,
 				63ACD9737CE3436EDC7981E3 /* ActTasks.swift */,
 				C02A75EDE43369E820B756D3 /* ActVerbs.swift */,
 				00D21A39BF3823FEA1457075 /* ApiAuth.swift */,
@@ -781,6 +784,7 @@
 			files = (
 				B991B1E141E3062E7C9A9D21 /* ActEventCardView.swift in Sources */,
 				24966DD9E147C1C19F6DCEAF /* ActFacts.swift in Sources */,
+				9DAAAC0D1FADE3C49896DE58 /* ActReferee.swift in Sources */,
 				C00258A4E4341822944BB1BA /* ActTasks.swift in Sources */,
 				FA6D882199A4F05F0985C181 /* ActVerbs.swift in Sources */,
 				A27FE79FCF2981CFC8D03D80 /* ApiAuth.swift in Sources */,

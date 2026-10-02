@@ -201,3 +201,49 @@ describe('which buffer an act event lands in', () => {
     expect([...useStore.getState().channels.keys()]).toEqual(['#work']);
   });
 });
+
+describe('a ruling on a task that names its referee', () => {
+  const HOME = 'did:web:referee.example';
+  const opened = () => ({
+    ...actEvent('#work'),
+    fields: { ...actEvent('#work').fields, 'act-home': HOME },
+  });
+  const ruling = (did: string, verdict?: { state: string }, eventId = '01JRECEIPT0000000000000000') => ({
+    ...receipt('#work', OPENER, eventId),
+    did,
+    ...(verdict ? { verdict } : {}),
+  });
+
+  it('waits for its verdict, and lands before the moves that followed it', () => {
+    const stub = makeEventStub();
+    __wireEventsForTests(stub as any);
+    useStore.getState().addChannel('#work');
+    stub.emit('actEvent', opened());
+    stub.emit('actEvent', ruling(HOME, { state: 'pending' }));
+    stub.emit('actEvent', followUp('#work', OPENER));
+    expect(verbs('#work')).toEqual(['offer']);
+
+    stub.emit('verdict', '01JRECEIPT0000000000000000', { state: 'device' });
+    expect(verbs('#work')).toEqual(['offer', 'confirm', 'progress']);
+  });
+
+  it('draws nothing when another server signed it or its check failed', () => {
+    const stub = makeEventStub();
+    __wireEventsForTests(stub as any);
+    useStore.getState().addChannel('#work');
+    stub.emit('actEvent', opened());
+    stub.emit('actEvent', ruling('did:web:elsewhere.example', { state: 'device' }));
+    stub.emit('actEvent', ruling(HOME, { state: 'invalid' }, '01JRECEIPT0000000000000001'));
+    expect(verbs('#work')).toEqual(['offer']);
+  });
+
+  it('waits for its task’s opener when it arrives first', () => {
+    const stub = makeEventStub();
+    __wireEventsForTests(stub as any);
+    useStore.getState().addChannel('#work');
+    stub.emit('actEvent', ruling(HOME, { state: 'device' }));
+    expect(verbs('#work')).toBeUndefined();
+    stub.emit('actEvent', opened());
+    expect(verbs('#work')).toEqual(['offer', 'confirm']);
+  });
+});

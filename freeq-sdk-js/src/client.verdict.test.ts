@@ -977,3 +977,120 @@ describe('a line a peer server signed', () => {
     expect((await s.lineFor([m.wire], m.msgid)).settled?.state).toBe('unverifiable');
   });
 });
+
+describe('a ruling on a task', () => {
+  // A referee's ruling is checked against the keys the referee's own host
+  // lists — its document's `#freeq` key, then its own key route — never a
+  // copy another server holds under its name.
+  const REFEREE = 'referee.example';
+  const REFEREE_DID = `did:web:${REFEREE}`;
+
+  /** The referee's own host: its document names `current` as `#freeq`, and
+   *  its key route answers every key in `listed`. */
+  async function refereeLookup(current: number, listed: number[], reachable = true): Promise<KeyLookup> {
+    const pub = async (seed: number) =>
+      (await import('./did-key.js')).decodeMultibaseEd25519(
+        (await importDidKey(new Uint8Array(32).fill(seed))).publicKeyMultibase,
+      );
+    const keys = new Map<string, Uint8Array>();
+    for (const seed of listed) {
+      const key = await pub(seed);
+      keys.set(await signing.deriveKid(key), key);
+    }
+    const doc: DidDocument = {
+      id: REFEREE_DID,
+      verificationMethod: [
+        {
+          id: `${REFEREE_DID}#freeq`,
+          type: 'Multikey',
+          controller: REFEREE_DID,
+          publicKeyMultibase: (await importDidKey(new Uint8Array(32).fill(current))).publicKeyMultibase,
+        },
+      ],
+      service: [],
+    };
+    const fetch = async (input: string): Promise<Response> => {
+      const url = new URL(input);
+      if (url.host !== REFEREE) return stubFetch(input);
+      if (!reachable) throw new Error('connection refused');
+      const kid = decodeURIComponent(url.pathname.split('/').pop()!);
+      const key = keys.get(kid);
+      return key
+        ? Response.json({ did: REFEREE_DID, kid, public_key: b64url(key), removed_at: null })
+        : new Response('not found', { status: 404 });
+    };
+    const resolveDid = async (did: string): Promise<DidDocument> => {
+      if (did === REFEREE_DID && reachable) return doc;
+      throw new Error(`unknown DID ${did}`);
+    };
+    return new KeyLookup({ fetch, resolveDid }, ORIGIN, 3_600_000);
+  }
+
+  /** An expiry signed by `signer` with `seed`'s key, on the wire to #ops. */
+  async function expiry(seed: number, signer = REFEREE_DID) {
+    const id = signing.newEventId();
+    const key = await importDidKey(new Uint8Array(32).fill(seed));
+    const pub = (await import('./did-key.js')).decodeMultibaseEd25519(key.publicKeyMultibase);
+    const tags = {
+      '+freeq.at/act': 'handoff',
+      '+freeq.at/act-verb': 'expire',
+      '+freeq.at/from': signer,
+      '+freeq.at/act-id': '01JREFEREETASK00000000000',
+      '+freeq.at/act-seq': '1',
+    };
+    const canonical = signing.actCanonical(tags, '#ops', id)!;
+    const sig = await key.signer(new TextEncoder().encode(canonical));
+    const kid = await signing.deriveKid(pub);
+    return { ...actWire(tags, '#ops', id, `ed25519:${kid}:${sig}`), id, kid, pub };
+  }
+
+  it('is the referee’s device signature when its document holds the key', async () => {
+    const r = await expiry(61);
+    const s = await session(OWN_DID, await refereeLookup(61, [61]));
+    expect((await s.lineFor([r.line], r.id)).settled).toEqual({
+      state: 'device',
+      layer: 'vouched',
+      kid: r.kid,
+      keySource: 'DidDocument',
+    });
+  });
+
+  it('is the referee’s device signature when only its own key route lists the key', async () => {
+    const r = await expiry(62);
+    const s = await session(OWN_DID, await refereeLookup(63, [63, 62]));
+    expect((await s.lineFor([r.line], r.id)).settled).toEqual({
+      state: 'device',
+      layer: 'vouched',
+      kid: r.kid,
+      keySource: 'DidDocument',
+    });
+  });
+
+  it('is invalid when the referee’s host answers without the key, whoever else holds it', async () => {
+    const r = await expiry(64);
+    await hold(REFEREE_DID, r.pub);
+    const s = await session(OWN_DID, await refereeLookup(65, [65]));
+    expect((await s.lineFor([r.line], r.id)).settled?.state).toBe('invalid');
+  });
+
+  it('falls back to every other source when the referee’s host cannot answer', async () => {
+    const r = await expiry(66);
+    await hold(REFEREE_DID, r.pub);
+    const s = await session(OWN_DID, await refereeLookup(66, [66], false));
+    expect((await s.lineFor([r.line], r.id)).settled).toEqual({
+      state: 'device',
+      layer: 'vouched',
+      kid: r.kid,
+      keySource: 'OriginServer',
+    });
+  });
+
+  it('is the server’s only under the connected server’s own name', async () => {
+    const own = await expiry(67, SERVER_DID);
+    origin.serverKeys = [own.pub];
+    const s = await session(OWN_DID, await refereeLookup(68, [68]));
+    expect((await s.lineFor([own.line], own.id)).settled?.state).toBe('server');
+    const borrowed = await expiry(67);
+    expect((await s.lineFor([borrowed.line], borrowed.id)).settled?.state).toBe('invalid');
+  });
+});

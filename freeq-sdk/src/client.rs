@@ -2278,6 +2278,18 @@ fn mark_device_key_refused(
     }
 }
 
+/// Whether `signed` is a ruling on a task signed under a `did:web:` name.
+fn is_ruling(signed: &crate::verdict::Signed) -> bool {
+    let crate::verdict::SignedDoc::Act { tags, .. } = &signed.doc else {
+        return false;
+    };
+    signed.did.starts_with("did:web:")
+        && tags
+            .iter()
+            .find(|(name, _)| name == "+freeq.at/act-verb" || name == "act-verb")
+            .is_some_and(|(_, verb)| crate::act_transitions::is_ruling(verb))
+}
+
 /// The did:web of the peer server a relayed line's `+freeq.at/origin`
 /// names, whose own key may have signed it; `None` without one, or for a
 /// value that is not a host name.
@@ -2303,6 +2315,8 @@ struct SignatureChecker {
 #[derive(Default)]
 struct ServerKeySet {
     fetched: bool,
+    /// The DID the set is published under.
+    did: Option<String>,
     keys: HashMap<String, [u8; 32]>,
     /// Kids the set has been fetched again for, once each per session.
     refetched: HashSet<String>,
@@ -2325,7 +2339,13 @@ impl SignatureChecker {
             FirstLook::Unsigned => plain_verdict(VerdictState::Unsigned, None),
             FirstLook::Unverifiable(kid) => plain_verdict(VerdictState::Unverifiable, kid.clone()),
             FirstLook::Check(signed) => {
-                let server_key = self.server_keys.lock().keys.get(&signed.kid).copied();
+                let server_key = self
+                    .server_keys
+                    .lock()
+                    .keys
+                    .get(&signed.kid)
+                    .copied()
+                    .filter(|_| !is_ruling(signed) || self.is_server(&signed.did));
                 match server_key {
                     Some(key) => server_verdict(signed, &key),
                     None => plain_verdict(VerdictState::Pending, Some(signed.kid.clone())),
@@ -2338,6 +2358,21 @@ impl SignatureChecker {
     async fn resolve(&self, signed: &crate::verdict::Signed) -> crate::verdict::Verdict {
         use crate::verdict::{KeyLayer, Verdict, VerdictState};
         self.fetch_server_keys(false).await;
+        // A ruling on a task — a receipt, an expiry, a closed review window —
+        // is its signer's word only with a key the signer's own host lists:
+        // the connected server's under the connected server's name, anyone
+        // else's asked of their own host. Only when that host cannot answer
+        // does it take the checks every other line takes.
+        if is_ruling(signed) {
+            if let Some(key) = self.server_key(&signed.kid)
+                && self.is_server(&signed.did)
+            {
+                return server_verdict(signed, &key);
+            }
+            if let Some(judged) = self.by_own_host(signed).await {
+                return judged;
+            }
+        }
         if let Some(key) = self.server_key(&signed.kid) {
             return server_verdict(signed, &key);
         }
@@ -2433,6 +2468,46 @@ impl SignatureChecker {
         self.server_keys.lock().keys.get(kid).copied()
     }
 
+    /// Whether `did` is the connected server's own.
+    fn is_server(&self, did: &str) -> bool {
+        self.server_keys.lock().did.as_deref() == Some(did)
+    }
+
+    /// A ruling checked against its signer's own host, or `None` when that
+    /// host cannot answer. A key the host does not list fails the check.
+    async fn by_own_host(
+        &self,
+        signed: &crate::verdict::Signed,
+    ) -> Option<crate::verdict::Verdict> {
+        use crate::key_lookup::{KeySource, OwnHost};
+        use crate::verdict::{KeyLayer, Verdict, VerdictState};
+        let (key, retired_at) = match self.lookup.at_own_host(&signed.did, &signed.kid).await {
+            OwnHost::CannotAnswer => return None,
+            OwnHost::NotListed => {
+                return Some(plain_verdict(
+                    VerdictState::Invalid,
+                    Some(signed.kid.clone()),
+                ));
+            }
+            OwnHost::Listed { key, retired_at } => (key, retired_at),
+        };
+        let at_ms = crate::sigtag::msgid_timestamp_ms(&signed.msgid)
+            .and_then(|ms| i64::try_from(ms).ok())
+            .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
+        let state = match crate::verdict::check(signed, &key) {
+            Ok(false) => VerdictState::Invalid,
+            Err(()) => VerdictState::Unverifiable,
+            Ok(true) if retired_at.is_some_and(|r| r * 1000 <= at_ms) => VerdictState::Retired,
+            Ok(true) => VerdictState::Device,
+        };
+        Some(Verdict {
+            layer: (state == VerdictState::Device).then_some(KeyLayer::Vouched),
+            state,
+            kid: Some(signed.kid.clone()),
+            key_source: Some(KeySource::DidDocument),
+        })
+    }
+
     /// Read the server's key set: `/api/v1/signing-key` names the DID it is
     /// published under, `/api/v1/signing-keys/{did}` lists every key, current
     /// and retired. Once, unless `again`.
@@ -2441,12 +2516,15 @@ impl SignatureChecker {
         if self.server_keys.lock().fetched && !again {
             return;
         }
-        let keys = match self.lookup.origin_base() {
+        let (did, keys) = match self.lookup.origin_base() {
             Some(origin) => fetch_server_key_set(&self.lookup, origin).await,
-            None => HashMap::new(),
+            None => (None, HashMap::new()),
         };
         let mut set = self.server_keys.lock();
         set.fetched = true;
+        if did.is_some() {
+            set.did = did;
+        }
         set.keys.extend(keys);
     }
 }
@@ -2474,12 +2552,12 @@ fn server_verdict(signed: &crate::verdict::Signed, key: &[u8; 32]) -> crate::ver
     plain_verdict(state, Some(signed.kid.clone()))
 }
 
-/// Every key in the server's published key set, by kid. Empty when the
-/// server names no usable DID or publishes no set.
+/// The DID the server publishes its key set under, and every key in the
+/// set, by kid. Empty when the server names no usable DID or publishes no set.
 async fn fetch_server_key_set(
     lookup: &crate::key_lookup::KeyLookup<freeq_oauth::SharedClient>,
     origin: &str,
-) -> HashMap<String, [u8; 32]> {
+) -> (Option<String>, HashMap<String, [u8; 32]>) {
     use freeq_oauth::ClientProvider;
     let origin = origin.trim_end_matches('/');
     let get = |url: String| async move {
@@ -2500,10 +2578,10 @@ async fn fetch_server_key_set(
         .as_ref()
         .and_then(server_did_from_signing_key)
     else {
-        return HashMap::new();
+        return (None, HashMap::new());
     };
     let Some(set) = get(format!("{origin}/api/v1/signing-keys/{did}")).await else {
-        return HashMap::new();
+        return (Some(did), HashMap::new());
     };
     let decode = |b64: &str| -> Option<[u8; 32]> {
         base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -2527,7 +2605,7 @@ async fn fetch_server_key_set(
     {
         keys.insert(crate::sigtag::derive_kid_bytes(&key), key);
     }
-    keys
+    (Some(did), keys)
 }
 
 /// The DID a server publishes its key set under, from its
@@ -12092,5 +12170,160 @@ mod verdict_tests {
             "records asked for: {:?}",
             routes.records_of.lock()
         );
+    }
+
+    // ── a ruling on a task ───────────────────────────────────────────────
+    //
+    // A referee's ruling is checked against the keys the referee's own host
+    // lists — its document's `#freeq` key, then its own key route — never a
+    // copy another server holds under its name.
+
+    /// The referee's document, naming `current`'s key as `#freeq`.
+    fn referee_document(did: &str, current: u8) -> crate::did::DidDocument {
+        let mut doc = crate::did::make_test_did_document_with_pds(did, &multibase(current), None);
+        doc.verification_method[0].id = format!("{did}#freeq");
+        doc
+    }
+
+    /// The referee's own key route on loopback, answering every key in
+    /// `listed`, with `did`'s host pointed at it.
+    async fn serve_referee(did: &str, listed: &[u8]) {
+        let keys: HashMap<String, [u8; 32]> = listed
+            .iter()
+            .map(|seed| {
+                (
+                    crate::sigtag::derive_kid_bytes(&public(*seed)),
+                    public(*seed),
+                )
+            })
+            .collect();
+        let router = axum::Router::new().route(
+            "/api/v1/signing-keys/{did}/{kid}",
+            get(move |Path((did, kid)): Path<(String, String)>| {
+                let key = keys.get(&kid).copied();
+                async move {
+                    let key = key.ok_or(StatusCode::NOT_FOUND)?;
+                    Ok::<_, StatusCode>(axum::Json(
+                        json!({ "did": did, "kid": kid, "public_key": b64(&key), "removed_at": null }),
+                    ))
+                }
+            }),
+        );
+        let base = serve(router).await;
+        crate::key_lookup::point_own_host_at(did.strip_prefix("did:web:").unwrap(), &base);
+    }
+
+    /// An expiry signed by `signer` with `seed`'s key, on the wire to #ops,
+    /// with its id and kid.
+    fn expiry(seed: u8, signer: &str) -> (String, String, String) {
+        let id = crate::chatsig::new_event_id();
+        let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+        let tags = [
+            ("+freeq.at/act", "handoff"),
+            ("+freeq.at/act-verb", "expire"),
+            ("+freeq.at/from", signer),
+            ("+freeq.at/act-id", "01JREFEREETASK00000000000"),
+            ("+freeq.at/act-seq", "1"),
+        ];
+        let venue = crate::chatsig::channel_venue("#ops");
+        let sig = crate::act::sign_act(tags.to_vec(), &venue, &id, &key).unwrap();
+        let mut wire: HashMap<String, String> = tags
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        wire.insert(crate::sigtag::SIG_TAG.to_string(), sig);
+        wire.insert(crate::chatsig::EVENT_ID_TAG.to_string(), id.clone());
+        let kid = crate::sigtag::derive_kid_bytes(&public(seed));
+        (line(wire, "TAGMSG", "#ops", None), id, kid)
+    }
+
+    /// The verdict `wire` settles on, with `documents` resolvable and an
+    /// origin holding `origin`.
+    async fn ruling_verdict(
+        wire: &str,
+        documents: Vec<crate::did::DidDocument>,
+        origin: Origin,
+    ) -> Option<Verdict> {
+        let base = serve_origin(Arc::new(origin)).await;
+        let mut session = Session::open(Some(key_lookup(&base, documents)), OWN_DID).await;
+        session.send(wire).await;
+        session.next_line().await.settled
+    }
+
+    fn device(kid: &str, source: crate::key_lookup::KeySource) -> Option<Verdict> {
+        Some(Verdict {
+            state: VerdictState::Device,
+            layer: Some(KeyLayer::Vouched),
+            kid: Some(kid.to_string()),
+            key_source: Some(source),
+        })
+    }
+
+    #[tokio::test]
+    async fn a_ruling_is_the_referees_device_signature_when_its_document_holds_the_key() {
+        const DID: &str = "did:web:referee-doc.example";
+        let (wire, _, kid) = expiry(61, DID);
+        let seen = ruling_verdict(&wire, vec![referee_document(DID, 61)], Origin::default()).await;
+        assert_eq!(
+            seen,
+            device(&kid, crate::key_lookup::KeySource::DidDocument)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_ruling_is_the_referees_device_signature_when_only_its_own_key_route_lists_it() {
+        const DID: &str = "did:web:referee-route.example";
+        serve_referee(DID, &[63, 62]).await;
+        let (wire, _, kid) = expiry(62, DID);
+        let seen = ruling_verdict(&wire, vec![referee_document(DID, 63)], Origin::default()).await;
+        assert_eq!(
+            seen,
+            device(&kid, crate::key_lookup::KeySource::DidDocument)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_ruling_is_invalid_when_the_referees_host_does_not_list_the_key() {
+        const DID: &str = "did:web:referee-unlisted.example";
+        serve_referee(DID, &[65]).await;
+        let (wire, _, _) = expiry(64, DID);
+        let origin = Origin::default();
+        origin.hold(DID, public(64), None);
+        let seen = ruling_verdict(&wire, vec![referee_document(DID, 65)], origin).await;
+        assert_eq!(seen.map(|v| v.state), Some(VerdictState::Invalid));
+    }
+
+    #[tokio::test]
+    async fn a_ruling_falls_back_to_every_source_when_the_referees_host_cannot_answer() {
+        const DID: &str = "did:web:referee-down.example";
+        let (wire, _, kid) = expiry(66, DID);
+        let origin = Origin::default();
+        origin.hold(DID, public(66), None);
+        let seen = ruling_verdict(&wire, vec![], origin).await;
+        assert_eq!(
+            seen,
+            device(&kid, crate::key_lookup::KeySource::OriginServer)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_ruling_is_the_servers_only_under_the_connected_servers_own_name() {
+        const DID: &str = "did:web:referee-borrowed.example";
+        let (own, _, _) = expiry(67, SERVER_DID);
+        let origin = Origin {
+            server_keys: vec![public(67)],
+            ..Default::default()
+        };
+        let seen = ruling_verdict(&own, vec![referee_document(DID, 68)], origin).await;
+        assert_eq!(seen.map(|v| v.state), Some(VerdictState::Server));
+
+        serve_referee(DID, &[68]).await;
+        let (borrowed, _, _) = expiry(67, DID);
+        let origin = Origin {
+            server_keys: vec![public(67)],
+            ..Default::default()
+        };
+        let seen = ruling_verdict(&borrowed, vec![referee_document(DID, 68)], origin).await;
+        assert_eq!(seen.map(|v| v.state), Some(VerdictState::Invalid));
     }
 }

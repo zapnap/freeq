@@ -19,11 +19,13 @@ import {
   format,
   makeDidResolver,
   recordKeyOf,
+  type ActEventPayload,
   type DeviceKeyRecord,
   type DeviceKeyStore,
   type StoredDeviceKey,
 } from '@freeq/sdk';
 import { recordVerdict } from '../lib/verify-signature';
+import { RulingGate } from '../lib/act-referee';
 import { IndexedDbKeyLookupStore } from '../lib/key-lookup-store';
 import { useStore } from '../store';
 import { notify } from '../lib/notifications';
@@ -1295,6 +1297,24 @@ export function __wireEventsForTests(c: FreeqClient): void {
 function wireEvents(c: FreeqClient) {
   const s = () => useStore.getState();
 
+  // A ruling on a task that names its referee waits for its verdict and
+  // counts only when that referee signed it; everything else is filed as it
+  // arrives. The TAGMSG is the event; its companion prose line arrives
+  // separately as a `message`. The store joins the two and keeps the task
+  // they describe.
+  const rulings = new RulingGate<ActEventPayload>({
+    refereeOf: (taskId) => s().actRefereeOf(taskId),
+    apply: (ev) => {
+      const buffer = actEventBuffer(ev);
+      if (!buffer) return;
+      const isChannel = buffer.startsWith('#') || buffer.startsWith('&');
+      if (!isChannel && !useStore.getState().channels.has(buffer.toLowerCase())) {
+        s().addChannel(buffer);
+      }
+      s().addActEvent(buffer, ev);
+    },
+  });
+
   c.on('connectionStateChanged', (state) => {
     s().setConnectionState(state);
     if (state !== 'connected') {
@@ -1512,7 +1532,10 @@ function wireEvents(c: FreeqClient) {
 
   // What the SDK said about each line's signature. A verdict that settles
   // after the line was drawn arrives as its own event.
-  c.on('verdict', (msgid, verdict) => recordVerdict(msgid, verdict));
+  c.on('verdict', (msgid, verdict) => {
+    recordVerdict(msgid, verdict);
+    rulings.settle(msgid, verdict);
+  });
 
   c.on('signingKeyUnpublished', () => setDeviceKeyState({ needsSignIn: true }));
 
@@ -1545,15 +1568,7 @@ function wireEvents(c: FreeqClient) {
 
   c.on('actEvent', (ev) => {
     recordVerdict(ev.eventId, ev.verdict);
-    // The TAGMSG is the event; its companion prose line arrives separately as
-    // a `message`. The store joins the two and keeps the task they describe.
-    const buffer = actEventBuffer(ev);
-    if (!buffer) return;
-    const isChannel = buffer.startsWith('#') || buffer.startsWith('&');
-    if (!isChannel && !useStore.getState().channels.has(buffer.toLowerCase())) {
-      s().addChannel(buffer);
-    }
-    s().addActEvent(buffer, ev);
+    rulings.offer(ev);
   });
 
   c.on('messageEdited', (channel, originalMsgId, newText, newMsgId, isStreaming, editorNick, editorAccount, editTags) => {
