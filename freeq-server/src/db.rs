@@ -375,6 +375,10 @@ pub enum ActWrite {
     /// applied to nothing: a home's receipt that disagrees with the shared
     /// rules is kept as the signed, comparable evidence it is.
     ReceiptRefused(freeq_sdk::act_transitions::Refusal),
+    /// A ruling numbered the same as one its referee already made on this
+    /// task, saying something else: the referee told two stories under one
+    /// number. Not filed and not applied; `with` is the ruling on file.
+    Conflict { with: String },
     /// The rules refused the move.
     Refused(freeq_sdk::act_transitions::Refusal),
     /// The event names a task this server has never filed. A task another
@@ -4607,6 +4611,32 @@ mod tests {
         origin: &str,
         ts: i64,
     ) -> ActWrite {
+        judged_ruling_signed(
+            db,
+            word,
+            "ed25519:kid:sig",
+            verb,
+            extra,
+            task,
+            id,
+            origin,
+            ts,
+        )
+    }
+
+    /// [`judged_ruling`], signed under the key id `sig` names.
+    #[allow(clippy::too_many_arguments)]
+    fn judged_ruling_signed(
+        db: &Db,
+        word: HomeWord,
+        sig: &str,
+        verb: &str,
+        extra: &[(&str, &str)],
+        task: &str,
+        id: &str,
+        origin: &str,
+        ts: i64,
+    ) -> ActWrite {
         let mut tags = vec![
             ("+freeq.at/act", "handoff"),
             ("+freeq.at/act-verb", verb),
@@ -4618,7 +4648,7 @@ mod tests {
         db.apply_act_event_judged(
             &ActEvent {
                 canonical: &canonical,
-                signature: Some("ed25519:kid:sig"),
+                signature: Some(sig),
                 event_id: id,
                 act_id: task,
                 opens: false,
@@ -4672,6 +4702,128 @@ mod tests {
             }
         );
         assert!(db.act_task("H1").unwrap().is_none(), "the expiry ended it");
+    }
+
+    /// Two rulings under one number from one referee that say different
+    /// things: the second is a conflict, and nothing is filed for it. The same
+    /// words again under a new id are not a conflict.
+    #[test]
+    fn a_referees_second_ruling_under_one_number_is_a_conflict() {
+        let db = Db::open_memory().unwrap();
+        relayed_offer(&db, "Q1", "#ops", "peer-b", 10);
+        relayed_follow_up(&db, "claim", SCHOLAR, "Q1", "Q2", "#ops", "peer-c", 11);
+        relayed_follow_up(&db, "claim", MALLORY, "Q1", "Q3", "#ops", "peer-d", 12);
+        let ruling = |id: &str, subject: &str, ts: i64| {
+            judged_ruling(
+                &db,
+                HomeWord::Referee,
+                "confirm",
+                &[
+                    ("+freeq.at/act-subject", subject),
+                    ("+freeq.at/act-seq", "4"),
+                ],
+                "Q1",
+                id,
+                "peer-z",
+                ts,
+            )
+        };
+        assert_eq!(
+            ruling("R1", "Q2", 13),
+            ActWrite::Confirmed {
+                state: "assigned".into()
+            }
+        );
+        assert_eq!(
+            ruling("R2", "Q3", 14),
+            ActWrite::Conflict { with: "R1".into() }
+        );
+        assert!(!db.is_act_event("R2").unwrap(), "nothing is filed for it");
+        assert_eq!(
+            db.act_task("Q1").unwrap().unwrap().assignee.as_deref(),
+            Some(SCHOLAR)
+        );
+        assert_eq!(
+            ruling("R3", "Q2", 15),
+            ActWrite::Recorded,
+            "same words, new id"
+        );
+    }
+
+    /// Only a ruling checked through the referee's own key is compared, and
+    /// only against one signed with that key or another the referee listed: a
+    /// ruling that took the fallback, one that is not the referee's, and one
+    /// on file under a key nobody listed are never a conflict.
+    #[test]
+    fn only_rulings_checked_through_the_referees_own_key_are_compared() {
+        let db = Db::open_memory().unwrap();
+        relayed_offer(&db, "F1", "#ops", "peer-b", 10);
+        relayed_follow_up(&db, "claim", SCHOLAR, "F1", "F2", "#ops", "peer-c", 11);
+        relayed_follow_up(&db, "claim", MALLORY, "F1", "F3", "#ops", "peer-d", 12);
+        let seq4 = |subject| {
+            [
+                ("+freeq.at/act-subject", subject),
+                ("+freeq.at/act-seq", "4"),
+            ]
+        };
+        // On file under a key the referee never listed.
+        assert_eq!(
+            judged_ruling_signed(
+                &db,
+                HomeWord::ByLink,
+                "ed25519:unlisted:sig",
+                "confirm",
+                &seq4("F3"),
+                "F1",
+                "S1",
+                "peer-x",
+                13
+            ),
+            ActWrite::ReceiptIgnored
+        );
+        // The referee's own, under the same number: not compared with it.
+        assert_eq!(
+            judged_ruling(
+                &db,
+                HomeWord::Referee,
+                "confirm",
+                &seq4("F2"),
+                "F1",
+                "S2",
+                "peer-z",
+                14
+            ),
+            ActWrite::Confirmed {
+                state: "assigned".into()
+            }
+        );
+        // Under the fallback, and not the referee's: never compared either.
+        assert_ne!(
+            judged_ruling(
+                &db,
+                HomeWord::ByLink,
+                "confirm",
+                &seq4("F3"),
+                "F1",
+                "S3",
+                "peer-b",
+                15
+            ),
+            ActWrite::Conflict { with: "S2".into() }
+        );
+        assert_eq!(
+            judged_ruling(
+                &db,
+                HomeWord::NotReferee,
+                "confirm",
+                &seq4("F3"),
+                "F1",
+                "S4",
+                "peer-b",
+                16
+            ),
+            ActWrite::ReceiptIgnored
+        );
     }
 
     /// The review window closing is the referee's third ruling, and counts
@@ -9572,6 +9724,20 @@ impl Db {
             return Ok(ActWrite::NotATaskEvent);
         };
 
+        // ── a referee's ruling under a number it has already used ──
+        //
+        // Compared only for a ruling checked through the referee's own key,
+        // and only against a ruling of the same signer whose key is one the
+        // referee's host listed: a ruling that took the fallback, or one
+        // signed with a key nobody listed, can never make a genuine one a
+        // conflict.
+        if word == HomeWord::Referee
+            && let Some(seq) = view.fields.get("act-seq")
+            && let Some(with) = self.conflicting_ruling(ev, &view, seq)?
+        {
+            return Ok(ActWrite::Conflict { with });
+        }
+
         // ── A receipt ──
         //
         // Answered before the task's own state machine, because a receipt is
@@ -10505,6 +10671,70 @@ impl Db {
                 .and_then(|v| v.as_str())
                 .map(str::to_string)
         }))
+    }
+
+    /// How many rulings `did` has signed and filed here as its own (no
+    /// origin) on `act_id`: receipts, expiries and closed review windows,
+    /// numbered or not. A ruling it files of anyone else's is not counted.
+    pub fn own_rulings_on(&self, act_id: &str, did: &str) -> SqlResult<u64> {
+        let mut stmt = self.conn.prepare(
+            "SELECT canonical FROM events
+              WHERE kind = 'act' AND subject = ?1 AND actor_did = ?2
+                AND COALESCE(origin, '') = ''",
+        )?;
+        let rows: Vec<String> = stmt
+            .query_map(params![act_id, did], |r| r.get(0))?
+            .collect::<SqlResult<_>>()?;
+        Ok(rows
+            .iter()
+            .filter_map(|c| crate::events::derive_act_view(c))
+            .filter(|v| crate::referee::is_ruling(&v.verb))
+            .count() as u64)
+    }
+
+    /// A ruling on file that `ev` contradicts: the same signer and task, the
+    /// same `act-seq`, a different verb or `act-subject`, and signed with
+    /// `ev`'s own key or one the referee's host has listed.
+    fn conflicting_ruling(
+        &self,
+        ev: &ActEvent<'_>,
+        view: &crate::events::ActView,
+        seq: &str,
+    ) -> SqlResult<Option<String>> {
+        // `alg:kid:sig`; the key id is all the comparison needs.
+        let kid_of = |sig: Option<&str>| sig?.split(':').nth(1).map(str::to_string);
+        let own_kid = kid_of(ev.signature);
+        let subject_tag = freeq_sdk::act_transitions::confirmation_subject_tag();
+        let mut stmt = self.conn.prepare(
+            "SELECT event_id, canonical, signature FROM events
+              WHERE kind = 'act' AND subject = ?1 AND actor_did = ?2 AND event_id <> ?3",
+        )?;
+        let rows: Vec<(String, String, Option<String>)> = stmt
+            .query_map(params![ev.act_id, ev.actor, ev.event_id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })?
+            .collect::<SqlResult<_>>()?;
+        for (event_id, canonical, signature) in rows {
+            let Some(other) = crate::events::derive_act_view(&canonical) else {
+                continue;
+            };
+            if other.fields.get("act-seq").map(String::as_str) != Some(seq) {
+                continue;
+            }
+            if other.verb == view.verb
+                && other.fields.get(subject_tag) == view.fields.get(subject_tag)
+            {
+                continue;
+            }
+            let Some(kid) = kid_of(signature.as_deref()) else {
+                continue;
+            };
+            if own_kid.as_deref() == Some(kid.as_str()) || crate::referee::is_listed(ev.actor, &kid)
+            {
+                return Ok(Some(event_id));
+            }
+        }
+        Ok(None)
     }
 
     /// The server a task's opener named as its referee (`act-home`), read

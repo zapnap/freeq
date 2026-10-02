@@ -4045,6 +4045,14 @@ fn file_replayed_task_event(
             ReplayOutcome::Unusable
         }
         Some(crate::db::ActWrite::Duplicate) => ReplayOutcome::AlreadyHeld,
+        Some(crate::db::ActWrite::Conflict { with }) => {
+            tracing::warn!(
+                %origin, %event_id, %act_id, on_file = %with, signer = %actor,
+                "S2S catch-up: a referee's ruling contradicts one it made under the \
+                 same number — not applied, not stored"
+            );
+            ReplayOutcome::Unusable
+        }
         Some(other) => {
             tracing::debug!(
                 %origin, %event_id, %act_id, outcome = ?other,
@@ -5015,6 +5023,17 @@ fn store_relayed_task_event(
                 "The owning server confirmed an event the rules here refuse — the \
                  receipt is on file and nothing was applied"
             ),
+            // The referee said something else under this number before. Kept
+            // from everyone: not filed, not shown, not carried on.
+            Some(crate::db::ActWrite::Conflict { ref with }) => {
+                tracing::warn!(
+                    origin = %origin, act_id = %act_id, event_id = %event_id,
+                    on_file = %with, signer = %signer,
+                    "A referee's ruling contradicts one it made under the same number — \
+                     not applied, not stored, not delivered"
+                );
+                return TaskEventStored::Withheld;
+            }
             // Not on file yet, so nothing can be judged against it. The caller
             // holds this one until it is.
             Some(crate::db::ActWrite::ReceiptBeforeSubject) => {
@@ -16444,6 +16463,77 @@ mod catchup_tests {
         assert!(!state.with_db(|db| db.is_act_event(FORGED)).unwrap());
     }
 
+    /// The referee rules twice under one number on the live relay, saying
+    /// different things: the second is neither applied, nor filed, nor
+    /// delivered.
+    #[tokio::test]
+    async fn a_conflicting_ruling_relayed_live_is_not_applied_filed_or_delivered() {
+        const HOME: &str = "did:web:referee-conflict.example";
+        const ACT: &str = "01ACT00000000000000000H71";
+        const FIRST: &str = "01ACT00000000000000000H72";
+        const SECOND: &str = "01ACT00000000000000000H73";
+        const R1: &str = "01ACT00000000000000000H74";
+        const R2: &str = "01ACT00000000000000000H75";
+        let key = SigningKey::from_bytes(&[3u8; 32]);
+        let state = state_with_key(&key);
+        let home_key = SigningKey::from_bytes(&[159u8; 32]);
+        crate::referee::stub_referee(
+            HOME,
+            &home_key.verifying_key(),
+            vec![home_key.verifying_key()],
+        )
+        .await;
+        a_refereed_task_with_a_claim_on_it(&state, &key, ACT, FIRST, HOME);
+        assert_eq!(
+            apply_replayed_event(&state, OWN, HOME_LINK, claim(&key, SECOND, ACT, HOME_LINK)),
+            ReplayOutcome::Filed
+        );
+        let numbered = |id: &str, subject: &str| {
+            let subject_tag = format!(
+                "+freeq.at/{}",
+                freeq_sdk::act_transitions::confirmation_subject_tag()
+            );
+            let mut ev = act_event(
+                &home_key,
+                id,
+                HOME_LINK,
+                &[
+                    ("+freeq.at/act", "handoff"),
+                    ("+freeq.at/act-verb", "confirm"),
+                    ("+freeq.at/from", HOME),
+                    ("+freeq.at/act-id", ACT),
+                    (&subject_tag, subject),
+                    ("+freeq.at/act-seq", "1"),
+                ],
+            );
+            ev.actor_did = Some(HOME.to_string());
+            ev
+        };
+        assert_eq!(
+            relay_live(&state, &numbered(R1, FIRST), PEER),
+            TaskEventAction::Park
+        );
+        crate::referee::settled(HOME, &kid_of(&home_key)).await;
+        assert_eq!(task_state(&state, ACT).as_deref(), Some("assigned"));
+
+        assert_eq!(
+            relay_live(&state, &numbered(R2, SECOND), PEER),
+            TaskEventAction::Drop
+        );
+        assert!(
+            !state.with_db(|db| db.is_act_event(R2)).unwrap(),
+            "not filed"
+        );
+        assert_eq!(
+            state
+                .with_db(|db| db.act_task(ACT))
+                .flatten()
+                .and_then(|t| t.assignee),
+            Some(ALICE.to_string()),
+            "the first ruling stands"
+        );
+    }
+
     /// A ruling replayed in catch-up that waited for its referee's answer is
     /// applied when the answer comes, and reaches no room: catch-up heals
     /// state and delivers nothing.
@@ -18122,6 +18212,271 @@ mod relayed_task_verdict_tests {
             shown.iter().any(|line| line.contains("act-verb=confirm")),
             "the room still hears it too: {shown:?}"
         );
+    }
+
+    // ── the number on each of this server's rulings ───────────────────────
+
+    /// File one local event of `kind` on `venue`: an opener when `task` is
+    /// `None`, a follow-up on that task otherwise.
+    #[allow(clippy::too_many_arguments)]
+    fn local(
+        state: &Arc<SharedState>,
+        venue: &str,
+        id: &str,
+        task: Option<&str>,
+        kind: &str,
+        verb: &str,
+        actor: &str,
+        extra: &[(&str, &str)],
+    ) -> crate::db::ActWrite {
+        let mut tags = vec![
+            ("+freeq.at/act", kind),
+            ("+freeq.at/act-verb", verb),
+            ("+freeq.at/from", actor),
+        ];
+        if let Some(task) = task {
+            tags.push(("+freeq.at/act-id", task));
+        }
+        tags.extend_from_slice(extra);
+        let canonical = freeq_sdk::act::act_canonical(tags, venue, id).expect("act tags");
+        let system = actor.starts_with("did:web:");
+        state
+            .with_db(|db| {
+                db.apply_act_event(&crate::db::ActEvent {
+                    canonical: &canonical,
+                    signature: Some("ed25519:kid:sig"),
+                    event_id: id,
+                    act_id: task.unwrap_or(id),
+                    opens: task.is_none(),
+                    venue,
+                    actor,
+                    from_system: system,
+                    origin: None,
+                    timestamp: 10,
+                })
+            })
+            .expect("db present")
+    }
+
+    /// The verb and `act-seq` of every ruling this server signed on a task,
+    /// by number (an unnumbered one first). Rulings minted in one second have
+    /// no fixed order on file, so the number is what orders them here.
+    fn numbered(state: &Arc<SharedState>, act_id: &str) -> Vec<(String, Option<String>)> {
+        let own = server_did(&state.server_name);
+        let mut rulings: Vec<(String, Option<String>)> = state
+            .with_db(|db| db.act_task_events(act_id))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|e| e.actor_did.as_deref() == Some(own.as_str()))
+            .filter_map(|e| {
+                let view = crate::events::derive_act_view(&e.canonical)?;
+                Some((view.verb.clone(), view.fields.get("act-seq").cloned()))
+            })
+            .collect();
+        rulings.sort_by_key(|(_, seq)| seq.as_deref().and_then(|n| n.parse::<u64>().ok()));
+        rulings
+    }
+
+    /// A receipt, the review window closing and an expiry are numbered in one
+    /// sequence per task, 1, 2, 3, counting only the rulings this server
+    /// signed: one somebody else signed, on file for the same task, is not.
+    #[test]
+    fn this_servers_rulings_on_a_task_are_numbered_in_one_sequence() {
+        let state = test_state_with_db();
+        let venue = freeq_sdk::chatsig::channel_venue("#seq");
+        let worker = "did:plc:seqworker";
+        local(
+            &state,
+            &venue,
+            "01SEQB1",
+            None,
+            "bounty",
+            "offer",
+            SIGNER,
+            &[],
+        );
+        local(
+            &state,
+            &venue,
+            "01SEQB2",
+            Some("01SEQB1"),
+            "bounty",
+            "bid",
+            worker,
+            &[],
+        );
+        let award = [("+freeq.at/act-accepts", "01SEQB2")];
+        local(
+            &state,
+            &venue,
+            "01SEQB3",
+            Some("01SEQB1"),
+            "bounty",
+            "award",
+            SIGNER,
+            &award,
+        );
+        let not_ours = [("+freeq.at/act-subject", "01SEQB3")];
+        let foreign = "did:web:somebody-else.example";
+        local(
+            &state,
+            &venue,
+            "01SEQBX",
+            Some("01SEQB1"),
+            "bounty",
+            "confirm",
+            foreign,
+            &not_ours,
+        );
+
+        assert!(
+            crate::connection::act::mint_receipt(&state, "bounty", "01SEQB1", "01SEQB3", &venue)
+                .is_some()
+        );
+        local(
+            &state,
+            &venue,
+            "01SEQB4",
+            Some("01SEQB1"),
+            "bounty",
+            "submit",
+            worker,
+            &[],
+        );
+        assert!(
+            crate::connection::act::mint_receipt(&state, "bounty", "01SEQB1", "01SEQB4", &venue)
+                .is_some()
+        );
+        let task = state
+            .with_db(|db| db.act_task("01SEQB1"))
+            .flatten()
+            .expect("live");
+        assert!(crate::connection::act::auto_accept_task(&state, &task));
+
+        let one = |verb: &str, seq: &str| (verb.to_string(), Some(seq.to_string()));
+        assert_eq!(
+            numbered(&state, "01SEQB1"),
+            [
+                one("confirm", "1"),
+                one("confirm", "2"),
+                one("auto-accept", "3")
+            ]
+        );
+
+        // An expiry on another task starts that task's own count.
+        local(
+            &state,
+            &venue,
+            "01SEQH1",
+            None,
+            "handoff",
+            "offer",
+            SIGNER,
+            &[],
+        );
+        let task = state
+            .with_db(|db| db.act_task("01SEQH1"))
+            .flatten()
+            .expect("live");
+        assert!(crate::connection::act::expire_task(&state, &task));
+        assert_eq!(numbered(&state, "01SEQH1"), [one("expire", "1")]);
+    }
+
+    /// A ruling this server signed before rulings were numbered still counts:
+    /// the next one follows it.
+    #[test]
+    fn an_unnumbered_ruling_of_ours_counts_toward_the_next_number() {
+        let state = test_state_with_db();
+        let venue = freeq_sdk::chatsig::channel_venue("#seq");
+        let own = server_did(&state.server_name);
+        local(
+            &state,
+            &venue,
+            "01SEQU1",
+            None,
+            "handoff",
+            "offer",
+            SIGNER,
+            &[],
+        );
+        local(
+            &state,
+            &venue,
+            "01SEQU2",
+            Some("01SEQU1"),
+            "handoff",
+            "claim",
+            "did:plc:w",
+            &[],
+        );
+        let subject = [("+freeq.at/act-subject", "01SEQU2")];
+        local(
+            &state,
+            &venue,
+            "01SEQU3",
+            Some("01SEQU1"),
+            "handoff",
+            "confirm",
+            &own,
+            &subject,
+        );
+        let task = state
+            .with_db(|db| db.act_task("01SEQU1"))
+            .flatten()
+            .expect("live");
+        assert!(crate::connection::act::expire_task(&state, &task));
+        assert_eq!(
+            numbered(&state, "01SEQU1"),
+            [
+                ("confirm".to_string(), None),
+                ("expire".to_string(), Some("2".to_string()))
+            ]
+        );
+    }
+
+    /// Rulings made at the same moment on one task never share a number.
+    #[test]
+    fn rulings_made_at_once_never_share_a_number() {
+        let state = test_state_with_db();
+        let venue = freeq_sdk::chatsig::channel_venue("#seq");
+        local(
+            &state,
+            &venue,
+            "01SEQC1",
+            None,
+            "handoff",
+            "offer",
+            SIGNER,
+            &[],
+        );
+        local(
+            &state,
+            &venue,
+            "01SEQC2",
+            Some("01SEQC1"),
+            "handoff",
+            "claim",
+            "did:plc:w",
+            &[],
+        );
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    for _ in 0..5 {
+                        crate::connection::act::mint_receipt(
+                            &state, "handoff", "01SEQC1", "01SEQC2", &venue,
+                        )
+                        .expect("filed");
+                    }
+                });
+            }
+        });
+        let mut seqs: Vec<u64> = numbered(&state, "01SEQC1")
+            .into_iter()
+            .map(|(_, seq)| seq.expect("numbered").parse().unwrap())
+            .collect();
+        seqs.sort_unstable();
+        assert_eq!(seqs, (1..=20).collect::<Vec<u64>>());
     }
 
     /// The other event only this server can author. An expiry ends a task, and

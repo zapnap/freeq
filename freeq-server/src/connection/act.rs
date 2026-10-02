@@ -27,6 +27,8 @@ const KIND_TAG: &str = "+freeq.at/act";
 const KIND_TAG_BARE: &str = "freeq.at/act";
 const VERB_TAG: &str = "+freeq.at/act-verb";
 const VERB_TAG_BARE: &str = "act-verb";
+/// The number this server gives each of its rulings on one task, 1, 2, 3.
+const SEQ_TAG: &str = "+freeq.at/act-seq";
 
 /// What the gate concluded about a message.
 pub(super) enum Gate {
@@ -168,42 +170,56 @@ fn file_own_event(
 ) -> Option<(HashMap<String, String>, crate::db::ActWrite)> {
     let did = crate::server::server_did(&state.server_name);
     let event_id = freeq_sdk::chatsig::new_event_id();
-    let mut pairs: Vec<(&str, &str)> = vec![
-        (KIND_TAG, kind),
-        (VERB_TAG, verb),
-        ("+freeq.at/from", did.as_str()),
-        ("+freeq.at/act-id", act_id),
-    ];
-    pairs.extend_from_slice(extra);
-    let canonical = freeq_sdk::act::act_canonical(pairs.clone(), venue, &event_id).ok()?;
-    let signature = freeq_sdk::sigtag::sign_canonical(&canonical, &state.msg_signing_key);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64;
 
-    let written = state.with_db(|db| {
-        db.apply_act_event(&crate::db::ActEvent {
-            canonical: &canonical,
-            signature: Some(&signature),
-            event_id: &event_id,
-            act_id,
-            opens: false,
-            venue,
-            actor: &did,
-            // This is the server, signing under its own identity — the only
-            // actor a `system` transition allows, and the only one that may
-            // write a receipt.
-            from_system: true,
-            origin: None,
-            timestamp: now,
+    // Numbered, signed and filed under one hold of the database lock: the
+    // number is one more than the rulings this server has already signed on
+    // this task, so two rulings made at once cannot be given the same one.
+    let (pairs, signature, written) = state
+        .with_db(|db| {
+            let seq = (db.own_rulings_on(act_id, &did)? + 1).to_string();
+            let mut pairs: Vec<(String, String)> = [
+                (KIND_TAG, kind),
+                (VERB_TAG, verb),
+                ("+freeq.at/from", did.as_str()),
+                ("+freeq.at/act-id", act_id),
+            ]
+            .iter()
+            .chain(extra)
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect();
+            pairs.push((SEQ_TAG.to_string(), seq));
+            let Ok(canonical) = freeq_sdk::act::act_canonical(
+                pairs.iter().map(|(k, v)| (k.as_str(), v.as_str())),
+                venue,
+                &event_id,
+            ) else {
+                return Ok(None);
+            };
+            let signature = freeq_sdk::sigtag::sign_canonical(&canonical, &state.msg_signing_key);
+            let written = db.apply_act_event(&crate::db::ActEvent {
+                canonical: &canonical,
+                signature: Some(&signature),
+                event_id: &event_id,
+                act_id,
+                opens: false,
+                venue,
+                actor: &did,
+                // This is the server, signing under its own identity — the
+                // only actor a `system` transition allows, and the only one
+                // that may write a receipt.
+                from_system: true,
+                origin: None,
+                timestamp: now,
+            })?;
+            Ok(Some((pairs, signature, written)))
         })
-    })?;
+        .flatten()?;
 
-    let mut tags: HashMap<String, String> = pairs
-        .iter()
-        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
-        .collect();
+    let mut tags: HashMap<String, String> = pairs.into_iter().collect();
     tags.insert(
         freeq_sdk::chatsig::EVENT_ID_TAG.to_string(),
         event_id.clone(),
@@ -1183,7 +1199,8 @@ pub(super) fn gate(
             | crate::db::ActWrite::Confirmed { .. }
             | crate::db::ActWrite::ReceiptIgnored
             | crate::db::ActWrite::ReceiptBeforeSubject
-            | crate::db::ActWrite::ReceiptRefused(_),
+            | crate::db::ActWrite::ReceiptRefused(_)
+            | crate::db::ActWrite::Conflict { .. },
         ) => {}
         // A local sender's move on a task another server owns. Filed, carried
         // to the room, and not decided here — the owning server referees it,

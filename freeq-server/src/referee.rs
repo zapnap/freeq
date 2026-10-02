@@ -132,6 +132,13 @@ pub(crate) fn signed_while_live(stopped: Option<i64>, event_id: &str) -> bool {
     stopped.is_none_or(|stopped| at_ms < stopped.saturating_mul(1000))
 }
 
+/// Whether the referee `did`'s own host has listed `kid` to this server.
+pub(crate) fn is_listed(did: &str, kid: &str) -> bool {
+    LISTED
+        .lock()
+        .contains_key(&(did.to_string(), kid.to_string()))
+}
+
 /// Ask the referee's own host about `kid`, off the delivery path. At most one
 /// question per `(did, kid)` is out at a time; its answer releases whatever
 /// was parked on that pair.
