@@ -1073,6 +1073,29 @@ pub(super) fn gate(
             refuse(conn, "TAGMSG", code, sentence, state);
             return Gate::Refused;
         }
+        // The server an opener names as its home referees the task, and
+        // this server referees only what is posted here. Refused at the door,
+        // so a task's named home is fixed when it is created. An opener that
+        // names none is accepted as it always was.
+        let home = tags
+            .get("+freeq.at/act-home")
+            .or_else(|| tags.get("act-home"));
+        if let Some(home) = home
+            && *home != crate::server::server_did(&state.server_name)
+        {
+            tracing::debug!(
+                session = %conn.id, did = %did, kind = %kind, home = %home,
+                "Refused an opener naming another server as its home"
+            );
+            refuse(
+                conn,
+                "TAGMSG",
+                "WRONG_HOME",
+                "A task opened here must name this server as its home",
+                state,
+            );
+            return Gate::Refused;
+        }
     } else if !freeq_sdk::act_transitions::knows_verb(kind, verb) {
         tracing::debug!(
             session = %conn.id, did = %did, kind = %kind, verb = %verb,
