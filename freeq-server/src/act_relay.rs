@@ -186,6 +186,9 @@ pub(crate) struct ParkedEvent {
     /// Such a move is not lost: evicted, or still waiting after the time
     /// limit, it is delivered unfiled, as it was before moves waited.
     pub awaiting_task_since: Option<std::time::Instant>,
+    /// Parked from catch-up: when released it is filed and applied, and
+    /// delivered to nobody, since catch-up heals state and shows nothing.
+    pub quiet: bool,
     /// Park order across every origin. Overwritten by [`DeferQueue::park`].
     pub seq: u64,
 }
@@ -867,6 +870,7 @@ mod defer_tests {
             kid: kid.to_string(),
             waiting_on: None,
             awaiting_task_since: None,
+            quiet: false,
             seq: 0,
         }
     }

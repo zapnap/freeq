@@ -3862,10 +3862,57 @@ fn file_replayed_task_event(
     // the home is here, and a row of ours carries no origin. There the name
     // is the whole of it — see `from_system` below.
     let task_home = state.with_db(|db| db.act_task_origin(&act_id)).flatten();
-    let owning_peer = match is_receipt || is_system_actor(&actor) {
-        true => task_home.clone().filter(|home| !home.is_empty()),
+
+    // A ruling on a task whose opener named its referee is judged by its
+    // signature, as on the live path: the named referee's, with a key its own
+    // host lists, whichever peer replays it. Not the referee's, it is skipped
+    // rather than filed, for the reason below; not answered yet, it waits.
+    let mut word = crate::db::HomeWord::ByLink;
+    let named = match crate::referee::is_ruling(&view.verb) {
+        true => state.with_db(|db| db.act_task_home(&act_id)).flatten(),
         false => None,
     };
+    if let Some(home) = named {
+        let sig_tag = ev.signature.clone().unwrap_or_default();
+        let kid = freeq_sdk::sigtag::parse(&sig_tag)
+            .map(|(kid, _)| kid.to_string())
+            .unwrap_or_default();
+        let answer = match actor == home {
+            true => crate::referee::answer(state, &home, &kid),
+            false => crate::referee::Listing::NotListed,
+        };
+        match answer {
+            crate::referee::Listing::Listed(key, stopped)
+                if crate::referee::signed_while_live(stopped, event_id)
+                    && freeq_sdk::sigtag::verify_canonical(&ev.canonical, &sig_tag, &key)
+                        .is_ok() =>
+            {
+                word = crate::db::HomeWord::Referee;
+            }
+            crate::referee::Listing::CannotAnswer => {}
+            crate::referee::Listing::Unknown => {
+                // Parked first, then asked: an answer that comes back at once
+                // must find the ruling already waiting for it.
+                park_replayed_for_referee(state, event_id, relayed_by, ev, &facts, &home, &kid);
+                crate::referee::ask(state, &home, &kid);
+                return Some(ReplayOutcome::Unusable);
+            }
+            _ => {
+                tracing::warn!(
+                    %event_id, %act_id, peer = %relayed_by, %home, signer = %actor,
+                    verb = %view.verb,
+                    "S2S catch-up: skipping a ruling its task's referee did not sign"
+                );
+                return Some(ReplayOutcome::Unusable);
+            }
+        }
+    }
+
+    let owning_peer =
+        match word == crate::db::HomeWord::ByLink && (is_receipt || is_system_actor(&actor)) {
+            true => task_home.clone().filter(|home| !home.is_empty()),
+            false => None,
+        };
     if let Some(owner) = owning_peer.as_deref()
         && owner != relayed_by
     {
@@ -3880,7 +3927,7 @@ fn file_replayed_task_event(
     // …and where it does carry the home's word, the origin it is judged under
     // is the connection, so the check the log row records is the one that was
     // actually made.
-    let origin = match owning_peer.is_some() {
+    let origin = match owning_peer.is_some() || word == crate::db::HomeWord::Referee {
         true => relayed_by,
         false => origin,
     };
@@ -3897,8 +3944,9 @@ fn file_replayed_task_event(
     };
 
     // The view is written with a valid-signature receipt, so only an event
-    // this server actually verified may write it.
-    if sig_state != crate::events::SigState::Valid {
+    // this server actually verified may write it. A referee's ruling was
+    // verified above, against the key its own host lists.
+    if sig_state != crate::events::SigState::Valid && word != crate::db::HomeWord::Referee {
         // One replayed event may not be skipped for good. A receipt is what a
         // transition filed here is waiting on, and a replay is how a server
         // that was away is meant to hear one — dropping it would leave the
@@ -3919,18 +3967,21 @@ fn file_replayed_task_event(
     }
 
     let written = state.with_db(|db| {
-        db.apply_act_event(&crate::db::ActEvent {
-            canonical: &ev.canonical,
-            signature: ev.signature.as_deref(),
-            event_id,
-            act_id: &act_id,
-            opens,
-            venue: &facts.venue,
-            actor: &actor,
-            from_system,
-            origin: (!origin.is_empty()).then_some(origin),
-            timestamp: ev.timestamp as i64,
-        })
+        db.apply_act_event_judged(
+            &crate::db::ActEvent {
+                canonical: &ev.canonical,
+                signature: ev.signature.as_deref(),
+                event_id,
+                act_id: &act_id,
+                opens,
+                venue: &facts.venue,
+                actor: &actor,
+                from_system,
+                origin: (!origin.is_empty()).then_some(origin),
+                timestamp: ev.timestamp as i64,
+            },
+            word,
+        )
     });
     // A move this server applied to a task it owns is a move it ruled on, and
     // it owes a receipt for it — replay is a way in like any other. Without
@@ -4088,12 +4139,74 @@ fn park_replayed_receipt(
     settle_dropped(state, dropped);
 }
 
+/// Hold one replayed ruling while its task's referee is asked about the key
+/// that signed it. Parked under the referee and the key id, so the answer
+/// releases it, and judged on release as the live path judges it, under the
+/// connection it arrived on — and, being catch-up, delivered to nobody.
+fn park_replayed_for_referee(
+    state: &Arc<SharedState>,
+    event_id: &str,
+    relayed_by: &str,
+    ev: &crate::s2s::ReplayedEvent,
+    facts: &crate::events::EventFacts,
+    home: &str,
+    kid: &str,
+) {
+    let Some(tags) = crate::connection::act::wire_tags_from_canonical(
+        &ev.canonical,
+        event_id,
+        ev.signature.as_deref(),
+    ) else {
+        return;
+    };
+    tracing::info!(
+        peer = %relayed_by, %event_id, %home, %kid,
+        "S2S catch-up: holding a ruling until its task's referee answers for its key"
+    );
+    let dropped = state
+        .act_deferred
+        .lock()
+        .park(crate::act_relay::ParkedEvent {
+            target: crate::connection::act::peer_target_for(&facts.venue, &facts.venue),
+            from: home.to_string(),
+            peer_account: Some(home.to_string()),
+            origin: relayed_by.to_string(),
+            peer: relayed_by.to_string(),
+            peer_declared_act: true,
+            event_id: event_id.to_string(),
+            signer: home.to_string(),
+            kid: kid.to_string(),
+            tags,
+            quiet: true,
+            ..Default::default()
+        });
+    settle_dropped(state, dropped);
+}
+
 /// Whether an actor is the server itself rather than a person.
 ///
 /// A server acts under `did:web:<its name>` — the identity the expiry sweep
 /// signs its own events with — so the method prefix is what separates the two.
 pub(crate) fn is_system_actor(actor: &str) -> bool {
     actor.starts_with("did:web:")
+}
+
+/// The referee a ruling's task names: the `act-home` its opener carries, when
+/// `tags` are a ruling (a receipt, an expiry, a closed review window) and the
+/// opener is on file and named one. Read from the opener's stored bytes,
+/// whichever server relayed it — the name is signed by whoever posted the
+/// task.
+fn named_referee(state: &Arc<SharedState>, tags: &HashMap<String, String>) -> Option<String> {
+    let verb = tags
+        .get("+freeq.at/act-verb")
+        .or_else(|| tags.get("act-verb"))?;
+    if !crate::referee::is_ruling(verb) {
+        return None;
+    }
+    let act_id = tags
+        .get("+freeq.at/act-id")
+        .or_else(|| tags.get("act-id"))?;
+    state.with_db(|db| db.act_task_home(act_id)).flatten()
 }
 
 /// Apply one replayed event.
@@ -4377,6 +4490,7 @@ fn judge_relayed_task_event(
     peer: &str,
     peer_account: Option<&str>,
     peer_declared_act: bool,
+    quiet: bool,
 ) -> (TaskEventAction, Option<crate::connection::act::Receipt>) {
     let event_id = tags
         .get(freeq_sdk::chatsig::EVENT_ID_TAG)
@@ -4408,25 +4522,102 @@ fn judge_relayed_task_event(
     // The venue of the task this event names, for the one signer whose own
     // venue is not derivable from the delivery target: the server itself.
     let task_venue = relayed_task_venue(state, tags, event_id);
-    let verdict = crate::act_relay::relayed_task_verdict(
-        tags,
-        target,
-        peer_account,
-        dm_recipient.as_deref(),
-        task_venue.as_deref(),
-        |did, kid| {
-            state
-                .with_db(|db| db.get_signing_key_by_kid(did, kid))
-                .flatten()
-                .and_then(|bytes| ed25519_dalek::VerifyingKey::from_bytes(&bytes).ok())
-        },
-    );
     let signer = crate::act_relay::claimed_signer(tags, peer_account).unwrap_or_default();
     let sig_tag = tags
         .get("+freeq.at/sig")
         .or_else(|| tags.get("freeq.at/sig"))
         .map(String::as_str)
         .unwrap_or_default();
+
+    // ── a ruling on a task whose opener named its referee ──
+    //
+    // The referee's word is decided by its signature, not by the link: signed
+    // by the server the opener named in `act-home`, with a key that server's
+    // own host lists. A key filed here by anyone else is not consulted, and
+    // an answer not in yet is waited for rather than judged by the link,
+    // which would file the genuine ruling as ignored and make its later copy
+    // a duplicate. Only when the referee's host cannot answer is the ruling
+    // judged as every ruling was before, and then still only as the named
+    // referee's.
+    //
+    // A ruling under any other name is skipped, not filed: a row under its id
+    // would make the referee's genuine ruling with that id, arriving later by
+    // any path, a duplicate that changes nothing.
+    let mut word = crate::db::HomeWord::ByLink;
+    let mut referee_key = None;
+    if let Some(home) = named_referee(state, tags) {
+        let kid = freeq_sdk::sigtag::parse(sig_tag)
+            .map(|(kid, _)| kid.to_string())
+            .unwrap_or_default();
+        if signer != home {
+            tracing::warn!(
+                peer = %peer, event_id = %event_id, home = %home, signer = %signer,
+                "Skipped a ruling not signed by its task's referee — not filed, not delivered"
+            );
+            return (TaskEventAction::Drop, None);
+        }
+        {
+            match crate::referee::answer(state, &home, &kid) {
+                crate::referee::Listing::Listed(key, stopped)
+                    if crate::referee::signed_while_live(stopped, event_id) =>
+                {
+                    word = crate::db::HomeWord::Referee;
+                    referee_key = Some(key);
+                }
+                crate::referee::Listing::Listed(..) | crate::referee::Listing::NotListed => {
+                    tracing::warn!(
+                        peer = %peer, event_id = %event_id, home = %home, kid = %kid,
+                        "Dropped a ruling signed with a key its task's referee does not \
+                         list, or signed after that key stopped counting"
+                    );
+                    return (TaskEventAction::Drop, None);
+                }
+                crate::referee::Listing::CannotAnswer => {}
+                crate::referee::Listing::Unknown => {
+                    // Parked first, then asked: an answer that comes back at
+                    // once must find the ruling already waiting for it.
+                    let dropped = state
+                        .act_deferred
+                        .lock()
+                        .park(crate::act_relay::ParkedEvent {
+                            tags: tags.clone(),
+                            target: target.to_string(),
+                            from: from.to_string(),
+                            peer_account: peer_account.map(str::to_string),
+                            origin: origin.to_string(),
+                            peer: peer.to_string(),
+                            peer_declared_act,
+                            event_id: event_id.to_string(),
+                            signer: home.clone(),
+                            kid: kid.clone(),
+                            quiet,
+                            ..Default::default()
+                        });
+                    settle_dropped(state, dropped);
+                    crate::referee::ask(state, &home, &kid);
+                    return (TaskEventAction::Park, None);
+                }
+            }
+        }
+    }
+
+    let verdict = crate::act_relay::relayed_task_verdict(
+        tags,
+        target,
+        peer_account,
+        dm_recipient.as_deref(),
+        task_venue.as_deref(),
+        |did, kid| match referee_key {
+            // The referee's key, from its own host, and nothing else.
+            Some(key) => {
+                (did == signer && freeq_sdk::sigtag::derive_kid(&key) == kid).then_some(key)
+            }
+            None => state
+                .with_db(|db| db.get_signing_key_by_kid(did, kid))
+                .flatten()
+                .and_then(|bytes| ed25519_dalek::VerifyingKey::from_bytes(&bytes).ok()),
+        },
+    );
     crate::act_relay::log_relayed_verdict(
         verdict,
         event_id,
@@ -4438,7 +4629,7 @@ fn judge_relayed_task_event(
 
     match verdict {
         crate::act_relay::RelayVerdict::Valid => {
-            match store_relayed_task_event(state, tags, target, origin, peer_account, from) {
+            match store_relayed_task_event(state, tags, target, origin, peer_account, from, word) {
                 // Whatever this event was, it may be the one a receipt or a
                 // move has been waiting for. The caller releases those after
                 // delivering this one, so a room sees them after it.
@@ -4463,6 +4654,7 @@ fn judge_relayed_task_event(
                             origin: origin.to_string(),
                             peer: peer.to_string(),
                             peer_declared_act,
+                            quiet,
                             event_id: event_id.to_string(),
                             waiting_on: Some(subject),
                             // No key is owed: this one verified. Naming a
@@ -4492,6 +4684,7 @@ fn judge_relayed_task_event(
                             origin: origin.to_string(),
                             peer: peer.to_string(),
                             peer_declared_act,
+                            quiet,
                             event_id: event_id.to_string(),
                             waiting_on: Some(act_id),
                             awaiting_task_since: Some(std::time::Instant::now()),
@@ -4530,6 +4723,7 @@ fn judge_relayed_task_event(
                     origin: origin.to_string(),
                     peer: peer.to_string(),
                     peer_declared_act,
+                    quiet,
                     event_id: event_id.to_string(),
                     signer: signer.to_string(),
                     kid,
@@ -4702,6 +4896,7 @@ fn store_relayed_task_event(
     origin: &str,
     peer_account: Option<&str>,
     from: &str,
+    word: crate::db::HomeWord,
 ) -> TaskEventStored {
     let Some(signer) = crate::act_relay::claimed_signer(tags, peer_account) else {
         return TaskEventStored::Ruled(None);
@@ -4759,23 +4954,26 @@ fn store_relayed_task_event(
                 .unwrap_or_default(),
         };
         let written = state.with_db(|db| {
-            db.apply_act_event(&crate::db::ActEvent {
-                canonical: &canonical,
-                signature: signature.as_deref(),
-                event_id: &event_id,
-                act_id: &act_id,
-                opens,
-                venue: &venue,
-                actor: signer,
-                // Read off the actor, the way catch-up and a rebuild read it:
-                // a server signs under its `did:web:` identity and a person
-                // does not. Hard-coding false here made the same event answer
-                // differently depending on which path it arrived by — this
-                // server's own expiry coming home read as a person's move.
-                from_system: is_system_actor(signer),
-                origin: Some(origin),
-                timestamp: now,
-            })
+            db.apply_act_event_judged(
+                &crate::db::ActEvent {
+                    canonical: &canonical,
+                    signature: signature.as_deref(),
+                    event_id: &event_id,
+                    act_id: &act_id,
+                    opens,
+                    venue: &venue,
+                    actor: signer,
+                    // Read off the actor, the way catch-up and a rebuild read it:
+                    // a server signs under its `did:web:` identity and a person
+                    // does not. Hard-coding false here made the same event answer
+                    // differently depending on which path it arrived by — this
+                    // server's own expiry coming home read as a person's move.
+                    from_system: is_system_actor(signer),
+                    origin: Some(origin),
+                    timestamp: now,
+                },
+                word,
+            )
         });
         // A move on a task this server owns, applied here. Our word is what
         // turns it from a claim into a decision, and the receipt is that word
@@ -5067,6 +5265,10 @@ pub(crate) fn release_overdue_task_waits(state: &Arc<SharedState>, limit: std::t
 /// way every such move was delivered before moves waited. It verified before
 /// it parked.
 fn deliver_unfiled(state: &Arc<SharedState>, event: &crate::act_relay::ParkedEvent) {
+    // Catch-up shows nothing, filed or not.
+    if event.quiet {
+        return;
+    }
     deliver_relayed_tagmsg(
         state,
         &event.from,
@@ -5171,8 +5373,10 @@ fn judge_parked_events(state: &Arc<SharedState>, waiting: Vec<crate::act_relay::
             &event.peer,
             event.peer_account.as_deref(),
             event.peer_declared_act,
+            event.quiet,
         );
-        if action == TaskEventAction::Deliver {
+        // One parked from catch-up is filed and applied, and shown to nobody.
+        if action == TaskEventAction::Deliver && !event.quiet {
             deliver_relayed_tagmsg(
                 state,
                 &event.from,
@@ -6812,6 +7016,7 @@ async fn process_s2s_event(
                     authenticated_peer_id,
                     peer_account.as_deref(),
                     peer_declared_act,
+                    false,
                 );
                 if action != TaskEventAction::Deliver {
                     return;
@@ -7575,6 +7780,7 @@ async fn process_s2s_event(
                 authenticated_peer_id,
                 peer_account.as_deref(),
                 peer_declared_act,
+                false,
             );
             if action == TaskEventAction::Deliver {
                 release_events_waiting_on(state, &act_event_id);
@@ -15090,8 +15296,9 @@ mod catchup_tests {
 
     use super::s2s_adversarial_tests::{setup_authenticated_peer, test_manager};
     use super::{
-        ReplayOutcome, SharedState, apply_replayed_event, process_s2s_message,
-        retry_deferred_task_events, test_state_with_db,
+        ReplayOutcome, SharedState, TaskEventAction, apply_replayed_event,
+        judge_relayed_task_event, process_s2s_message, retry_deferred_task_events,
+        test_state_with_db,
     };
     use crate::events::SigState;
     use crate::s2s::{CATCHUP, ReplayedEvent, S2sMessage, our_capabilities, peer_supports};
@@ -15872,6 +16079,540 @@ mod catchup_tests {
             "open",
             "a transition on a peer's task decides nothing here"
         );
+    }
+
+    // ── a ruling on a task whose opener named its referee ─────────────────
+    //
+    // The opener's `act-home` names the server that referees the task. Its
+    // rulings count when signed by that name with a key the named server's
+    // own host lists, whichever peer delivers them; the stub below stands in
+    // for that host.
+
+    /// An offer naming `home` as its referee.
+    fn opener_naming(
+        key: &SigningKey,
+        event_id: &str,
+        minted_at: &str,
+        home: &str,
+    ) -> ReplayedEvent {
+        act_event(
+            key,
+            event_id,
+            minted_at,
+            &[
+                ("+freeq.at/act", "handoff"),
+                ("+freeq.at/act-verb", "offer"),
+                ("+freeq.at/from", ALICE),
+                ("+freeq.at/act-title", "refereed"),
+                ("+freeq.at/act-home", home),
+            ],
+        )
+    }
+
+    /// A task opened on the home's link naming `home`, with one unruled claim.
+    fn a_refereed_task_with_a_claim_on_it(
+        state: &Arc<SharedState>,
+        key: &SigningKey,
+        act_id: &str,
+        claimed: &str,
+        home: &str,
+    ) {
+        assert_eq!(
+            apply_replayed_event(
+                state,
+                OWN,
+                HOME_LINK,
+                opener_naming(key, act_id, HOME_LINK, home)
+            ),
+            ReplayOutcome::Filed
+        );
+        assert_eq!(
+            apply_replayed_event(
+                state,
+                OWN,
+                HOME_LINK,
+                claim(key, claimed, act_id, HOME_LINK)
+            ),
+            ReplayOutcome::Filed
+        );
+    }
+
+    fn kid_of(key: &SigningKey) -> String {
+        freeq_sdk::sigtag::derive_kid(&key.verifying_key())
+    }
+
+    fn task_state(state: &Arc<SharedState>, act_id: &str) -> Option<String> {
+        state
+            .with_db(|db| db.act_task(act_id))
+            .flatten()
+            .map(|t| t.state)
+    }
+
+    /// The tags a replayed event travels with on the live relay.
+    fn live_tags(ev: &ReplayedEvent) -> HashMap<String, String> {
+        crate::connection::act::wire_tags_from_canonical(
+            &ev.canonical,
+            &ev.event_id,
+            ev.signature.as_deref(),
+        )
+        .expect("an act event")
+    }
+
+    /// Judge one event as the live relay does, from `peer`.
+    fn relay_live(state: &Arc<SharedState>, ev: &ReplayedEvent, peer: &str) -> TaskEventAction {
+        judge_relayed_task_event(
+            state,
+            "remote!u@s2s",
+            "#caught",
+            &live_tags(ev),
+            peer,
+            peer,
+            ev.actor_did.as_deref(),
+            true,
+            false,
+        )
+        .0
+    }
+
+    /// The referee's receipt and expiry, replayed by a server that is not the
+    /// task's link, apply: the first waits for the referee's host to answer
+    /// for its key, and the second, signed with the same key, applies at once.
+    #[tokio::test]
+    async fn a_referees_rulings_replayed_by_a_bystander_apply() {
+        const HOME: &str = "did:web:referee-replayed.example";
+        const ACT: &str = "01ACT00000000000000000H01";
+        const CLAIMED: &str = "01ACT00000000000000000H02";
+        const RECEIPT: &str = "01ACT00000000000000000H03";
+        const EXPIRE: &str = "01ACT00000000000000000H04";
+        let key = SigningKey::from_bytes(&[3u8; 32]);
+        let state = state_with_key(&key);
+        let home_key = SigningKey::from_bytes(&[151u8; 32]);
+        crate::referee::stub_referee(
+            HOME,
+            &home_key.verifying_key(),
+            vec![home_key.verifying_key()],
+        )
+        .await;
+        a_refereed_task_with_a_claim_on_it(&state, &key, ACT, CLAIMED, HOME);
+
+        assert_eq!(
+            apply_replayed_event(
+                &state,
+                OWN,
+                PEER,
+                receipt(&home_key, RECEIPT, ACT, CLAIMED, HOME, HOME_LINK)
+            ),
+            ReplayOutcome::Unusable,
+            "held while the referee's host is asked"
+        );
+        crate::referee::settled(HOME, &kid_of(&home_key)).await;
+        assert_eq!(task_state(&state, ACT).as_deref(), Some("assigned"));
+
+        assert_eq!(
+            apply_replayed_event(
+                &state,
+                OWN,
+                PEER,
+                system_transition(&home_key, EXPIRE, ACT, "expire", HOME, HOME_LINK)
+            ),
+            ReplayOutcome::Filed
+        );
+        assert_eq!(task_state(&state, ACT), None, "the expiry ended it");
+    }
+
+    /// The same on the live relay: a bystander relays the referee's receipt,
+    /// it waits for the answer, and then applies.
+    #[tokio::test]
+    async fn a_referees_ruling_relayed_live_by_a_bystander_applies() {
+        const HOME: &str = "did:web:referee-live.example";
+        const ACT: &str = "01ACT00000000000000000H11";
+        const CLAIMED: &str = "01ACT00000000000000000H12";
+        const RECEIPT: &str = "01ACT00000000000000000H13";
+        let key = SigningKey::from_bytes(&[3u8; 32]);
+        let state = state_with_key(&key);
+        let home_key = SigningKey::from_bytes(&[152u8; 32]);
+        crate::referee::stub_referee(
+            HOME,
+            &home_key.verifying_key(),
+            vec![home_key.verifying_key()],
+        )
+        .await;
+        a_refereed_task_with_a_claim_on_it(&state, &key, ACT, CLAIMED, HOME);
+
+        let ruling = receipt(&home_key, RECEIPT, ACT, CLAIMED, HOME, PEER);
+        assert_eq!(relay_live(&state, &ruling, PEER), TaskEventAction::Park);
+        crate::referee::settled(HOME, &kid_of(&home_key)).await;
+        assert_eq!(task_state(&state, ACT).as_deref(), Some("assigned"));
+    }
+
+    /// A key on file under the referee's name — as a bystander's key server
+    /// would file one — is not the referee's word when its host does not list
+    /// it: the ruling is neither applied, nor filed, nor delivered, even from
+    /// the task's own link.
+    #[tokio::test]
+    async fn a_ruling_signed_with_a_key_its_referee_does_not_list_does_not_count() {
+        const HOME: &str = "did:web:referee-unlisted.example";
+        const ACT: &str = "01ACT00000000000000000H21";
+        const CLAIMED: &str = "01ACT00000000000000000H22";
+        const REPLAYED: &str = "01ACT00000000000000000H23";
+        const LIVE: &str = "01ACT00000000000000000H24";
+        let key = SigningKey::from_bytes(&[3u8; 32]);
+        let state = state_with_key(&key);
+        let home_key = SigningKey::from_bytes(&[153u8; 32]);
+        crate::referee::stub_referee(
+            HOME,
+            &home_key.verifying_key(),
+            vec![home_key.verifying_key()],
+        )
+        .await;
+        let planted = SigningKey::from_bytes(&[154u8; 32]);
+        key_on_file(&state, HOME, &planted);
+        a_refereed_task_with_a_claim_on_it(&state, &key, ACT, CLAIMED, HOME);
+
+        assert_eq!(
+            apply_replayed_event(
+                &state,
+                OWN,
+                HOME_LINK,
+                receipt(&planted, REPLAYED, ACT, CLAIMED, HOME, HOME_LINK)
+            ),
+            ReplayOutcome::Unusable
+        );
+        crate::referee::settled(HOME, &kid_of(&planted)).await;
+        let live = receipt(&planted, LIVE, ACT, CLAIMED, HOME, HOME_LINK);
+        assert_eq!(relay_live(&state, &live, HOME_LINK), TaskEventAction::Park);
+        crate::referee::settled(HOME, &kid_of(&planted)).await;
+
+        assert_eq!(task_state(&state, ACT).as_deref(), Some("open"));
+        for id in [REPLAYED, LIVE] {
+            assert!(
+                !state.with_db(|db| db.is_act_event(id)).unwrap(),
+                "{id} not filed"
+            );
+        }
+        assert_eq!(state.act_deferred.lock().len(), 0, "and not held");
+    }
+
+    /// A ruling signed by any other `did:web:` name is not the referee's,
+    /// whichever link brings it: skipped, live or replayed, neither filed nor
+    /// shown.
+    #[tokio::test]
+    async fn a_ruling_signed_by_another_server_does_not_count() {
+        const HOME: &str = "did:web:referee-named.example";
+        const ACT: &str = "01ACT00000000000000000H31";
+        const CLAIMED: &str = "01ACT00000000000000000H32";
+        const REPLAYED: &str = "01ACT00000000000000000H33";
+        const LIVE: &str = "01ACT00000000000000000H34";
+        let key = SigningKey::from_bytes(&[3u8; 32]);
+        let state = state_with_key(&key);
+        let third_key = SigningKey::from_bytes(&[155u8; 32]);
+        key_on_file(&state, THIRD_DID, &third_key);
+        a_refereed_task_with_a_claim_on_it(&state, &key, ACT, CLAIMED, HOME);
+
+        assert_eq!(
+            apply_replayed_event(
+                &state,
+                OWN,
+                HOME_LINK,
+                receipt(&third_key, REPLAYED, ACT, CLAIMED, THIRD_DID, HOME_LINK)
+            ),
+            ReplayOutcome::Unusable
+        );
+        assert!(!state.with_db(|db| db.is_act_event(REPLAYED)).unwrap());
+        let live = receipt(&third_key, LIVE, ACT, CLAIMED, THIRD_DID, HOME_LINK);
+        assert_eq!(relay_live(&state, &live, HOME_LINK), TaskEventAction::Drop);
+        assert!(
+            !state.with_db(|db| db.is_act_event(LIVE)).unwrap(),
+            "not filed either: a row under that id would make the referee's \
+             genuine ruling under the same id a duplicate"
+        );
+        assert_eq!(task_state(&state, ACT).as_deref(), Some("open"));
+    }
+
+    /// When the referee's host cannot answer — not reachable, or a document
+    /// with no `#freeq` key — what waited on it is released at once to the
+    /// rule every ruling had before: the task's own link. Even then only the
+    /// named referee's signature counts.
+    #[tokio::test]
+    async fn when_the_referee_cannot_answer_its_rulings_are_judged_by_the_link() {
+        for (n, home, reachable) in [
+            (1u8, "did:web:referee-down.example", false),
+            (2u8, "did:web:referee-keyless.example", true),
+        ] {
+            let act = format!("01ACT0000000000000000HC{n}1");
+            let claimed = format!("01ACT0000000000000000HC{n}2");
+            let bystander = format!("01ACT0000000000000000HC{n}3");
+            let from_link = format!("01ACT0000000000000000HC{n}4");
+            let key = SigningKey::from_bytes(&[3u8; 32]);
+            let state = state_with_key(&key);
+            match reachable {
+                true => {
+                    crate::referee::stub_document(home, serde_json::json!({ "id": home })).await
+                }
+                false => crate::referee::point_host_at(
+                    home.strip_prefix("did:web:").unwrap(),
+                    "http://127.0.0.1:9",
+                ),
+            }
+            let home_key = SigningKey::from_bytes(&[160 + n; 32]);
+            key_on_file(&state, home, &home_key);
+            key_on_file(&state, THIRD_DID, &home_key);
+            a_refereed_task_with_a_claim_on_it(&state, &key, &act, &claimed, home);
+
+            // From a bystander: parked, released to the link rule, skipped.
+            assert_eq!(
+                apply_replayed_event(
+                    &state,
+                    OWN,
+                    PEER,
+                    receipt(&home_key, &bystander, &act, &claimed, home, HOME_LINK)
+                ),
+                ReplayOutcome::Unusable
+            );
+            crate::referee::settled(home, &kid_of(&home_key)).await;
+            assert_eq!(task_state(&state, &act).as_deref(), Some("open"), "{home}");
+            // Another name on the task's own link: still not the referee.
+            assert_eq!(
+                apply_replayed_event(
+                    &state,
+                    OWN,
+                    HOME_LINK,
+                    receipt(
+                        &home_key,
+                        "01ACT00000000000000000HCX",
+                        &act,
+                        &claimed,
+                        THIRD_DID,
+                        HOME_LINK
+                    )
+                ),
+                ReplayOutcome::Unusable
+            );
+            assert_eq!(task_state(&state, &act).as_deref(), Some("open"), "{home}");
+            // The referee's own name on the task's own link: applies, as today.
+            assert_eq!(
+                apply_replayed_event(
+                    &state,
+                    OWN,
+                    HOME_LINK,
+                    receipt(&home_key, &from_link, &act, &claimed, home, HOME_LINK)
+                ),
+                ReplayOutcome::Filed
+            );
+            assert_eq!(
+                task_state(&state, &act).as_deref(),
+                Some("assigned"),
+                "{home}"
+            );
+        }
+    }
+
+    /// A task this server opened, naming itself: its own rows under its own
+    /// name are the referee's key list, so a ruling under its name signed with
+    /// any other key is dropped rather than waited on.
+    #[test]
+    fn a_ruling_under_this_servers_own_name_counts_only_with_its_own_key() {
+        const ACT: &str = "01ACT00000000000000000H61";
+        const FORGED: &str = "01ACT00000000000000000H62";
+        let key = SigningKey::from_bytes(&[3u8; 32]);
+        let state = state_with_key(&key);
+        let own = crate::server::server_did(&state.server_name);
+        key_on_file(&state, &own, &SigningKey::from_bytes(&[157u8; 32]));
+        let ev = opener_naming(&key, ACT, "", &own);
+        let written = state
+            .with_db(|db| {
+                db.apply_act_event(&crate::db::ActEvent {
+                    canonical: &ev.canonical,
+                    signature: ev.signature.as_deref(),
+                    event_id: ACT,
+                    act_id: ACT,
+                    opens: true,
+                    venue: &ev.venue,
+                    actor: ALICE,
+                    from_system: false,
+                    origin: None,
+                    timestamp: 1000,
+                })
+            })
+            .expect("db present");
+        assert!(matches!(written, crate::db::ActWrite::Filed { .. }));
+
+        let stranger = SigningKey::from_bytes(&[158u8; 32]);
+        let forged = system_transition(&stranger, FORGED, ACT, "expire", &own, PEER);
+        assert_eq!(relay_live(&state, &forged, PEER), TaskEventAction::Drop);
+        assert_eq!(task_state(&state, ACT).as_deref(), Some("open"));
+        assert!(!state.with_db(|db| db.is_act_event(FORGED)).unwrap());
+    }
+
+    /// A ruling replayed in catch-up that waited for its referee's answer is
+    /// applied when the answer comes, and reaches no room: catch-up heals
+    /// state and delivers nothing.
+    #[tokio::test]
+    async fn a_ruling_parked_during_catch_up_is_released_without_delivery() {
+        const HOME: &str = "did:web:referee-quiet.example";
+        const ACT: &str = "01ACT00000000000000000H81";
+        const CLAIMED: &str = "01ACT00000000000000000H82";
+        const RECEIPT: &str = "01ACT00000000000000000H83";
+        let key = SigningKey::from_bytes(&[3u8; 32]);
+        let state = state_with_key(&key);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        state.connections.lock().insert("watcher".to_string(), tx);
+        state
+            .channels
+            .lock()
+            .entry("#caught".to_string())
+            .or_default()
+            .members
+            .insert("watcher".to_string());
+        state.cap_message_tags.lock().insert("watcher".to_string());
+        state.cap_act.lock().insert("watcher".to_string());
+        let home_key = SigningKey::from_bytes(&[161u8; 32]);
+        crate::referee::stub_referee(
+            HOME,
+            &home_key.verifying_key(),
+            vec![home_key.verifying_key()],
+        )
+        .await;
+        a_refereed_task_with_a_claim_on_it(&state, &key, ACT, CLAIMED, HOME);
+
+        assert_eq!(
+            apply_replayed_event(
+                &state,
+                OWN,
+                PEER,
+                receipt(&home_key, RECEIPT, ACT, CLAIMED, HOME, HOME_LINK)
+            ),
+            ReplayOutcome::Unusable
+        );
+        crate::referee::settled(HOME, &kid_of(&home_key)).await;
+        assert_eq!(task_state(&state, ACT).as_deref(), Some("assigned"));
+        let mut shown = Vec::new();
+        while let Ok(line) = rx.try_recv() {
+            shown.push(line);
+        }
+        assert!(
+            !shown.iter().any(|l| l.contains("TAGMSG")),
+            "nothing was delivered: {shown:?}"
+        );
+    }
+
+    /// A ruling signed at or after its key's retirement does not count, live
+    /// or replayed (plan ruling 24), even with a key the referee lists.
+    #[tokio::test]
+    async fn a_ruling_signed_after_its_key_was_retired_does_not_count() {
+        const HOME: &str = "did:web:referee-retired.example";
+        const ACT: &str = "01ACT00000000000000000H91";
+        const CLAIMED: &str = "01ACT00000000000000000H92";
+        const REPLAYED: &str = "01ACT00000000000000000H93";
+        const LIVE: &str = "01ACT00000000000000000H94";
+        let key = SigningKey::from_bytes(&[3u8; 32]);
+        let state = state_with_key(&key);
+        let current = SigningKey::from_bytes(&[162u8; 32]);
+        let old = SigningKey::from_bytes(&[163u8; 32]);
+        // Retired at the epoch's first second: every ruling here is later.
+        crate::referee::stub_referee_retiring(
+            HOME,
+            &current.verifying_key(),
+            vec![current.verifying_key(), old.verifying_key()],
+            &[(old.verifying_key(), 1)],
+        )
+        .await;
+        a_refereed_task_with_a_claim_on_it(&state, &key, ACT, CLAIMED, HOME);
+
+        assert_eq!(
+            apply_replayed_event(
+                &state,
+                OWN,
+                PEER,
+                receipt(&old, REPLAYED, ACT, CLAIMED, HOME, HOME_LINK)
+            ),
+            ReplayOutcome::Unusable
+        );
+        crate::referee::settled(HOME, &kid_of(&old)).await;
+        let live = receipt(&old, LIVE, ACT, CLAIMED, HOME, HOME_LINK);
+        assert_eq!(relay_live(&state, &live, PEER), TaskEventAction::Drop);
+        assert_eq!(task_state(&state, ACT).as_deref(), Some("open"));
+        for id in [REPLAYED, LIVE] {
+            assert!(
+                !state.with_db(|db| db.is_act_event(id)).unwrap(),
+                "{id} not filed"
+            );
+        }
+    }
+
+    /// The referee an opener names is kept whichever peer relayed it: the name
+    /// is signed by whoever posted the task.
+    #[test]
+    fn a_relayed_openers_named_referee_is_kept_whichever_peer_relayed_it() {
+        const ACT: &str = "01ACT00000000000000000H41";
+        let key = SigningKey::from_bytes(&[3u8; 32]);
+        let state = state_with_key(&key);
+        assert_eq!(
+            apply_replayed_event(
+                &state,
+                OWN,
+                PEER,
+                opener_naming(&key, ACT, "some-third-server", "did:web:elsewhere.example")
+            ),
+            ReplayOutcome::Filed
+        );
+        assert_eq!(
+            state
+                .with_db(|db| db.act_task_home(ACT))
+                .flatten()
+                .as_deref(),
+            Some("did:web:elsewhere.example")
+        );
+    }
+
+    /// A `did:web:` agent's own move on a refereed task is not a ruling: it
+    /// lands exactly as it does on a task that names no referee, and the
+    /// referee is never asked about it.
+    #[test]
+    fn a_did_web_agents_claim_on_a_refereed_task_lands_as_on_any_task() {
+        let key = SigningKey::from_bytes(&[3u8; 32]);
+        let agent = "did:web:agent.example";
+        let agent_key = SigningKey::from_bytes(&[156u8; 32]);
+        let mut outcomes = Vec::new();
+        for (act, claimed, home) in [
+            (
+                "01ACT00000000000000000H51",
+                "01ACT00000000000000000H52",
+                None,
+            ),
+            (
+                "01ACT00000000000000000H53",
+                "01ACT00000000000000000H54",
+                Some("did:web:referee-agent.example"),
+            ),
+        ] {
+            let state = state_with_key(&key);
+            key_on_file(&state, agent, &agent_key);
+            let opened = match home {
+                Some(home) => opener_naming(&key, act, HOME_LINK, home),
+                None => opener(&key, act, HOME_LINK),
+            };
+            assert_eq!(
+                apply_replayed_event(&state, OWN, HOME_LINK, opened),
+                ReplayOutcome::Filed
+            );
+            let mut move_ = act_event(
+                &agent_key,
+                claimed,
+                HOME_LINK,
+                &[
+                    ("+freeq.at/act", "handoff"),
+                    ("+freeq.at/act-verb", "claim"),
+                    ("+freeq.at/from", agent),
+                    ("+freeq.at/act-id", act),
+                ],
+            );
+            move_.actor_did = Some(agent.to_string());
+            let outcome = apply_replayed_event(&state, OWN, HOME_LINK, move_);
+            assert_eq!(state.act_deferred.lock().len(), 0, "nobody was asked");
+            outcomes.push((outcome, task_state(&state, act)));
+        }
+        assert_eq!(outcomes[0], outcomes[1]);
     }
 
     // ── whose word a replayed receipt carries ─────────────────────────────

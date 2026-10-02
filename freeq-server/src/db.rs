@@ -329,6 +329,23 @@ pub struct ActEvent<'a> {
     pub timestamp: i64,
 }
 
+/// Whose word a task event carries about a task another server referees,
+/// when that has been decided by something other than the link it came on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HomeWord {
+    /// Decided by the link, as for every task whose opener names no
+    /// `act-home`: the event speaks for the task's home when it arrived from
+    /// the peer the task was opened on.
+    ByLink,
+    /// A ruling signed by the server the opener named in `act-home`, with a
+    /// key that server's own host lists: the home's word, whatever path
+    /// brought it.
+    Referee,
+    /// A ruling on a task whose opener named `act-home` that is not that
+    /// server's word: never the home's, whatever path brought it.
+    NotReferee,
+}
+
 /// What happened to a task event offered to the log.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActWrite {
@@ -4570,6 +4587,297 @@ mod tests {
             relayed_receipt(&db, PEER_HOME, "C9", "C8", "R1", "#ops", "peer-b", 12),
             ActWrite::ReceiptBeforeSubject
         );
+    }
+
+    // ── a ruling on a task whose opener named its referee ─────────────────
+    //
+    // The caller decides whose word such a ruling carries — from its signer
+    // and the referee's own key — and the log takes that answer in place of
+    // the link's.
+
+    /// A ruling as some peer relays one, with whose word it carries decided.
+    #[allow(clippy::too_many_arguments)]
+    fn judged_ruling(
+        db: &Db,
+        word: HomeWord,
+        verb: &str,
+        extra: &[(&str, &str)],
+        task: &str,
+        id: &str,
+        origin: &str,
+        ts: i64,
+    ) -> ActWrite {
+        let mut tags = vec![
+            ("+freeq.at/act", "handoff"),
+            ("+freeq.at/act-verb", verb),
+            ("+freeq.at/from", PEER_HOME),
+            ("+freeq.at/act-id", task),
+        ];
+        tags.extend_from_slice(extra);
+        let canonical = act_doc(&tags, "#ops", id);
+        db.apply_act_event_judged(
+            &ActEvent {
+                canonical: &canonical,
+                signature: Some("ed25519:kid:sig"),
+                event_id: id,
+                act_id: task,
+                opens: false,
+                venue: "#ops",
+                actor: PEER_HOME,
+                from_system: true,
+                origin: Some(origin),
+                timestamp: ts,
+            },
+            word,
+        )
+        .unwrap()
+    }
+
+    /// The referee's receipt counts whichever peer carried it, and its expiry
+    /// ends the task the same way.
+    #[test]
+    fn a_referees_ruling_counts_from_a_peer_that_is_not_the_tasks_link() {
+        let db = Db::open_memory().unwrap();
+        relayed_offer(&db, "H1", "#ops", "peer-b", 10);
+        relayed_follow_up(&db, "claim", SCHOLAR, "H1", "H2", "#ops", "peer-c", 11);
+        assert_eq!(
+            judged_ruling(
+                &db,
+                HomeWord::Referee,
+                "confirm",
+                &[("+freeq.at/act-subject", "H2")],
+                "H1",
+                "H3",
+                "peer-z",
+                12
+            ),
+            ActWrite::Confirmed {
+                state: "assigned".into()
+            }
+        );
+        assert_eq!(
+            judged_ruling(
+                &db,
+                HomeWord::Referee,
+                "expire",
+                &[],
+                "H1",
+                "H4",
+                "peer-z",
+                13
+            ),
+            ActWrite::Filed {
+                was: Some("assigned".into()),
+                state: "expired".into()
+            }
+        );
+        assert!(db.act_task("H1").unwrap().is_none(), "the expiry ended it");
+    }
+
+    /// The review window closing is the referee's third ruling, and counts
+    /// from any peer the same way.
+    #[test]
+    fn a_referees_review_timeout_accept_counts_from_a_peer_that_is_not_the_tasks_link() {
+        let db = Db::open_memory().unwrap();
+        let bounty = |id: &str, verb: &str, actor: &str, extra: &[(&str, &str)], ts: i64| {
+            let mut tags = vec![
+                ("+freeq.at/act", "bounty"),
+                ("+freeq.at/act-verb", verb),
+                ("+freeq.at/from", actor),
+            ];
+            let opens = verb == "offer";
+            if !opens {
+                tags.push(("+freeq.at/act-id", "V1"));
+            }
+            tags.extend_from_slice(extra);
+            let canonical = act_doc(&tags, "#ops", id);
+            let system = actor == PEER_HOME;
+            db.apply_act_event_judged(
+                &ActEvent {
+                    canonical: &canonical,
+                    signature: Some("ed25519:kid:sig"),
+                    event_id: id,
+                    act_id: if opens { id } else { "V1" },
+                    opens,
+                    venue: "#ops",
+                    actor,
+                    from_system: system,
+                    origin: Some(if system { "peer-z" } else { "peer-b" }),
+                    timestamp: ts,
+                },
+                if system {
+                    HomeWord::Referee
+                } else {
+                    HomeWord::ByLink
+                },
+            )
+            .unwrap()
+        };
+        bounty("V1", "offer", ELIZA, &[], 10);
+        bounty("V2", "bid", SCHOLAR, &[], 11);
+        bounty("V3", "award", ELIZA, &[("+freeq.at/act-accepts", "V2")], 12);
+        bounty(
+            "V4",
+            "confirm",
+            PEER_HOME,
+            &[("+freeq.at/act-subject", "V3")],
+            13,
+        );
+        bounty("V5", "submit", SCHOLAR, &[], 14);
+        bounty(
+            "V6",
+            "confirm",
+            PEER_HOME,
+            &[("+freeq.at/act-subject", "V5")],
+            15,
+        );
+        assert_eq!(db.act_task("V1").unwrap().unwrap().state, "under_review");
+        assert_eq!(
+            bounty("V7", "auto-accept", PEER_HOME, &[], 16),
+            ActWrite::Filed {
+                was: Some("under_review".into()),
+                state: "accepted".into()
+            }
+        );
+    }
+
+    /// And one that is not the referee's counts from no peer, the task's own
+    /// link included: filed as the claim it is, and applied to nothing.
+    #[test]
+    fn a_ruling_that_is_not_the_referees_counts_from_no_peer() {
+        let db = Db::open_memory().unwrap();
+        relayed_offer(&db, "N1", "#ops", "peer-b", 10);
+        relayed_follow_up(&db, "claim", SCHOLAR, "N1", "N2", "#ops", "peer-c", 11);
+        assert_eq!(
+            judged_ruling(
+                &db,
+                HomeWord::NotReferee,
+                "confirm",
+                &[("+freeq.at/act-subject", "N2")],
+                "N1",
+                "N3",
+                "peer-b",
+                12
+            ),
+            ActWrite::ReceiptIgnored
+        );
+        assert_eq!(
+            judged_ruling(
+                &db,
+                HomeWord::NotReferee,
+                "expire",
+                &[],
+                "N1",
+                "N4",
+                "peer-b",
+                13
+            ),
+            ActWrite::StoredNotApplied
+        );
+        assert_eq!(db.act_task("N1").unwrap().unwrap().state, "open");
+        assert_eq!(
+            confirm_of(&db, "N2"),
+            crate::events::ConfirmState::Unconfirmed,
+            "the claim it named is still waiting on its referee"
+        );
+    }
+
+    /// The live view and a rebuild from the log agree after rulings judged by
+    /// their referee rather than by their link.
+    #[test]
+    fn the_rebuild_agrees_with_rulings_judged_by_their_referee() {
+        let db = Db::open_memory().unwrap();
+        relayed_offer(&db, "B1", "#ops", "peer-b", 10);
+        relayed_follow_up(&db, "claim", SCHOLAR, "B1", "B2", "#ops", "peer-c", 11);
+        judged_ruling(
+            &db,
+            HomeWord::Referee,
+            "confirm",
+            &[("+freeq.at/act-subject", "B2")],
+            "B1",
+            "B3",
+            "peer-z",
+            12,
+        );
+        relayed_offer(&db, "B4", "#ops", "peer-b", 13);
+        judged_ruling(
+            &db,
+            HomeWord::NotReferee,
+            "expire",
+            &[],
+            "B4",
+            "B5",
+            "peer-b",
+            14,
+        );
+        relayed_offer(&db, "B6", "#ops", "peer-b", 15);
+        judged_ruling(
+            &db,
+            HomeWord::Referee,
+            "expire",
+            &[],
+            "B6",
+            "B7",
+            "peer-z",
+            16,
+        );
+
+        let mut live = db
+            .act_tasks(&["#ops".to_string()], None, None, None, 100)
+            .unwrap();
+        let mut rebuilt = db.rebuild_act_actions().unwrap();
+        live.sort_by(|a, b| a.act_id.cmp(&b.act_id));
+        rebuilt.sort_by(|a, b| a.act_id.cmp(&b.act_id));
+        assert_eq!(rebuilt, live);
+        let states: Vec<(&str, &str)> = live
+            .iter()
+            .map(|t| (t.act_id.as_str(), t.state.as_str()))
+            .collect();
+        assert_eq!(states, [("B1", "assigned"), ("B4", "open")]);
+    }
+
+    /// The name an opener gave its referee is read from the opener's bytes,
+    /// and is still there once the task has ended and left the view.
+    #[test]
+    fn a_tasks_named_referee_is_read_from_its_opener_and_outlives_the_task() {
+        let db = Db::open_memory().unwrap();
+        let tags = vec![
+            ("+freeq.at/act", "handoff"),
+            ("+freeq.at/act-verb", "offer"),
+            ("+freeq.at/from", ELIZA),
+            ("+freeq.at/act-home", PEER_HOME),
+        ];
+        let canonical = act_doc(&tags, "#ops", "A1");
+        db.apply_act_event(&ActEvent {
+            canonical: &canonical,
+            signature: Some("ed25519:kid:sig"),
+            event_id: "A1",
+            act_id: "A1",
+            opens: true,
+            venue: "#ops",
+            actor: ELIZA,
+            from_system: false,
+            origin: Some("peer-b"),
+            timestamp: 10,
+        })
+        .unwrap();
+        relayed_offer(&db, "A2", "#ops", "peer-b", 11);
+        assert_eq!(db.act_task_home("A1").unwrap().as_deref(), Some(PEER_HOME));
+        assert_eq!(db.act_task_home("A2").unwrap(), None, "it named none");
+        assert_eq!(db.act_task_home("A9").unwrap(), None, "not on file");
+
+        judged_ruling(
+            &db,
+            HomeWord::Referee,
+            "expire",
+            &[],
+            "A1",
+            "A3",
+            "peer-z",
+            12,
+        );
+        assert!(db.act_task("A1").unwrap().is_none(), "ended");
+        assert_eq!(db.act_task_home("A1").unwrap().as_deref(), Some(PEER_HOME));
     }
 
     /// Two agents claim one open task on two different servers. The home rules
@@ -9251,6 +9559,12 @@ impl Db {
     /// from the view row — so the server and a bot pre-checking the same move
     /// reach the same verdict from the same rules file.
     pub fn apply_act_event(&self, ev: &ActEvent<'_>) -> SqlResult<ActWrite> {
+        self.apply_act_event_judged(ev, HomeWord::ByLink)
+    }
+
+    /// [`Db::apply_act_event`], with whose word the event carries already
+    /// decided by the caller for a task whose opener names its referee.
+    pub fn apply_act_event_judged(&self, ev: &ActEvent<'_>, word: HomeWord) -> SqlResult<ActWrite> {
         use freeq_sdk::act_transitions as rules;
 
         let tx = self.conn.unchecked_transaction()?;
@@ -9294,9 +9608,13 @@ impl Db {
             let Some(home) = self.act_task_origin(ev.act_id)? else {
                 return Ok(ActWrite::ReceiptBeforeSubject);
             };
-            let from_home = match ev.origin {
-                None => home.is_empty(),
-                Some(peer) => home == peer,
+            let from_home = match word {
+                HomeWord::ByLink => match ev.origin {
+                    None => home.is_empty(),
+                    Some(peer) => home == peer,
+                },
+                HomeWord::Referee => true,
+                HomeWord::NotReferee => false,
             };
             let record = EventRecord {
                 shape: EventShape::Document(ev.canonical),
@@ -9413,7 +9731,15 @@ impl Db {
             // referees the task. Our own events carry no origin at all, and a
             // task of ours has no home to hear from — we are it — so an empty
             // origin on either side is never a match.
-            let from_home = !task.origin.is_empty() && ev.origin == Some(task.origin.as_str());
+            // For a task whose opener named its referee, the caller has
+            // already decided that from the signer and the referee's own key.
+            let from_home = match word {
+                HomeWord::ByLink => {
+                    !task.origin.is_empty() && ev.origin == Some(task.origin.as_str())
+                }
+                HomeWord::Referee => true,
+                HomeWord::NotReferee => false,
+            };
             // The one transition on a foreign task that needs no receipt: one
             // the home itself authored — an expiry, a closed review window —
             // which already carries the signature of the server whose word
@@ -10177,6 +10503,29 @@ impl Db {
                 .ok()?
                 .get("act-title")
                 .and_then(|v| v.as_str())
+                .map(str::to_string)
+        }))
+    }
+
+    /// The server a task's opener named as its referee (`act-home`), read
+    /// back out of the opener's bytes as `act_task_bid_deadline` reads its
+    /// cutoff — the view row is deleted when the task ends, which is exactly
+    /// when a late ruling still needs the name. `None` when the opener named
+    /// none, or is not on file.
+    pub fn act_task_home(&self, act_id: &str) -> SqlResult<Option<String>> {
+        let canonical: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT canonical FROM events WHERE kind = 'act' AND event_id = ?1",
+                params![act_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(canonical.and_then(|c| {
+            serde_json::from_str::<serde_json::Value>(&c)
+                .ok()?
+                .get("act-home")?
+                .as_str()
                 .map(str::to_string)
         }))
     }
